@@ -35,6 +35,11 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # Generates the root .nuxt/tsconfig.json that the root tsconfig extends;
+      # Vite resolves it for dependencies hoisted to the root node_modules.
+      - name: Prepare module
+        run: npm run dev:prepare
+
       - name: Build docs
         run: npx nuxt build docs --preset github_pages
         env:
