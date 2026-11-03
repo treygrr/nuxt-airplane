@@ -89,6 +89,29 @@ The handler context gives you:
 - `db`: the Dexie instance (`queries` and `mutations` tables) if you need to go lower.
 - `variables`: the mutation's input, typed.
 
+## Your own tables
+
+Opt a query into normalized storage: declare Dexie tables with `defineOfflineStores`, then tell the module how to `store` a response and `read` it back with `defineQueryHandlers`. Mutation handlers write to the tables directly and every query reading them updates on its own. Rollback still works: writes made during `apply` are recorded by an undo log.
+
+```ts
+// app/offline/stores.ts
+declare global { interface NuxtOfflineStores { sites: { id: string, name: string, archived: boolean } } }
+export default defineOfflineStores({ sites: '&id, name, archived' })
+
+// app/offline/queries.ts
+export default defineQueryHandlers({
+  GetSites: {
+    store: ({ db }, data) => db.sites.bulkPut(data.sites),
+    read: async ({ db }) => ({ sites: await db.sites.toArray() }),
+  },
+})
+
+// app/offline/sites.ts
+export default defineMutationHandlers({
+  RenameSite: { apply: ({ db, variables }) => db.sites.update(variables.id, { name: variables.name }) },
+})
+```
+
 ## Sync state
 
 ```ts
