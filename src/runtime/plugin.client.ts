@@ -23,7 +23,8 @@ function collect(exports: unknown[]) {
     if (item === undefined) continue
     const kind = item && typeof item === 'object' ? (item as Record<symbol, HandlerKind | undefined>)[HANDLER_KIND] : undefined
     if (!kind) {
-      if (import.meta.dev) console.warn('[nuxt-airplane] Ignoring a default export in the handlers directory that was not created with defineMutationHandler(s), defineQueryHandler(s) or defineAirplaneStores.')
+      // Cheap enough to keep in production: the build-time check cannot see through identifiers.
+      console.warn('[nuxt-airplane] Ignoring a default export in the handlers directory that was not created with a define* helper (defineMutationHandler(s), defineQueryHandler(s), defineAirplaneStores, defineAirplaneRequest).')
       continue
     }
     if (kind === 'queries') Object.assign(queryHandlers, item)
