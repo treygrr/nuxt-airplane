@@ -1,6 +1,8 @@
 export default defineNuxtConfig({
-  modules: ['my-module'],
+  modules: ['../src/module'],
   devtools: { enabled: true },
   compatibilityDate: 'latest',
-  myModule: {},
+  offline: {
+    endpoint: '/api/graphql',
+  },
 })

@@ -1,7 +1,7 @@
-import MyModule from '../../../src/module'
+import NuxtOffline from '../../../src/module'
 
 export default defineNuxtConfig({
   modules: [
-    MyModule,
+    NuxtOffline,
   ],
 })
