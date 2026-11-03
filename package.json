@@ -1,0 +1,63 @@
+{
+  "name": "nuxt-offline",
+  "version": "1.0.0",
+  "description": "My new Nuxt module",
+  "repository": "your-org/my-module",
+  "license": "MIT",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/types.d.mts",
+      "import": "./dist/module.mjs"
+    }
+  },
+  "main": "./dist/module.mjs",
+  "typesVersions": {
+    "*": {
+      ".": [
+        "./dist/types.d.mts"
+      ]
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "workspaces": [
+    "playground"
+  ],
+  "scripts": {
+    "prepack": "nuxt-module-build build",
+    "dev": "npm run dev:prepare && nuxt dev playground",
+    "dev:build": "nuxt build playground",
+    "dev:prepare": "nuxt-module-build build --stub && nuxt-module-build prepare && nuxt prepare playground",
+    "release": "npm run lint && npm run test && npm run prepack && changelogen --release && npm publish && git push --follow-tags",
+    "lint": "eslint .",
+    "test": "vitest run",
+    "test:watch": "vitest watch",
+    "test:types": "vue-tsc --noEmit && cd playground && vue-tsc --noEmit"
+  },
+  "dependencies": {
+    "@graphql-codegen/core": "^6.2.2",
+    "@graphql-codegen/typescript": "^6.1.2",
+    "@graphql-codegen/typescript-operations": "^6.2.0",
+    "@nuxt/kit": "^4.6.3",
+    "dexie": "^4.4.7",
+    "graphql": "^17.0.2",
+    "ohash": "^2.0.12",
+    "tinyglobby": "^0.2.17"
+  },
+  "devDependencies": {
+    "@nuxt/devtools": "^3.4.2",
+    "@nuxt/eslint-config": "^1.17.0",
+    "@nuxt/module-builder": "^1.0.3",
+    "@nuxt/schema": "^4.6.3",
+    "@nuxt/test-utils": "^4.3.3",
+    "@types/node": "latest",
+    "changelogen": "^0.6.2",
+    "eslint": "^10.12.0",
+    "nuxt": "^4.6.3",
+    "typescript": "^6.0.3",
+    "vitest": "^5.0.3",
+    "vue-tsc": "^3.3.12"
+  }
+}

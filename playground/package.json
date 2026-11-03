@@ -1,0 +1,17 @@
+{
+  "private": true,
+  "name": "my-module-playground",
+  "type": "module",
+  "scripts": {
+    "dev": "nuxt dev",
+    "build": "nuxt build",
+    "generate": "nuxt generate"
+  },
+  "dependencies": {
+    "@apollo/server": "^5.5.1",
+    "@as-integrations/h3": "^2.0.3",
+    "graphql": "^17.0.2",
+    "my-module": "file:..",
+    "nuxt": "^4.6.3"
+  }
+}
