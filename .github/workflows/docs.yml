@@ -47,7 +47,7 @@ jobs:
           NUXT_APP_BASE_URL: /nuxt-airplane/
           NUXT_SITE_URL: https://treygrr.github.io
 
-      - uses: actions/upload-pages-artifact@v4
+      - uses: actions/upload-pages-artifact@v5
         with:
           path: docs/.output/public
 
