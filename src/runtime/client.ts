@@ -167,7 +167,12 @@ export function createAirplaneClient(options: AirplaneClientOptions) {
     const subscription = liveQuery(async (): Promise<QuerySnapshot> => {
       const row = await db.queries.get(key)
       const data = h?.read ? await h.read({ db, variables: variables as never }) : row?.data
-      return { data: data ?? null, updatedAt: row?.updatedAt ?? null, cached: !!row }
+      // With `read`, the tables hold data as soon as any variant of this
+      // document has been fetched, so a new filter is not "loading" offline.
+      const cached = h?.read
+        ? !!row || (await db.queries.where('document').equals(name).count()) > 0
+        : !!row
+      return { data: data ?? null, updatedAt: row?.updatedAt ?? null, cached }
     }).subscribe({ next: s => (snapshot.value = s) })
     return { snapshot: readonly(snapshot), unsubscribe: () => subscription.unsubscribe() }
   }
@@ -251,12 +256,15 @@ export function createAirplaneClient(options: AirplaneClientOptions) {
     if (!rebase && invalidated.size) await refetchActive(invalidated)
   }
 
-  /** Re-applies every queued mutation on top of freshly stored server data. */
+  /**
+   * Re-applies every queued mutation on top of freshly stored server data.
+   * In-flight (`syncing`) ones are included: the response being stored may
+   * predate them, and their effect must stay visible until the server
+   * confirms and the next refetch lands.
+   */
   async function rebasePending() {
     const queue = await db.mutations.orderBy('createdAt').toArray()
-    for (const row of queue) {
-      if (row.status !== 'syncing') await applyMutation(row, { rebase: true })
-    }
+    for (const row of queue) await applyMutation(row, { rebase: true })
   }
 
   async function describeMutation(name: string, variables: unknown) {

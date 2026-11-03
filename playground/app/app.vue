@@ -19,6 +19,12 @@ const removeItem = useMutation('RemoveSiteItem')
 const setOnHand = useMutation('UpdateSiteItemOnHand')
 
 const sites = computed(() => sitesData.value?.sites ?? [])
+
+// Paginated catalog search: one cursor per loaded page, reset when the query changes.
+const itemSearch = ref('')
+const itemQuery = computed(() => itemSearch.value.trim() || null)
+const cursors = ref<(string | null)[]>([null])
+watch(itemQuery, () => (cursors.value = [null]))
 const catalog = computed(() => itemsData.value?.items ?? [])
 const picked = reactive<Record<string, string>>({})
 
@@ -218,6 +224,25 @@ function summarize(m: { document: string, variables: unknown }) {
         </div>
       </article>
     </section>
+
+    <section>
+      <h1>Items catalog</h1>
+      <div class="filters">
+        <input
+          v-model="itemSearch"
+          type="search"
+          placeholder="Search items…"
+        >
+      </div>
+      <ItemsPage
+        v-for="(after, i) in cursors"
+        :key="after ?? 'first'"
+        :query="itemQuery"
+        :after="after"
+        :last="i === cursors.length - 1"
+        @next="cursor => cursors.push(cursor)"
+      />
+    </section>
   </main>
 </template>
 
@@ -244,5 +269,8 @@ td input { width: 70px; }
 .pending li code { font-size: .8em; color: #777; }
 .pending li.failed { color: #a33; }
 .error { color: #a33; }
+.meta { color: #777; font-size: .9em; }
+.items { columns: 2; list-style: none; padding: 0; margin: 8px 0; }
+.items li { padding: 2px 0; }
 h1 small { font-size: .5em; color: #777; font-weight: normal; }
 </style>

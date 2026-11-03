@@ -56,10 +56,11 @@ function shuffle<T>(arr: T[]): T[] {
   return copy
 }
 
-export const catalog: CatalogItem[] = ITEM_NAMES.map((name, i) => ({
-  id: `item-${i + 1}`,
-  name,
-}))
+// Every tool in a dozen variants: a 180-item catalog, enough to page through.
+const VARIANTS = ['Cordless', 'Heavy Duty', 'Compact', 'Pro', 'Steel', 'Titanium', 'Mini', 'Magnetic', 'Insulated', 'Folding', 'Precision', 'Industrial']
+
+export const catalog: CatalogItem[] = VARIANTS.flatMap((variant, v) =>
+  ITEM_NAMES.map((name, i) => ({ id: `item-${v * ITEM_NAMES.length + i + 1}`, name: `${variant} ${name}` })))
 
 export const sites: Site[] = SITE_NAMES.map((name, i) => ({
   id: `site-${i + 1}`,

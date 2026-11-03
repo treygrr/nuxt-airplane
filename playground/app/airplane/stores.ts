@@ -30,6 +30,6 @@ declare global {
 
 export default defineAirplaneStores({
   sites: '&id, name, archived',
-  items: '&id',
+  items: '&id, name',
   siteItems: '[siteId+itemId], siteId, itemId',
 })

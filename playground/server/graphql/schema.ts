@@ -21,10 +21,33 @@ export const typeDefs = /* GraphQL */ `
     items: [SiteItem!]!
   }
 
+  type ItemEdge {
+    cursor: String!
+    node: Item!
+  }
+
+  type PageInfo {
+    hasNextPage: Boolean!
+    hasPreviousPage: Boolean!
+    startCursor: String
+    endCursor: String
+  }
+
+  type ItemConnection {
+    edges: [ItemEdge!]!
+    pageInfo: PageInfo!
+    totalCount: Int!
+  }
+
   type Query {
     sites(archived: Boolean, search: String): [Site!]!
     site(id: ID!): Site
     items: [Item!]!
+    """
+    Items whose name contains the query, sorted by name, paginated per the
+    Relay connection spec (forward only).
+    """
+    searchItems(query: String, first: Int = 20, after: String): ItemConnection!
   }
 
   type Mutation {
@@ -59,6 +82,36 @@ function assertOnHand(onHand: number) {
   if (onHand < 0) badInput('onHand must be >= 0')
 }
 
+// Keyset cursors: opaque to clients, but deterministic from the row itself so
+// a client with a local copy of the data can paginate it the same way.
+const encodeCursor = (item: CatalogItem) => Buffer.from(`${item.name}\u0000${item.id}`).toString('base64')
+function decodeCursor(cursor: string): CatalogItem {
+  const [name, id] = Buffer.from(cursor, 'base64').toString().split('\u0000')
+  if (name === undefined || id === undefined) badInput('Invalid cursor')
+  return { name, id }
+}
+const compareItems = (a: CatalogItem, b: CatalogItem) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id)
+
+function searchItems({ query, first, after }: { query?: string | null, first?: number | null, after?: string | null }) {
+  const limit = first ?? 20
+  if (limit < 1 || limit > 100) badInput('first must be between 1 and 100')
+  const q = query?.trim().toLowerCase()
+  const matches = catalog.filter(i => !q || i.name.toLowerCase().includes(q)).sort(compareItems)
+  const start = after ? matches.findIndex(i => compareItems(i, decodeCursor(after)) > 0) : 0
+  const page = start === -1 ? [] : matches.slice(start, start + limit)
+  const edges = page.map(node => ({ cursor: encodeCursor(node), node }))
+  return {
+    edges,
+    totalCount: matches.length,
+    pageInfo: {
+      hasNextPage: start !== -1 && start + limit < matches.length,
+      hasPreviousPage: start > 0,
+      startCursor: edges[0]?.cursor ?? null,
+      endCursor: edges.at(-1)?.cursor ?? null,
+    },
+  }
+}
+
 export const resolvers = {
   Query: {
     sites: (_: unknown, { archived, search }: { archived?: boolean | null, search?: string | null }) => {
@@ -69,6 +122,7 @@ export const resolvers = {
     },
     site: (_: unknown, { id }: { id: string }) => sites.find(s => s.id === id) ?? null,
     items: () => catalog,
+    searchItems: (_: unknown, args: { query?: string | null, first?: number | null, after?: string | null }) => searchItems(args),
   },
 
   SiteItem: {
