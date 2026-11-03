@@ -1,6 +1,6 @@
 {
   "name": "nuxt-airplane",
-  "version": "0.1.1-alpha",
+  "version": "0.1.1",
   "description": "Airplane mode for your GraphQL app: typed composables from your .gql files, an IndexedDB cache and a mutation queue that lands when you are back online.",
   "keywords": [
     "nuxt",
