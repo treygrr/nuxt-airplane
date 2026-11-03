@@ -1,3 +1,4 @@
+// Test change to trigger the pkg.pr.new preview; safe to close without merging.
 import { Dexie } from 'dexie'
 import type { DBCoreIndex, DBCoreMutateRequest, DBCoreTable, DBCoreTransaction, IndexableType } from 'dexie'
 import type { AirplaneDexie, UndoEntry } from './types'
