@@ -1,5 +1,7 @@
 export default defineNuxtConfig({
-  modules: ['../src/module'],
+  // By package name (not ../src/module) so this app also works as the
+  // StackBlitz template pkg.pr.new builds for each PR.
+  modules: ['@treygrr/nuxt-airplane'],
   devtools: { enabled: true },
   compatibilityDate: 'latest',
   nitro: {
