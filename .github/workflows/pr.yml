@@ -105,6 +105,7 @@ jobs:
           node-version: 24.21.0
           cache: npm
       - run: npm ci
+      - run: npm run dev:prepare
       - name: Build and pack
         run: |
           npm run prepack
@@ -160,6 +161,7 @@ jobs:
           node-version: 24.21.0
           cache: npm
       - run: npm ci
+      - run: npm run dev:prepare
       - run: npm run prepack
       - run: npx pkg-pr-new publish --compact --comment=update
 
