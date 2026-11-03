@@ -40,6 +40,14 @@ export default defineNuxtConfig({
 
   compatibilityDate: '2026-06-30',
 
+  vite: {
+    optimizeDeps: {
+      // Nuxt UI's editor pulls an optional tiptap peer the docs never use;
+      // keep Vite's dependency scan from tripping over it.
+      exclude: ['@tiptap/extension-drag-handle-vue-3']
+    }
+  },
+
   eslint: {
     config: {
       stylistic: {
