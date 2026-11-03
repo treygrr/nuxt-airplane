@@ -145,7 +145,7 @@ jobs:
           retention-days: 14
 
   # Publishes a preview build to pkg.pr.new so reviewers can try the PR with
-  #   npm i https://pkg.pr.new/treygrr/nuxt-airplane@<sha>
+  #   npm i https://pkg.pr.new/@treygrr/nuxt-airplane@<sha>
   # Needs the pkg.pr.new GitHub App installed on the repo; until then this job
   # only reports, it does not fail the PR.
   preview:
@@ -217,6 +217,10 @@ jobs:
       - uses: actions/first-interaction@v3
         with:
           repo_token: ${{ secrets.GITHUB_TOKEN }}
+          # v3 requires both messages even though this workflow only runs on PRs.
+          issue_message: |
+            Thanks for opening your first issue here! A maintainer will take a look soon.
+            If it's a bug, a minimal reproduction or a failing test speeds things up a lot.
           pr_message: |
             Thanks for your first pull request to nuxt-airplane! 🛫
 
