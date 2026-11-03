@@ -32,6 +32,12 @@ export default defineNuxtConfig({
     asyncContext: true
   },
 
+  site: {
+    // Origin only; the /nuxt-airplane/ path comes from app.baseURL.
+    url: 'https://treygrr.github.io',
+    name: 'nuxt-airplane'
+  },
+
   compatibilityDate: '2026-06-30',
 
   eslint: {
@@ -44,12 +50,12 @@ export default defineNuxtConfig({
   },
 
   llms: {
-    domain: 'https://nuxt-offline.example.com',
-    title: 'nuxt-offline',
-    description: 'Offline-first GraphQL for Nuxt: typed composables from your .gql files, an IndexedDB cache and a mutation queue that syncs when you are back online.',
+    domain: 'https://treygrr.github.io/nuxt-airplane',
+    title: 'nuxt-airplane',
+    description: 'Airplane mode for your GraphQL app: typed composables from your .gql files, an IndexedDB cache and a mutation queue that syncs when you are back online.',
     full: {
-      title: 'nuxt-offline - Full Documentation',
-      description: 'The full documentation for the nuxt-offline module.'
+      title: 'nuxt-airplane - Full Documentation',
+      description: 'The full documentation for the nuxt-airplane module.'
     },
     sections: [
       {

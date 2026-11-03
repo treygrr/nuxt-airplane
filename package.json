@@ -1,8 +1,20 @@
 {
-  "name": "nuxt-offline",
-  "version": "1.0.0",
-  "description": "My new Nuxt module",
-  "repository": "your-org/my-module",
+  "name": "nuxt-airplane",
+  "version": "0.1.0",
+  "description": "Airplane mode for your GraphQL app: typed composables from your .gql files, an IndexedDB cache and a mutation queue that lands when you are back online.",
+  "keywords": [
+    "nuxt",
+    "nuxt-module",
+    "graphql",
+    "offline",
+    "offline-first",
+    "dexie",
+    "indexeddb",
+    "sync"
+  ],
+  "repository": "treygrr/nuxt-airplane",
+  "homepage": "https://github.com/treygrr/nuxt-airplane#readme",
+  "bugs": "https://github.com/treygrr/nuxt-airplane/issues",
   "license": "MIT",
   "type": "module",
   "exports": {

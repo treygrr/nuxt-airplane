@@ -1,7 +1,7 @@
 import { computed, getCurrentInstance, onMounted, onScopeDispose, ref, shallowRef, toValue, watch, type MaybeRefOrGetter, type Ref } from 'vue'
 import { queryKey } from '../client'
 import type { QueryName, QueryResult, QueryVariables } from '../types'
-import { useOffline } from './useOffline'
+import { useAirplane } from './useAirplane'
 
 export interface UseQueryOptions {
   /** Set to `false` to only read the cache, never the network. */
@@ -32,7 +32,7 @@ export function useQuery<N extends QueryName>(
   const error = shallowRef<Error | null>(null)
   const updatedAt = ref<number | null>(null)
 
-  const client = useOffline()
+  const client = useAirplane()
   if (!client) {
     // Server side: nothing to read from, the client will hydrate from IndexedDB.
     return { data, loading, fetching, error, updatedAt, refresh: async () => {} }

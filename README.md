@@ -1,17 +1,19 @@
-# nuxt-offline
+# nuxt-airplane
 
-Offline-first GraphQL for Nuxt. Point the module at a GraphQL endpoint and your
-`.gql` files; it generates types, registers `useQuery` / `useMutation` for every
-named operation, caches results in IndexedDB (via Dexie) and queues mutations
-while offline, replaying them when the connection is back.
+Airplane mode for your GraphQL app.
+
+Give it an endpoint and your `.gql` files. Every operation becomes a typed
+`useQuery` or `useMutation`, results live in IndexedDB (via Dexie), and anything
+you change mid-flight queues up and lands on the server once you're back on the
+ground.
 
 ## Setup
 
 ```ts
 // nuxt.config.ts
 export default defineNuxtConfig({
-  modules: ['nuxt-offline'],
-  offline: {
+  modules: ['nuxt-airplane'],
+  airplane: {
     endpoint: 'https://api.example.com/graphql',
   },
 })
@@ -20,10 +22,10 @@ export default defineNuxtConfig({
 | Option | Default | |
 | --- | --- | --- |
 | `endpoint` | `/api/graphql` | GraphQL endpoint. A relative path is resolved against the app itself. |
-| `schema` | – | SDL file or URL. When omitted the endpoint is introspected. In dev a relative endpoint is introspected once the dev server is up; the last good schema is cached in `node_modules/.cache/nuxt-offline`. |
+| `schema` | – | SDL file or URL. When omitted the endpoint is introspected. In dev a relative endpoint is introspected once the dev server is up; the last good schema is cached in `node_modules/.cache/nuxt-airplane`. |
 | `documents` | `['**/*.gql', '**/*.graphql']` | Globs (relative to `srcDir`) of the files holding your operations. |
-| `handlersDir` | `offline` | Directory (relative to `srcDir`) scanned for mutation handler files. |
-| `dbName` | `nuxt-offline` | IndexedDB database name. |
+| `handlersDir` | `airplane` | Directory (relative to `srcDir`) scanned for mutation handler files. |
+| `dbName` | `nuxt-airplane` | IndexedDB database name. |
 | `codegen` | `{}` | Extra config for the `typescript` / `typescript-operations` codegen plugins. |
 
 ## Operations
@@ -59,10 +61,10 @@ queued. Sending it to the server happens in the sync loop.
 ## Mutation handlers
 
 Handlers describe how a queued mutation shows up in the local cache. Put files
-under `app/offline/` and they are picked up automatically.
+under `app/airplane/` and they are picked up automatically.
 
 ```ts
-// app/offline/sites.ts
+// app/airplane/sites.ts
 export default defineMutationHandlers({
   RenameSite: {
     // Runs when the mutation is queued, so the UI reflects it immediately.
@@ -91,14 +93,14 @@ The handler context gives you:
 
 ## Your own tables
 
-Opt a query into normalized storage: declare Dexie tables with `defineOfflineStores`, then tell the module how to `store` a response and `read` it back with `defineQueryHandlers`. Mutation handlers write to the tables directly and every query reading them updates on its own. Rollback still works: writes made during `apply` are recorded by an undo log.
+Opt a query into normalized storage: declare Dexie tables with `defineAirplaneStores`, then tell the module how to `store` a response and `read` it back with `defineQueryHandlers`. Mutation handlers write to the tables directly and every query reading them updates on its own. Rollback still works: writes made during `apply` are recorded by an undo log.
 
 ```ts
-// app/offline/stores.ts
-declare global { interface NuxtOfflineStores { sites: { id: string, name: string, archived: boolean } } }
-export default defineOfflineStores({ sites: '&id, name, archived' })
+// app/airplane/stores.ts
+declare global { interface NuxtAirplaneStores { sites: { id: string, name: string, archived: boolean } } }
+export default defineAirplaneStores({ sites: '&id, name, archived' })
 
-// app/offline/queries.ts
+// app/airplane/queries.ts
 export default defineQueryHandlers({
   GetSites: {
     store: ({ db }, data) => db.sites.bulkPut(data.sites),
@@ -106,7 +108,7 @@ export default defineQueryHandlers({
   },
 })
 
-// app/offline/sites.ts
+// app/airplane/sites.ts
 export default defineMutationHandlers({
   RenameSite: { apply: ({ db, variables }) => db.sites.update(variables.id, { name: variables.name }) },
 })

@@ -1,6 +1,6 @@
 import { computed, toRef, type ComputedRef, type Ref } from 'vue'
 import type { MutationRow } from '../types'
-import { useOffline } from './useOffline'
+import { useAirplane } from './useAirplane'
 
 export interface UseSyncReturn {
   /** Effective state: the browser reports a connection and `goOffline()` is not in effect. */
@@ -34,7 +34,7 @@ export interface UseSyncReturn {
 }
 
 export function useSync(): UseSyncReturn {
-  const client = useOffline()
+  const client = useAirplane()
   if (!client) {
     const off = async () => {}
     return {

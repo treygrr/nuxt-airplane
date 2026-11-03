@@ -1,6 +1,6 @@
 {
   "private": true,
-  "name": "my-module-playground",
+  "name": "nuxt-airplane-playground",
   "type": "module",
   "scripts": {
     "dev": "nuxt dev",
@@ -11,7 +11,7 @@
     "@apollo/server": "^5.5.1",
     "@as-integrations/h3": "^2.0.3",
     "graphql": "^17.0.2",
-    "nuxt-offline": "file:..",
+    "nuxt-airplane": "file:..",
     "nuxt": "^4.6.3"
   }
 }

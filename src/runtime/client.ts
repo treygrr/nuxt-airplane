@@ -9,8 +9,8 @@ import {
   type MutationHandlers,
   type MutationHandler,
   type MutationRow,
-  type OfflineRuntimeConfig,
-  type OfflineStores,
+  type AirplaneRuntimeConfig,
+  type AirplaneStores,
   type OperationDocument,
   type QueryHandler,
   type QueryHandlers,
@@ -18,11 +18,11 @@ import {
   type Updater,
 } from './types'
 
-export interface OfflineClientOptions extends OfflineRuntimeConfig {
+export interface AirplaneClientOptions extends AirplaneRuntimeConfig {
   documents: Record<string, OperationDocument>
   mutationHandlers: MutationHandlers
   queryHandlers: QueryHandlers
-  stores: OfflineStores
+  stores: AirplaneStores
 }
 
 /** What `useQuery` observes: the live data plus the cache row's metadata. */
@@ -39,9 +39,9 @@ export function queryKey(name: string, variables: unknown) {
   return `${name}:${hash(normalized)}`
 }
 
-export type OfflineClient = ReturnType<typeof createOfflineClient>
+export type AirplaneClient = ReturnType<typeof createAirplaneClient>
 
-export function createOfflineClient(options: OfflineClientOptions) {
+export function createAirplaneClient(options: AirplaneClientOptions) {
   const db = createDb(options.dbName, options.stores.stores, options.stores.version)
   const { documents, mutationHandlers, queryHandlers } = options
 
@@ -50,7 +50,7 @@ export function createOfflineClient(options: OfflineClientOptions) {
   // leave the app without storage.
   db.open().catch(async (error: Error) => {
     if (!['VersionError', 'UpgradeError', 'SchemaError'].includes(error.name)) throw error
-    console.warn(`[nuxt-offline] Could not open "${options.dbName}" (${error.name}), recreating it. Bump the store version to migrate instead.`)
+    console.warn(`[nuxt-airplane] Could not open "${options.dbName}" (${error.name}), recreating it. Bump the store version to migrate instead.`)
     await db.delete()
     await db.open()
   })
@@ -109,7 +109,7 @@ export function createOfflineClient(options: OfflineClientOptions) {
 
   function document(name: string) {
     const doc = documents[name]
-    if (!doc) throw new Error(`[nuxt-offline] Unknown GraphQL document "${name}"`)
+    if (!doc) throw new Error(`[nuxt-airplane] Unknown GraphQL document "${name}"`)
     return doc
   }
 
@@ -121,7 +121,7 @@ export function createOfflineClient(options: OfflineClientOptions) {
     })
     const body = await res.json() as GraphQLResponse<T>
     if (body.errors?.length) throw new GraphQLRequestError(body.errors)
-    if (!res.ok) throw new Error(`[nuxt-offline] ${res.status} ${res.statusText}`)
+    if (!res.ok) throw new Error(`[nuxt-airplane] ${res.status} ${res.statusText}`)
     return body.data as T
   }
 
@@ -254,7 +254,7 @@ export function createOfflineClient(options: OfflineClientOptions) {
   }
 
   async function enqueue(name: string, variables: unknown) {
-    if (document(name).kind !== 'mutation') throw new Error(`[nuxt-offline] "${name}" is not a mutation`)
+    if (document(name).kind !== 'mutation') throw new Error(`[nuxt-airplane] "${name}" is not a mutation`)
     const id = await db.mutations.add({ document: name, variables, status: 'pending', createdAt: Date.now() } as MutationRow)
     const row = (await db.mutations.get(id))!
     try {

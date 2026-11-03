@@ -1,6 +1,6 @@
 import { ref, shallowRef, type Ref } from 'vue'
 import type { MutationName, MutationRow, MutationVariables } from '../types'
-import { useOffline } from './useOffline'
+import { useAirplane } from './useAirplane'
 
 export interface UseMutationReturn<V> {
   /**
@@ -17,10 +17,10 @@ export interface UseMutationReturn<V> {
 export function useMutation<N extends MutationName>(name: N): UseMutationReturn<MutationVariables<N>> {
   const loading = ref(false)
   const error = shallowRef<Error | null>(null)
-  const client = useOffline()
+  const client = useAirplane()
 
   async function mutate(variables: MutationVariables<N>) {
-    if (!client) throw new Error('[nuxt-offline] Mutations can only run on the client')
+    if (!client) throw new Error('[nuxt-airplane] Mutations can only run on the client')
     loading.value = true
     error.value = null
     try {

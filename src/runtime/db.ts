@@ -1,14 +1,14 @@
 import { Dexie } from 'dexie'
 import type { DBCoreIndex, DBCoreMutateRequest, DBCoreTable, DBCoreTransaction, IndexableType } from 'dexie'
-import type { OfflineDexie, UndoEntry } from './types'
+import type { AirplaneDexie, UndoEntry } from './types'
 
 export const MODULE_STORES = {
   queries: '&key, document, updatedAt',
   mutations: '++id, status, createdAt',
 }
 
-export function createDb(name: string, stores: Record<string, string> = {}, version = 1): OfflineDexie {
-  const db = new Dexie(name) as OfflineDexie
+export function createDb(name: string, stores: Record<string, string> = {}, version = 1): AirplaneDexie {
+  const db = new Dexie(name) as AirplaneDexie
   db.version(version).stores({ ...MODULE_STORES, ...stores })
   installUndoLog(db)
   return db
@@ -59,7 +59,7 @@ async function recordBefore(table: DBCoreTable, req: DBCoreMutateRequest): Promi
 function installUndoLog(db: Dexie) {
   db.use({
     stack: 'dbcore',
-    name: 'nuxt-offline-undo',
+    name: 'nuxt-airplane-undo',
     create: core => ({
       ...core,
       table(name) {
@@ -87,7 +87,7 @@ function installUndoLog(db: Dexie) {
  * Runs `fn` in a read-write transaction over every table and returns the
  * writes it made. If `fn` throws, the transaction aborts and nothing is kept.
  */
-export async function withUndoLog<T>(db: OfflineDexie, fn: () => Promise<T> | T): Promise<{ result: T, undo: UndoEntry[] }> {
+export async function withUndoLog<T>(db: AirplaneDexie, fn: () => Promise<T> | T): Promise<{ result: T, undo: UndoEntry[] }> {
   const undo: UndoEntry[] = []
   const result = await db.transaction('rw', db.tables, async () => {
     const idbtrans = Dexie.currentTransaction.idbtrans as object
@@ -103,7 +103,7 @@ export async function withUndoLog<T>(db: OfflineDexie, fn: () => Promise<T> | T)
 }
 
 /** Puts rows back as they were, newest write first. */
-export async function applyUndo(db: OfflineDexie, undo: UndoEntry[]) {
+export async function applyUndo(db: AirplaneDexie, undo: UndoEntry[]) {
   await db.transaction('rw', db.tables, async () => {
     for (const entry of [...undo].reverse()) {
       const table = db.table(entry.table)

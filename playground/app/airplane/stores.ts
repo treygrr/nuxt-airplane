@@ -20,14 +20,14 @@ export interface SiteItemRow {
 }
 
 declare global {
-  interface NuxtOfflineStores {
+  interface NuxtAirplaneStores {
     sites: SiteRow
     items: ItemRow
     siteItems: SiteItemRow
   }
 }
 
-export default defineOfflineStores({
+export default defineAirplaneStores({
   sites: '&id, name, archived',
   items: '&id',
   siteItems: '[siteId+itemId], siteId, itemId',

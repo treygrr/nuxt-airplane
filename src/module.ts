@@ -22,7 +22,7 @@ export interface ModuleOptions {
   schema?: string
   /** Globs, relative to `srcDir`, of the `.gql` / `.graphql` files holding the operations. */
   documents: string[]
-  /** Directory, relative to `srcDir`, scanned for `defineMutationHandlers` files. */
+  /** Directory, relative to `srcDir`, scanned for `defineMutationHandlers` / `defineQueryHandlers` / `defineAirplaneStores` files. */
   handlersDir: string
   /** Name of the IndexedDB database. */
   dbName: string
@@ -32,23 +32,23 @@ export interface ModuleOptions {
 
 export default defineNuxtModule<ModuleOptions>({
   meta: {
-    name: 'nuxt-offline',
-    configKey: 'offline',
+    name: 'nuxt-airplane',
+    configKey: 'airplane',
   },
   defaults: {
     endpoint: '/api/graphql',
     documents: ['**/*.gql', '**/*.graphql'],
-    handlersDir: 'offline',
-    dbName: 'nuxt-offline',
+    handlersDir: 'airplane',
+    dbName: 'nuxt-airplane',
     codegen: {},
   },
   async setup(options, nuxt) {
     const resolver = createResolver(import.meta.url)
-    const logger = useLogger('nuxt-offline')
+    const logger = useLogger('nuxt-airplane')
     const { srcDir } = nuxt.options
-    const cacheDir = join(nuxt.options.rootDir, 'node_modules/.cache/nuxt-offline')
+    const cacheDir = join(nuxt.options.rootDir, 'node_modules/.cache/nuxt-airplane')
 
-    nuxt.options.runtimeConfig.public.offline = {
+    nuxt.options.runtimeConfig.public.airplane = {
       endpoint: options.endpoint,
       dbName: options.dbName,
     }
@@ -83,13 +83,13 @@ export default defineNuxtModule<ModuleOptions>({
     // ------------------------------------------------------------------
 
     const documentsTemplate = addTemplate({
-      filename: 'nuxt-offline/documents.mjs',
+      filename: 'nuxt-airplane/documents.mjs',
       write: true,
       getContents: () => `export const documents = ${JSON.stringify(docs.operations, null, 2)}\n`,
     })
 
     const handlersTemplate = addTemplate({
-      filename: 'nuxt-offline/handlers.mjs',
+      filename: 'nuxt-airplane/handlers.mjs',
       write: true,
       getContents: async () => {
         const files = await handlerFiles()
@@ -99,11 +99,11 @@ export default defineNuxtModule<ModuleOptions>({
       },
     })
 
-    nuxt.options.alias['#nuxt-offline/documents'] = documentsTemplate.dst
-    nuxt.options.alias['#nuxt-offline/handlers'] = handlersTemplate.dst
+    nuxt.options.alias['#nuxt-airplane/documents'] = documentsTemplate.dst
+    nuxt.options.alias['#nuxt-airplane/handlers'] = handlersTemplate.dst
 
     addTypeTemplate({
-      filename: 'types/nuxt-offline.d.ts',
+      filename: 'types/nuxt-airplane.d.ts',
       getContents: async () => {
         const schema = await loadSchema({ schema: options.schema, endpoint: introspectionUrl ?? '', cacheDir }, logger)
         if (!schema) logger.warn('No GraphQL schema available yet, operations are untyped')
@@ -113,7 +113,7 @@ export default defineNuxtModule<ModuleOptions>({
 
     async function regenerate() {
       await reloadDocuments()
-      await updateTemplates({ filter: t => t.filename.includes('nuxt-offline') })
+      await updateTemplates({ filter: t => t.filename.includes('nuxt-airplane') })
     }
 
     // ------------------------------------------------------------------

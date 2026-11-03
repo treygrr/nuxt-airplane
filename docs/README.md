@@ -1,6 +1,6 @@
-# nuxt-offline docs
+# nuxt-airplane docs
 
-Documentation site for the `nuxt-offline` module, built on the
+Documentation site for the `nuxt-airplane` module, built on the
 [Nuxt UI docs template](https://github.com/nuxt-ui-templates/docs) with
 [Nuxt Content](https://content.nuxt.com).
 

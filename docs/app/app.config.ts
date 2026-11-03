@@ -12,7 +12,7 @@ export default defineAppConfig({
     }
   },
   seo: {
-    siteName: 'nuxt-offline'
+    siteName: 'nuxt-airplane'
   },
   header: {
     title: '',
@@ -26,30 +26,30 @@ export default defineAppConfig({
     colorMode: true,
     links: [{
       'icon': 'i-simple-icons-github',
-      'to': 'https://github.com/your-org/nuxt-offline',
+      'to': 'https://github.com/treygrr/nuxt-airplane',
       'target': '_blank',
       'aria-label': 'GitHub'
     }]
   },
   footer: {
-    credits: `nuxt-offline • © ${new Date().getFullYear()}`,
+    credits: `nuxt-airplane • © ${new Date().getFullYear()}`,
     colorMode: false,
     links: [{
       'icon': 'i-simple-icons-github',
-      'to': 'https://github.com/your-org/nuxt-offline',
+      'to': 'https://github.com/treygrr/nuxt-airplane',
       'target': '_blank',
-      'aria-label': 'nuxt-offline on GitHub'
+      'aria-label': 'nuxt-airplane on GitHub'
     }]
   },
   toc: {
     title: 'Table of Contents',
     bottom: {
       title: 'Links',
-      edit: 'https://github.com/your-org/nuxt-offline/edit/main/docs/content',
+      edit: 'https://github.com/treygrr/nuxt-airplane/edit/main/docs/content',
       links: [{
         icon: 'i-lucide-star',
         label: 'Star on GitHub',
-        to: 'https://github.com/your-org/nuxt-offline',
+        to: 'https://github.com/treygrr/nuxt-airplane',
         target: '_blank'
       }, {
         icon: 'i-lucide-database',

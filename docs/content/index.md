@@ -1,6 +1,6 @@
 ---
-title: nuxt-offline
-description: Offline-first GraphQL for Nuxt. Typed composables from your .gql files, an IndexedDB cache and a mutation queue that syncs when you are back online.
+title: nuxt-airplane
+description: Airplane mode for your GraphQL app. Typed composables from your .gql files, an IndexedDB cache and a mutation queue that syncs when you are back online.
 ---
 
 ::u-page-hero{class="dark:bg-gradient-to-b from-neutral-900 to-neutral-950"}
@@ -11,10 +11,10 @@ orientation: horizontal
 :hero-background
 
 #title
-GraphQL that keeps [working offline]{.text-primary}.
+[Airplane mode]{.text-primary} for your GraphQL app.
 
 #description
-Point the module at your GraphQL endpoint and your `.gql` files. It generates types, registers `useQuery` and `useMutation` for every operation, caches results in IndexedDB and queues mutations while offline, replaying them when the connection is back.
+Give it an endpoint and your `.gql` files. Every operation becomes a typed `useQuery` or `useMutation`, results live in IndexedDB, and anything you change mid-flight queues up and lands on the server once you're back on the ground.
 
 #links
   :::u-button
@@ -32,7 +32,7 @@ Point the module at your GraphQL endpoint and your `.gql` files. It generates ty
   color: neutral
   variant: outline
   size: xl
-  to: https://github.com/your-org/nuxt-offline
+  to: https://github.com/treygrr/nuxt-airplane
   target: _blank
   ---
   View on GitHub
@@ -145,8 +145,8 @@ Everything from your GraphQL documents
       to: '/api/use-query'
       variant: subtle
       icon: i-lucide-book-open
-  title: Ready to go offline?
-  description: Install the module, drop in your .gql files and start querying.
+  title: Ready to switch on airplane mode?
+  description: Install it, drop in your .gql files, and stop worrying about the Wi-Fi.
   class: dark:bg-neutral-950
   ---
 

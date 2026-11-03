@@ -2,37 +2,37 @@ import type { Dexie, EntityTable, IndexableType, Table } from 'dexie'
 
 declare global {
   /**
-   * Augmented by the generated `types/nuxt-offline.d.ts` with one entry per
+   * Augmented by the generated `types/nuxt-airplane.d.ts` with one entry per
    * query document found in the user's `.gql` / `.graphql` files.
    */
   // eslint-disable-next-line @typescript-eslint/no-empty-object-type
-  interface NuxtOfflineQueries {}
+  interface NuxtAirplaneQueries {}
 
-  /** Same as {@link NuxtOfflineQueries}, for mutation documents. */
+  /** Same as {@link NuxtAirplaneQueries}, for mutation documents. */
   // eslint-disable-next-line @typescript-eslint/no-empty-object-type
-  interface NuxtOfflineMutations {}
+  interface NuxtAirplaneMutations {}
 
   /**
-   * Row types of the tables declared with `defineOfflineStores`. Augment it
+   * Row types of the tables declared with `defineAirplaneStores`. Augment it
    * yourself so `db.<table>` is typed inside handlers:
    *
    * ```ts
    * declare global {
-   *   interface NuxtOfflineStores { sites: { id: string, name: string } }
+   *   interface NuxtAirplaneStores { sites: { id: string, name: string } }
    * }
    * ```
    */
   // eslint-disable-next-line @typescript-eslint/no-empty-object-type
-  interface NuxtOfflineStores {}
+  interface NuxtAirplaneStores {}
 }
 
-export type QueryName = keyof NuxtOfflineQueries & string
-export type MutationName = keyof NuxtOfflineMutations & string
+export type QueryName = keyof NuxtAirplaneQueries & string
+export type MutationName = keyof NuxtAirplaneMutations & string
 
-export type QueryResult<N extends QueryName> = NuxtOfflineQueries[N] extends { result: infer R } ? R : never
-export type QueryVariables<N extends QueryName> = NuxtOfflineQueries[N] extends { variables: infer V } ? V : never
-export type MutationResult<N extends MutationName> = NuxtOfflineMutations[N] extends { result: infer R } ? R : never
-export type MutationVariables<N extends MutationName> = NuxtOfflineMutations[N] extends { variables: infer V } ? V : never
+export type QueryResult<N extends QueryName> = NuxtAirplaneQueries[N] extends { result: infer R } ? R : never
+export type QueryVariables<N extends QueryName> = NuxtAirplaneQueries[N] extends { variables: infer V } ? V : never
+export type MutationResult<N extends MutationName> = NuxtAirplaneMutations[N] extends { result: infer R } ? R : never
+export type MutationVariables<N extends MutationName> = NuxtAirplaneMutations[N] extends { variables: infer V } ? V : never
 
 export interface OperationDocument {
   name: string
@@ -74,11 +74,11 @@ export interface MutationRow {
   undo?: UndoEntry[]
 }
 
-export type OfflineDexie = Dexie & {
+export type AirplaneDexie = Dexie & {
   queries: EntityTable<QueryRow, 'key'>
   mutations: EntityTable<MutationRow, 'id'>
 } & {
-  [K in keyof NuxtOfflineStores]: Table<NuxtOfflineStores[K], IndexableType>
+  [K in keyof NuxtAirplaneStores]: Table<NuxtAirplaneStores[K], IndexableType>
 }
 
 /** Mutate `data` in place, or return a replacement. */
@@ -98,7 +98,7 @@ export interface CacheApi {
 }
 
 export interface HandlerContext<V = unknown> {
-  db: OfflineDexie
+  db: AirplaneDexie
   cache: CacheApi
   variables: V
 }
@@ -123,7 +123,7 @@ export interface MutationHandler<N extends MutationName = MutationName> {
 export type MutationHandlers = { [N in MutationName]?: MutationHandler<N> }
 
 export interface QueryHandlerContext<V = unknown> {
-  db: OfflineDexie
+  db: AirplaneDexie
   variables: V
 }
 
@@ -141,14 +141,14 @@ export interface QueryHandler<N extends QueryName = QueryName> {
 export type QueryHandlers = { [N in QueryName]?: QueryHandler<N> }
 
 /** Extra Dexie tables, in Dexie's `stores()` syntax. */
-export interface OfflineStores {
+export interface AirplaneStores {
   stores: Record<string, string>
   /** Schema version. Bump it when changing indexes of existing tables. */
   version?: number
 }
 
 /** Marks what a file under the handlers directory default-exports. */
-export const HANDLER_KIND: unique symbol = Symbol.for('nuxt-offline:kind')
+export const HANDLER_KIND: unique symbol = Symbol.for('nuxt-airplane:kind')
 export type HandlerKind = 'mutations' | 'queries' | 'stores'
 
 export interface GraphQLError {
@@ -169,7 +169,7 @@ export class GraphQLRequestError extends Error {
   }
 }
 
-export interface OfflineRuntimeConfig {
+export interface AirplaneRuntimeConfig {
   endpoint: string
   dbName: string
 }
