@@ -145,7 +145,7 @@ jobs:
           retention-days: 14
 
   # Publishes a preview build to pkg.pr.new so reviewers can try the PR with
-  #   npm i https://pkg.pr.new/treygrr/nuxt-airplane@<sha>
+  #   npm i https://pkg.pr.new/@treygrr/nuxt-airplane@<sha>
   # Needs the pkg.pr.new GitHub App installed on the repo; until then this job
   # only reports, it does not fail the PR.
   preview:

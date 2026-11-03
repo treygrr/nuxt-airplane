@@ -46,6 +46,7 @@ export default defineNuxtModule<ModuleOptions>({
   meta: {
     name: 'nuxt-airplane',
     configKey: 'airplane',
+    compatibility: { nuxt: '>=4.0.0' },
   },
   defaults: {
     endpoint: '/api/graphql',

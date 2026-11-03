@@ -4,8 +4,8 @@
 
 # nuxt-airplane
 
-[![npm version](https://img.shields.io/npm/v/nuxt-airplane?color=00DC82&labelColor=020420)](https://www.npmjs.com/package/nuxt-airplane)
-[![License](https://img.shields.io/npm/l/nuxt-airplane?color=00DC82&labelColor=020420)](./LICENSE)
+[![npm version](https://img.shields.io/npm/v/%40treygrr%2Fnuxt-airplane?color=00DC82&labelColor=020420)](https://www.npmjs.com/package/@treygrr/nuxt-airplane)
+[![License](https://img.shields.io/npm/l/%40treygrr%2Fnuxt-airplane?color=00DC82&labelColor=020420)](./LICENSE)
 [![Nuxt](https://img.shields.io/badge/Nuxt-4-00DC82?logo=nuxt&labelColor=020420)](https://nuxt.com)
 
 Airplane mode for your GraphQL app.
@@ -22,7 +22,7 @@ ground.
 ```ts
 // nuxt.config.ts
 export default defineNuxtConfig({
-  modules: ['nuxt-airplane'],
+  modules: ['@treygrr/nuxt-airplane'],
   airplane: {
     endpoint: 'https://api.example.com/graphql',
   },
