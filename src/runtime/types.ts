@@ -76,9 +76,16 @@ export interface MutationRow {
   undo?: UndoEntry[]
 }
 
+/** Module bookkeeping, e.g. the cache key the data was written under. */
+export interface MetaRow {
+  key: string
+  value: string
+}
+
 export type AirplaneDexie = Dexie & {
   queries: EntityTable<QueryRow, 'key'>
   mutations: EntityTable<MutationRow, 'id'>
+  meta: EntityTable<MetaRow, 'key'>
 } & {
   [K in keyof NuxtAirplaneStores]: Table<NuxtAirplaneStores[K], IndexableType>
 }
@@ -195,4 +202,6 @@ export class GraphQLRequestError extends Error {
 export interface AirplaneRuntimeConfig {
   endpoint: string
   dbName: string
+  /** Deploy-specific part of the cache key; see the `cacheKey` module option. */
+  cacheKey?: string
 }

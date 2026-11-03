@@ -26,6 +26,7 @@ export default defineNuxtConfig({
 | `documents` | `['**/*.gql', '**/*.graphql']` | Globs (relative to `srcDir`) of the files holding your operations. |
 | `handlersDir` | `airplane` | Directory (relative to `srcDir`) scanned for mutation handler files. |
 | `dbName` | `nuxt-airplane` | IndexedDB database name. |
+| `cacheKey` | – | Deploy key (git SHA, build id). A change wipes cached data on next load, outbox kept; a hash of your documents is always mixed in. `NUXT_PUBLIC_AIRPLANE_CACHE_KEY` overrides it. |
 | `codegen` | `{}` | Extra config for the `typescript` / `typescript-operations` codegen plugins. |
 
 ## Operations

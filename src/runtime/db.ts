@@ -5,7 +5,11 @@ import type { AirplaneDexie, UndoEntry } from './types'
 export const MODULE_STORES = {
   queries: '&key, document, updatedAt',
   mutations: '++id, status, createdAt',
+  meta: '&key',
 }
+
+/** Tables that hold module bookkeeping rather than cached data. */
+export const BOOKKEEPING_TABLES = new Set(['mutations', 'meta'])
 
 export function createDb(name: string, stores: Record<string, string> = {}, version = 1): AirplaneDexie {
   const db = new Dexie(name) as AirplaneDexie
@@ -64,8 +68,8 @@ function installUndoLog(db: Dexie) {
       ...core,
       table(name) {
         const table = core.table(name)
-        // The outbox itself is bookkeeping, never part of a mutation's effect.
-        if (name === 'mutations') return table
+        // Bookkeeping tables are never part of a mutation's effect.
+        if (BOOKKEEPING_TABLES.has(name)) return table
         return {
           ...table,
           async mutate(req) {

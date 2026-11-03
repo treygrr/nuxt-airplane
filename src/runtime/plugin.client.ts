@@ -1,5 +1,5 @@
 import { defineNuxtPlugin, useRuntimeConfig } from '#app'
-import { documents } from '#nuxt-airplane/documents'
+import { documents, documentsHash } from '#nuxt-airplane/documents'
 import { handlers } from '#nuxt-airplane/handlers'
 import { createAirplaneClient } from './client'
 import {
@@ -42,6 +42,7 @@ export default defineNuxtPlugin({
     const airplane = createAirplaneClient({
       ...config,
       documents: documents as Record<string, OperationDocument>,
+      documentsHash,
       ...collect(handlers),
     })
     return { provide: { airplane } }

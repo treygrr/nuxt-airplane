@@ -1,7 +1,7 @@
 import { liveQuery } from 'dexie'
 import { hash } from 'ohash'
 import { reactive, computed, shallowRef, readonly } from 'vue'
-import { applyUndo, createDb, withUndoLog } from './db'
+import { BOOKKEEPING_TABLES, applyUndo, createDb, withUndoLog } from './db'
 import {
   GraphQLRequestError,
   type CacheApi,
@@ -20,6 +20,8 @@ import {
 
 export interface AirplaneClientOptions extends AirplaneRuntimeConfig {
   documents: Record<string, OperationDocument>
+  /** Hash of the compiled documents, mixed into the cache key. */
+  documentsHash: string
   mutationHandlers: MutationHandlers
   queryHandlers: QueryHandlers
   stores: AirplaneStores
@@ -54,11 +56,40 @@ export function createAirplaneClient(options: AirplaneClientOptions) {
   // A schema that no longer matches what is on disk (lowered version, changed
   // primary key) cannot be opened. This is a cache, so start over rather than
   // leave the app without storage.
-  db.open().catch(async (error: Error) => {
+  const opened = db.open().catch(async (error: Error) => {
     if (!['VersionError', 'UpgradeError', 'SchemaError'].includes(error.name)) throw error
     console.warn(`[nuxt-airplane] Could not open "${options.dbName}" (${error.name}), recreating it. Bump the store version to migrate instead.`)
     await db.delete()
     await db.open()
+  })
+
+  // --------------------------------------------------------------------------
+  // Cache key
+  // --------------------------------------------------------------------------
+
+  /** Deploy key from config plus the documents hash: either changing busts the cache. */
+  const cacheKey = `${options.cacheKey ?? ''}:${options.documentsHash}`
+
+  /** Empties cached data (query rows and your stores) but keeps the outbox. */
+  async function clearCache() {
+    const tables = db.tables.filter(t => !BOOKKEEPING_TABLES.has(t.name))
+    await db.transaction('rw', tables, async () => {
+      for (const table of tables) await table.clear()
+    })
+  }
+
+  /**
+   * Resolves once the cache is known to belong to the current key. Writes
+   * wait for it so a response stored by an old deploy's key is never mixed
+   * with data stored under the new one.
+   */
+  const ready = opened.then(async () => {
+    const stored = (await db.meta.get('cacheKey'))?.value
+    if (stored !== undefined && stored !== cacheKey) {
+      if (import.meta.dev) console.info(`[nuxt-airplane] Cache key changed, clearing cached data (outbox kept).`)
+      await clearCache()
+    }
+    if (stored !== cacheKey) await db.meta.put({ key: 'cacheKey', value: cacheKey })
   })
 
   const state = reactive({
@@ -161,6 +192,7 @@ export function createAirplaneClient(options: AirplaneClientOptions) {
   }
 
   async function fetchQuery<T>(name: string, variables: unknown): Promise<T> {
+    await ready
     const data = await request<T>(name, variables)
     await storeResponse(name, variables, data)
     await rebasePending()
@@ -319,6 +351,7 @@ export function createAirplaneClient(options: AirplaneClientOptions) {
 
   async function enqueue(name: string, variables: unknown) {
     if (document(name).kind !== 'mutation') throw new Error(`[nuxt-airplane] "${name}" is not a mutation`)
+    await ready
     const description = await describeMutation(name, variables)
     const id = await db.mutations.add({ document: name, variables, description, status: 'pending', createdAt: Date.now() } as MutationRow)
     const row = (await db.mutations.get(id))!
@@ -369,6 +402,7 @@ export function createAirplaneClient(options: AirplaneClientOptions) {
   }
 
   async function runSync() {
+    await ready
     if (!state.online) return
     const queue = await db.mutations.where('status').equals('pending').sortBy('createdAt')
     if (!queue.length) return
@@ -416,6 +450,7 @@ export function createAirplaneClient(options: AirplaneClientOptions) {
     await db.transaction('rw', db.tables, async () => {
       for (const table of db.tables) await table.clear()
     })
+    await db.meta.put({ key: 'cacheKey', value: cacheKey })
   }
 
   // Attempt to drain anything left over from a previous session.
@@ -437,6 +472,9 @@ export function createAirplaneClient(options: AirplaneClientOptions) {
     sync,
     goOffline,
     goOnline,
+    cacheKey,
+    ready,
     clear,
+    clearCache,
   }
 }

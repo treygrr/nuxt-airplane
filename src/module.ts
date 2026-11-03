@@ -9,6 +9,7 @@ import {
   updateTemplates,
   useLogger,
 } from '@nuxt/kit'
+import { hash } from 'ohash'
 import { glob } from 'tinyglobby'
 import { generateTypes, loadDocuments, loadSchema, type LoadedDocuments } from './codegen'
 
@@ -26,6 +27,13 @@ export interface ModuleOptions {
   handlersDir: string
   /** Name of the IndexedDB database. */
   dbName: string
+  /**
+   * Changes to this value wipe the local cache on the next load (the outbox is
+   * kept). Set it per deploy, e.g. a git SHA or build id. A hash of the GraphQL
+   * documents is always mixed in, so editing a query busts the cache on its own.
+   * Overridable at runtime with `NUXT_PUBLIC_AIRPLANE_CACHE_KEY`.
+   */
+  cacheKey?: string
   /** Extra options passed to the `typescript` / `typescript-operations` codegen plugins. */
   codegen: Record<string, unknown>
 }
@@ -51,6 +59,7 @@ export default defineNuxtModule<ModuleOptions>({
     nuxt.options.runtimeConfig.public.airplane = {
       endpoint: options.endpoint,
       dbName: options.dbName,
+      cacheKey: options.cacheKey ?? '',
     }
 
     nuxt.options.build.transpile.push(resolver.resolve('./runtime'))
@@ -96,7 +105,12 @@ export default defineNuxtModule<ModuleOptions>({
     const documentsTemplate = addTemplate({
       filename: 'nuxt-airplane/documents.mjs',
       write: true,
-      getContents: () => `export const documents = ${JSON.stringify(docs.operations, null, 2)}\n`,
+      getContents: () => [
+        `export const documents = ${JSON.stringify(docs.operations, null, 2)}`,
+        // Part of the cache key: any change to an operation invalidates cached responses.
+        `export const documentsHash = ${JSON.stringify(hash(Object.values(docs.operations).map(op => op.source)))}`,
+        '',
+      ].join('\n'),
     })
 
     const handlersTemplate = addTemplate({

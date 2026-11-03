@@ -180,6 +180,7 @@ function operationMap(ops: OperationDocument[], kind: OperationDocument['kind'],
 const virtualModules = `
 declare module '#nuxt-airplane/documents' {
   export const documents: Record<string, { name: string, kind: 'query' | 'mutation' | 'subscription', source: string }>
+  export const documentsHash: string
 }
 declare module '#nuxt-airplane/handlers' {
   export const handlers: unknown[]
