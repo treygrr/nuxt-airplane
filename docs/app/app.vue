@@ -1,5 +1,8 @@
 <script setup lang="ts">
+import { withBase } from 'ufo'
+
 const { seo } = useAppConfig()
+const { app } = useRuntimeConfig()
 
 const { data: navigation } = await useAsyncData('navigation', () => queryCollectionNavigation('docs'))
 const { data: files } = useLazyAsyncData('search', () => queryCollectionSearchSections('docs'), {
@@ -11,7 +14,9 @@ useHead({
     { name: 'viewport', content: 'width=device-width, initial-scale=1' }
   ],
   link: [
-    { rel: 'icon', href: '/favicon.ico' }
+    { rel: 'icon', href: withBase('/favicon.ico', app.baseURL), sizes: '48x48' },
+    { rel: 'icon', type: 'image/png', href: withBase('/logo.png', app.baseURL), sizes: '512x512' },
+    { rel: 'apple-touch-icon', href: withBase('/logo.png', app.baseURL) }
   ],
   htmlAttrs: {
     lang: 'en'
