@@ -95,6 +95,10 @@ export function createAirplaneClient(options: AirplaneClientOptions) {
       await clearCache()
     }
     if (stored !== cacheKey) await db.meta.put({ key: 'cacheKey', value: cacheKey })
+    // A tab closed mid-sync leaves rows marked `syncing`; they were never
+    // confirmed, so they go back in the queue. (Sends are idempotent from the
+    // outbox's point of view only if the API is; see the docs on retries.)
+    await db.mutations.where('status').equals('syncing').modify({ status: 'pending' })
   })
 
   const state = reactive({
@@ -177,11 +181,14 @@ export function createAirplaneClient(options: AirplaneClientOptions) {
       headers: await requestHeaders(ctx),
       credentials: options.request.credentials,
       body: JSON.stringify({ query: doc.source, variables: variables ?? undefined }),
+      signal: AbortSignal.timeout(options.request.timeout ?? 30_000),
     })
     await options.request.onResponse?.(res, ctx)
     const body = await res.json().catch(() => ({})) as GraphQLResponse<T>
     if (body.errors?.length) throw new GraphQLRequestError(body.errors)
     if (!res.ok) throw new Error(`[nuxt-airplane] ${res.status} ${res.statusText}`)
+    // A 200 without `data` (proxy page, empty body) must not end up in the cache.
+    if (body.data == null) throw new Error('[nuxt-airplane] Response has no data')
     return body.data as T
   }
 

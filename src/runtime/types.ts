@@ -196,6 +196,11 @@ export interface AirplaneRequestOptions {
   credentials?: RequestCredentials
   /** A fetch implementation to use instead of the global one. */
   fetch?: typeof globalThis.fetch
+  /**
+   * Abort a request after this many milliseconds (default 30 000). A request
+   * that never settles would otherwise hold the sync loop for the session.
+   */
+  timeout?: number
   /** Sees every response before it is parsed, e.g. to react to a 401. */
   onResponse?: (response: Response, ctx: AirplaneRequestContext) => unknown
 }

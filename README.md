@@ -152,6 +152,10 @@ const { online, syncing, synced, pending, syncTotal, syncCount, lastError, sync,
 - A network failure stops the batch and keeps everything queued; the next `online` event (or `sync()`) resumes it.
 - `goOffline()` holds the client offline whatever the network says: queries serve the cache only and mutations stay queued. `goOnline()` releases it and syncs. `online` reflects the effective state; `networkOnline` and `forcedOffline` expose the two inputs. Handy for a "work offline" switch or for testing.
 
+## Security
+
+Cached data and the outbox live unencrypted in IndexedDB under your origin: clear them on sign-out with `useAirplane().clear()`, don't queue mutations whose variables you wouldn't store (change-password, card numbers), and render server error messages as text. Credentials are never persisted; `schemaHeaders` never ships. Full notes in the [Security guide](https://treygrr.github.io/nuxt-airplane/guide/security).
+
 ## Development
 
 ```sh
