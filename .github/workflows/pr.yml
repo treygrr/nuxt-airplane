@@ -163,7 +163,9 @@ jobs:
       - run: npm ci
       - run: npm run dev:prepare
       - run: npm run prepack
-      - run: npx pkg-pr-new publish --compact --comment=update
+      # The playground doubles as the "Open in StackBlitz" template, with the
+      # PR build of the module swapped in for its dependency.
+      - run: npx pkg-pr-new publish --compact --comment=update --template ./playground
 
   # The docs deploy from main; make sure a docs PR still builds, and keep the
   # static output as an artifact for a local preview.
