@@ -216,8 +216,8 @@ jobs:
     steps:
       - uses: actions/first-interaction@v3
         with:
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
-          pr-message: |
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          pr_message: |
             Thanks for your first pull request to nuxt-airplane! 🛫
 
             A maintainer will take a look within a few days. In the meantime the checks above run lint, tests and type checks, verify the PR title is a Conventional Commit, review new dependencies and build the package. If you haven't yet, the [pull request guidelines](https://treygrr.github.io/nuxt-airplane/contributing/pull-requests) list what a PR needs (tests, docs, playground) and how review works.
