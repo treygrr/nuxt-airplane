@@ -79,6 +79,8 @@ export function createAirplaneClient(options: AirplaneClientOptions) {
     syncCount: 0,
     /** Current pending list could not be sent because of a network error */
     lastError: null as string | null,
+    /** Paginated queries currently being walked to the end by `prefetch`. */
+    prefetching: 0,
   })
 
   const synced = computed(() => !state.syncing && state.pending.length === 0)
@@ -147,8 +149,8 @@ export function createAirplaneClient(options: AirplaneClientOptions) {
    * there is one, as a cached blob otherwise. Pending mutations are then
    * re-applied so the fresh server state does not wipe local changes.
    */
-  async function fetchQuery<T>(name: string, variables: unknown): Promise<T> {
-    const data = await request<T>(name, variables)
+  /** Writes one response through the `store` handler (or as a blob) plus its metadata row. */
+  async function storeResponse(name: string, variables: unknown, data: unknown) {
     const h = queryHandler(name)
     const row = { key: queryKey(name, variables), document: name, variables, updatedAt: Date.now() }
     await db.transaction('rw', db.tables, async () => {
@@ -156,8 +158,49 @@ export function createAirplaneClient(options: AirplaneClientOptions) {
       // With a `read` handler the row only carries metadata.
       await db.queries.put({ ...row, data: h?.read ? null : data })
     })
+  }
+
+  async function fetchQuery<T>(name: string, variables: unknown): Promise<T> {
+    const data = await request<T>(name, variables)
+    await storeResponse(name, variables, data)
     await rebasePending()
+    if (queryHandler(name)?.prefetch) void prefetch(name, variables, data)
     return data
+  }
+
+  /** Documents whose remaining pages are being fetched right now. */
+  const prefetching = new Set<string>()
+
+  /**
+   * Follows `prefetch.next` from the page just fetched until it returns
+   * nothing, storing every page so the whole set is available offline.
+   */
+  async function prefetch(name: string, variables: unknown, data: unknown) {
+    const p = queryHandler(name)?.prefetch
+    if (!p || prefetching.has(name) || (p.when && !p.when())) return
+    prefetching.add(name)
+    state.prefetching++
+    let pages = 0
+    try {
+      let vars = variables
+      let page = data
+      while (state.online && pages < (p.maxPages ?? 1000)) {
+        const next = p.next(page as never, vars as never)
+        if (!next) break
+        vars = next
+        page = await request(name, vars)
+        await storeResponse(name, vars, page)
+        pages++
+      }
+    }
+    catch (error) {
+      if (import.meta.dev) console.warn(`[nuxt-airplane] Prefetch of "${name}" stopped:`, error)
+    }
+    finally {
+      prefetching.delete(name)
+      state.prefetching--
+    }
+    if (pages) await rebasePending()
   }
 
   function watchQuery(name: string, variables: unknown) {
@@ -385,6 +428,7 @@ export function createAirplaneClient(options: AirplaneClientOptions) {
     documents,
     active,
     fetchQuery,
+    prefetch,
     watchQuery,
     refetchActive,
     enqueue,

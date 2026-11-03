@@ -4,6 +4,13 @@
 // local data has at that offset, and `totalPages` reflects local data.
 
 export default defineQueryHandler('ItemsPage', {
+  // Numbered pages prefetch the same way: page + 1 until the last one.
+  prefetch: {
+    next: (data, variables) => data.itemsPage.page < data.itemsPage.totalPages
+      ? { ...variables, page: data.itemsPage.page + 1 }
+      : null,
+  },
+
   // A page is a subset: upsert only.
   store: ({ db }, data) => db.items.bulkPut(data.itemsPage.items),
 

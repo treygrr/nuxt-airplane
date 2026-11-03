@@ -13,6 +13,14 @@ const decodeCursor = (cursor: string) => {
 const compareItems = (a: ItemRow, b: ItemRow) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id)
 
 export default defineQueryHandler('SearchItems', {
+  // Once any page is fetched, keep following `endCursor` in the background so
+  // the whole result set is cached for offline use.
+  prefetch: {
+    next: (data, variables) => data.searchItems.pageInfo.hasNextPage
+      ? { ...variables, after: data.searchItems.pageInfo.endCursor }
+      : null,
+  },
+
   // A page is a subset of a subset: upsert only, never delete.
   store: ({ db }, data) => db.items.bulkPut(data.searchItems.edges.map(e => e.node)),
 

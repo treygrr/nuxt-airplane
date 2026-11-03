@@ -135,7 +135,22 @@ export interface QueryHandlerContext<V = unknown> {
   variables: V
 }
 
+/**
+ * Walk a paginated query to the end after any page of it is fetched, so the
+ * whole set is available offline.
+ */
+export interface QueryPrefetch<N extends QueryName = QueryName> {
+  /** Variables of the page after `data`, or `null` / `undefined` when there is none. */
+  next: (data: QueryResult<N>, variables: QueryVariables<N>) => QueryVariables<N> | null | undefined
+  /** Safety cap on pages fetched per run. Default 1000. */
+  maxPages?: number
+  /** Skip the run when this returns `false`: metered connection, feature flag, user setting… */
+  when?: () => boolean
+}
+
 export interface QueryHandler<N extends QueryName = QueryName> {
+  /** Fetch every following page in the background once a page of this query is fetched. */
+  prefetch?: QueryPrefetch<N>
   /** Writes a fresh response into your own tables. Runs inside a Dexie transaction. */
   store?: (ctx: QueryHandlerContext<QueryVariables<N>>, data: QueryResult<N>) => unknown
   /**

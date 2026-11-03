@@ -21,6 +21,8 @@ export interface UseSyncReturn {
   syncCount: Ref<number>
   /** Message of the network error that stopped the last sync, if any. */
   lastError: Ref<string | null>
+  /** Paginated queries currently being fetched to the end for offline use. */
+  prefetching: Ref<number>
   /** Send the queue now. Does nothing while offline. */
   sync: () => Promise<void>
   /** Undo a queued mutation and remove it from the queue. */
@@ -47,6 +49,7 @@ export function useSync(): UseSyncReturn {
       syncTotal: computed(() => 0),
       syncCount: computed(() => 0),
       lastError: computed(() => null),
+      prefetching: computed(() => 0),
       sync: off,
       rollback: off,
       retry: off,
@@ -65,6 +68,7 @@ export function useSync(): UseSyncReturn {
     syncTotal: toRef(state, 'syncTotal'),
     syncCount: toRef(state, 'syncCount'),
     lastError: toRef(state, 'lastError'),
+    prefetching: toRef(state, 'prefetching'),
     sync: client.sync,
     rollback: client.rollback,
     retry: client.retry,

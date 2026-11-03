@@ -71,6 +71,7 @@ function summarize(m: { document: string, variables: unknown }) {
         v-if="sync.lastError.value"
         class="error"
       >{{ sync.lastError.value }}</span>
+      <span v-if="sync.prefetching.value">· caching pages for offline…</span>
       <button
         v-if="sync.forcedOffline.value"
         class="force"
