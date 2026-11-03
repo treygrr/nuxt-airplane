@@ -85,7 +85,8 @@ function summarize(m: { document: string, variables: unknown }) {
           :key="m.id"
           :class="m.status"
         >
-          <code>{{ summarize(m) }}</code>
+          <span class="description">{{ m.description }}</span>
+          <code :title="summarize(m)">{{ m.document }}</code>
           <em>{{ m.status }}</em>
           <span
             v-if="m.error"
@@ -224,7 +225,8 @@ td input { width: 70px; }
 .pending { background: #fff; border-radius: 8px; padding: 12px 16px; margin-bottom: 16px; }
 .pending ul { list-style: none; padding: 0; margin: 0; }
 .pending li { display: flex; gap: 8px; align-items: center; padding: 6px 0; border-top: 1px solid #eee; }
-.pending li code { flex: 1; font-size: .85em; overflow-wrap: anywhere; }
+.pending li .description { flex: 1; }
+.pending li code { font-size: .8em; color: #777; }
 .pending li.failed { color: #a33; }
 .error { color: #a33; }
 h1 small { font-size: .5em; color: #777; font-weight: normal; }

@@ -99,6 +99,8 @@ export default defineNuxtModule<ModuleOptions>({
       },
     })
 
+    // Public types (AirplaneDexie, MutationHandler, …) for handler helpers.
+    nuxt.options.alias['#nuxt-airplane'] = resolver.resolve('./runtime/types')
     nuxt.options.alias['#nuxt-airplane/documents'] = documentsTemplate.dst
     nuxt.options.alias['#nuxt-airplane/handlers'] = handlersTemplate.dst
 

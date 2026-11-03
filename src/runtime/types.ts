@@ -69,6 +69,8 @@ export interface MutationRow {
   variables: unknown
   status: MutationStatus
   createdAt: number
+  /** Human-readable summary from the handler's `describe`, or the humanized document name. */
+  description: string
   error?: string
   /** Writes made by `apply`, oldest first, used to roll the mutation back. */
   undo?: UndoEntry[]
@@ -104,6 +106,12 @@ export interface HandlerContext<V = unknown> {
 }
 
 export interface MutationHandler<N extends MutationName = MutationName> {
+  /**
+   * A human-readable summary for the pending list, e.g. "Archive North Warehouse".
+   * Computed once when the mutation is queued, before `apply`, so it can read
+   * the data as it was. Defaults to the humanized document name.
+   */
+  describe?: string | ((ctx: HandlerContext<MutationVariables<N>>) => string | Promise<string>)
   /**
    * Runs as soon as the mutation is queued, so the UI reflects it immediately.
    * It runs inside a Dexie transaction and every write is recorded for rollback.

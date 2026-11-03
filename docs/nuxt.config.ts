@@ -15,6 +15,12 @@ export default defineNuxtConfig({
 
   css: ['~/assets/css/main.css'],
 
+  site: {
+    // Origin only; the /nuxt-airplane/ path comes from app.baseURL.
+    url: 'https://treygrr.github.io',
+    name: 'nuxt-airplane'
+  },
+
   content: {
     build: {
       markdown: {
@@ -30,12 +36,6 @@ export default defineNuxtConfig({
 
   experimental: {
     asyncContext: true
-  },
-
-  site: {
-    // Origin only; the /nuxt-airplane/ path comes from app.baseURL.
-    url: 'https://treygrr.github.io',
-    name: 'nuxt-airplane'
   },
 
   compatibilityDate: '2026-06-30',

@@ -73,6 +73,8 @@ export default defineMutationHandlers({
         const site = data.sites.find(s => s.id === variables.id)
         if (site) site.name = variables.name
       }),
+    // Optional: summary for the pending list, computed before `apply`.
+    describe: ({ variables }) => `Rename site to ${variables.name}`,
     // Optional: merge the server's response once it has been sent.
     reconcile: ({ cache, variables }, result) => { /* ... */ },
     // Optional: undo `apply`. When omitted, the rows `apply` touched are
@@ -120,7 +122,7 @@ export default defineMutationHandlers({
 const { online, syncing, synced, pending, syncTotal, syncCount, lastError, sync, rollback, retry, goOffline, goOnline } = useSync()
 ```
 
-- `pending` lists the queued mutations (document name, variables, status) oldest first.
+- `pending` lists the queued mutations oldest first, each with a human-readable `description` (from the handler's `describe` hook, or the humanized document name), its variables and status.
 - `rollback(id)` undoes a queued mutation locally and drops it from the queue. Mutations queued after it are re-applied on top of the restored data.
 - A mutation the server rejects is marked `failed` and left in the queue; `retry(id)` or `rollback(id)` it.
 - A network failure stops the batch and keeps everything queued; the next `online` event (or `sync()`) resumes it.

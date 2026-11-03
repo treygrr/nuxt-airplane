@@ -33,6 +33,12 @@ export interface QuerySnapshot {
   cached: boolean
 }
 
+/** `ArchiveSite` → `Archive site`, for mutations without a `describe`. */
+export function humanize(name: string) {
+  const words = name.replace(/[_-]+/g, ' ').replace(/([a-z0-9])([A-Z])/g, '$1 $2').toLowerCase()
+  return words.charAt(0).toUpperCase() + words.slice(1)
+}
+
 /** `undefined`, `null` and `{}` all mean "no variables" and share a key. */
 export function queryKey(name: string, variables: unknown) {
   const normalized = variables && typeof variables === 'object' && Object.keys(variables).length ? variables : null
@@ -253,9 +259,17 @@ export function createAirplaneClient(options: AirplaneClientOptions) {
     }
   }
 
+  async function describeMutation(name: string, variables: unknown) {
+    const { describe } = mutationHandler(name) ?? {}
+    if (typeof describe === 'string') return describe
+    if (describe) return describe({ db, cache: createCacheApi(), variables: variables as never })
+    return humanize(name)
+  }
+
   async function enqueue(name: string, variables: unknown) {
     if (document(name).kind !== 'mutation') throw new Error(`[nuxt-airplane] "${name}" is not a mutation`)
-    const id = await db.mutations.add({ document: name, variables, status: 'pending', createdAt: Date.now() } as MutationRow)
+    const description = await describeMutation(name, variables)
+    const id = await db.mutations.add({ document: name, variables, description, status: 'pending', createdAt: Date.now() } as MutationRow)
     const row = (await db.mutations.get(id))!
     try {
       await applyMutation(row)
