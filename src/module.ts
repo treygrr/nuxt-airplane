@@ -94,8 +94,8 @@ export default defineNuxtModule<ModuleOptions>({
       getContents: async () => {
         const files = await handlerFiles()
         const imports = files.map((file, i) => `import h${i} from ${JSON.stringify(file)}`)
-        const spread = files.map((_, i) => `h${i}`).join(', ')
-        return `${imports.join('\n')}\nexport const handlers = Object.assign({}, ${spread})\n`
+        const list = files.map((_, i) => `h${i}`).join(', ')
+        return `${imports.join('\n')}\nexport const handlers = [${list}]\n`
       },
     })
 

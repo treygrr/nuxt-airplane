@@ -60,12 +60,12 @@ export function useQuery<N extends QueryName>(
   let stopWatch: (() => void) | undefined
   function subscribe() {
     stopWatch?.()
-    const { row, unsubscribe } = client!.watchQuery(name, vars.value)
-    const stop = watch(row, (r) => {
-      data.value = (r?.data as QueryResult<N>) ?? null
-      updatedAt.value = r?.updatedAt ?? null
+    const { snapshot, unsubscribe } = client!.watchQuery(name, vars.value)
+    const stop = watch(snapshot, (s) => {
+      data.value = (s.data as QueryResult<N>) ?? null
+      updatedAt.value = s.updatedAt
       // Something is cached, so don't keep the page waiting on the network.
-      if (r) loading.value = false
+      if (s.cached) loading.value = false
     }, { immediate: true })
     stopWatch = () => {
       stop()

@@ -182,7 +182,7 @@ declare module '#nuxt-offline/documents' {
   export const documents: Record<string, { name: string, kind: 'query' | 'mutation' | 'subscription', source: string }>
 }
 declare module '#nuxt-offline/handlers' {
-  export const handlers: Record<string, unknown>
+  export const handlers: unknown[]
 }
 `
 

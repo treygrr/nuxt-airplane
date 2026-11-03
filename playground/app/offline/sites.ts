@@ -1,68 +1,44 @@
-// How each queued mutation shows up in the local cache before the server
-// confirms it. `revert` is omitted everywhere: the module snapshots the rows
-// `apply` touches and restores them on rollback.
-
-type Sites = NuxtOfflineQueries['GetSites']['result']['sites']
-type Site = Sites[number]
-
-function patchSite(sites: Sites, id: string, patch: (site: Site) => void) {
-  const site = sites.find(s => s.id === id)
-  if (site) patch(site)
-}
+// Each mutation is a plain write to the tables from `stores.ts`. Every write
+// made in `apply` is recorded, so rollback needs no `revert` here.
 
 export default defineMutationHandlers({
   ArchiveSite: {
-    apply: ({ cache, variables }) =>
-      cache.update('GetSites', data => patchSite(data.sites, variables.id, s => (s.archived = true))),
+    apply: ({ db, variables }) => db.sites.update(variables.id, { archived: true }),
     refetch: ['GetSites'],
   },
 
   UnarchiveSite: {
-    apply: ({ cache, variables }) =>
-      cache.update('GetSites', data => patchSite(data.sites, variables.id, s => (s.archived = false))),
+    apply: ({ db, variables }) => db.sites.update(variables.id, { archived: false }),
     refetch: ['GetSites'],
   },
 
   RenameSite: {
-    apply: ({ cache, variables }) =>
-      cache.update('GetSites', data => patchSite(data.sites, variables.id, s => (s.name = variables.name))),
+    apply: ({ db, variables }) => db.sites.update(variables.id, { name: variables.name }),
     refetch: ['GetSites'],
   },
 
   DeleteSite: {
-    apply: ({ cache, variables }) =>
-      cache.update('GetSites', data => ({ ...data, sites: data.sites.filter(s => s.id !== variables.id) })),
-    refetch: ['GetSites'],
-  },
-
-  AddSiteItem: {
-    async apply({ cache, variables }) {
-      // The item's name lives in the items catalog query, so look it up there.
-      const items = await cache.get('GetItems', {})
-      const name = items?.items.find(i => i.id === variables.itemId)?.name ?? variables.itemId
-      await cache.update('GetSites', data => patchSite(data.sites, variables.siteId, (site) => {
-        if (!site.items.some(i => i.id === variables.itemId)) {
-          site.items.push({ id: variables.itemId, name, onHand: variables.onHand ?? 0 })
-        }
-      }))
+    async apply({ db, variables }) {
+      await db.sites.delete(variables.id)
+      await db.siteItems.where('siteId').equals(variables.id).delete()
     },
     refetch: ['GetSites'],
   },
 
+  AddSiteItem: {
+    apply: ({ db, variables }) =>
+      db.siteItems.put({ siteId: variables.siteId, itemId: variables.itemId, onHand: variables.onHand ?? 0 }),
+    refetch: ['GetSites'],
+  },
+
   RemoveSiteItem: {
-    apply: ({ cache, variables }) =>
-      cache.update('GetSites', data => patchSite(data.sites, variables.siteId, (site) => {
-        site.items = site.items.filter(i => i.id !== variables.itemId)
-      })),
+    apply: ({ db, variables }) => db.siteItems.delete([variables.siteId, variables.itemId]),
     refetch: ['GetSites'],
   },
 
   UpdateSiteItemOnHand: {
-    apply: ({ cache, variables }) =>
-      cache.update('GetSites', data => patchSite(data.sites, variables.siteId, (site) => {
-        const item = site.items.find(i => i.id === variables.itemId)
-        if (item) item.onHand = variables.onHand
-      })),
+    apply: ({ db, variables }) =>
+      db.siteItems.update([variables.siteId, variables.itemId], { onHand: variables.onHand }),
     refetch: ['GetSites'],
   },
 })

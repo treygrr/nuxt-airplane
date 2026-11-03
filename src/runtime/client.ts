@@ -1,7 +1,7 @@
 import { liveQuery } from 'dexie'
 import { hash } from 'ohash'
 import { reactive, computed, shallowRef, readonly } from 'vue'
-import { createDb } from './db'
+import { applyUndo, createDb, withUndoLog } from './db'
 import {
   GraphQLRequestError,
   type CacheApi,
@@ -9,17 +9,28 @@ import {
   type MutationHandlers,
   type MutationHandler,
   type MutationRow,
-  type OfflineDexie,
   type OfflineRuntimeConfig,
+  type OfflineStores,
   type OperationDocument,
+  type QueryHandler,
+  type QueryHandlers,
   type QueryName,
-  type QueryRow,
   type Updater,
 } from './types'
 
 export interface OfflineClientOptions extends OfflineRuntimeConfig {
   documents: Record<string, OperationDocument>
-  handlers: MutationHandlers
+  mutationHandlers: MutationHandlers
+  queryHandlers: QueryHandlers
+  stores: OfflineStores
+}
+
+/** What `useQuery` observes: the live data plus the cache row's metadata. */
+export interface QuerySnapshot {
+  data: unknown
+  updatedAt: number | null
+  /** A response for this query has been stored at some point. */
+  cached: boolean
 }
 
 /** `undefined`, `null` and `{}` all mean "no variables" and share a key. */
@@ -31,8 +42,18 @@ export function queryKey(name: string, variables: unknown) {
 export type OfflineClient = ReturnType<typeof createOfflineClient>
 
 export function createOfflineClient(options: OfflineClientOptions) {
-  const db = createDb(options.dbName)
-  const { documents, handlers } = options
+  const db = createDb(options.dbName, options.stores.stores, options.stores.version)
+  const { documents, mutationHandlers, queryHandlers } = options
+
+  // A schema that no longer matches what is on disk (lowered version, changed
+  // primary key) cannot be opened. This is a cache, so start over rather than
+  // leave the app without storage.
+  db.open().catch(async (error: Error) => {
+    if (!['VersionError', 'UpgradeError', 'SchemaError'].includes(error.name)) throw error
+    console.warn(`[nuxt-offline] Could not open "${options.dbName}" (${error.name}), recreating it. Bump the store version to migrate instead.`)
+    await db.delete()
+    await db.open()
+  })
 
   const state = reactive({
     /** What the browser reports. */
@@ -108,26 +129,48 @@ export function createOfflineClient(options: OfflineClientOptions) {
   // Queries
   // --------------------------------------------------------------------------
 
+  function queryHandler(name: string): QueryHandler | undefined {
+    return (queryHandlers as Record<string, QueryHandler | undefined>)[name]
+  }
+
   /** Refresh callbacks of the queries currently mounted somewhere. */
   const active = new Map<string, () => Promise<void>>()
 
+  /**
+   * Fetches a query and stores the response: through the `store` handler when
+   * there is one, as a cached blob otherwise. Pending mutations are then
+   * re-applied so the fresh server state does not wipe local changes.
+   */
   async function fetchQuery<T>(name: string, variables: unknown): Promise<T> {
     const data = await request<T>(name, variables)
-    await db.queries.put({ key: queryKey(name, variables), document: name, variables, data, updatedAt: Date.now() })
+    const h = queryHandler(name)
+    const row = { key: queryKey(name, variables), document: name, variables, updatedAt: Date.now() }
+    await db.transaction('rw', db.tables, async () => {
+      await h?.store?.({ db, variables: variables as never }, data as never)
+      // With a `read` handler the row only carries metadata.
+      await db.queries.put({ ...row, data: h?.read ? null : data })
+    })
+    await rebasePending()
     return data
   }
 
   function watchQuery(name: string, variables: unknown) {
-    const row = shallowRef<QueryRow | undefined>()
-    const subscription = liveQuery(() => db.queries.get(queryKey(name, variables)))
-      .subscribe({ next: r => (row.value = r) })
-    return { row: readonly(row), unsubscribe: () => subscription.unsubscribe() }
+    const snapshot = shallowRef<QuerySnapshot>({ data: null, updatedAt: null, cached: false })
+    const h = queryHandler(name)
+    const key = queryKey(name, variables)
+    const subscription = liveQuery(async (): Promise<QuerySnapshot> => {
+      const row = await db.queries.get(key)
+      const data = h?.read ? await h.read({ db, variables: variables as never }) : row?.data
+      return { data: data ?? null, updatedAt: row?.updatedAt ?? null, cached: !!row }
+    }).subscribe({ next: s => (snapshot.value = s) })
+    return { snapshot: readonly(snapshot), unsubscribe: () => subscription.unsubscribe() }
   }
 
-  async function refetchActive(only?: QueryName[]) {
+  async function refetchActive(only?: Iterable<QueryName>) {
+    const names = only && [...only]
     await Promise.allSettled(
       [...active.entries()]
-        .filter(([key]) => !only || only.some(name => key.startsWith(`${name}:`)))
+        .filter(([key]) => !names || names.some(name => key.startsWith(`${name}:`)))
         .map(([, refresh]) => refresh()),
     )
   }
@@ -137,98 +180,90 @@ export function createOfflineClient(options: OfflineClientOptions) {
   // --------------------------------------------------------------------------
 
   /**
-   * Builds the cache helper for one handler run. Every row it touches is
-   * recorded (as it was before the first touch) so the change can be undone.
+   * Helpers over the blob cache. Writes are recorded by the undo log like any
+   * other, so nothing needs tracking here. `invalidate` only collects names:
+   * refetching from inside the transaction would commit it early.
    */
-  function createCacheApi(touched?: Map<string, QueryRow | undefined>): CacheApi {
-    async function remember(rows: (QueryRow | undefined)[], keys: string[]) {
-      if (!touched) return
-      keys.forEach((key, i) => {
-        if (!touched.has(key)) touched.set(key, rows[i] ? structuredClone(rows[i]) : undefined)
-      })
-    }
-
-    async function updateRows(rows: QueryRow[], updater: Updater<unknown>) {
-      await remember(rows, rows.map(r => r.key))
-      const next = rows.map((row) => {
-        const data = structuredClone(row.data)
-        const returned = updater(data, row.variables)
-        return { ...row, data: returned === undefined ? data : returned }
-      })
+  function createCacheApi(invalidated?: Set<QueryName>): CacheApi {
+    async function updateRows(name: string, filter: (key: string) => boolean, updater: Updater<unknown>) {
+      const rows = (await db.queries.where('document').equals(name).toArray()).filter(r => filter(r.key))
+      const next = rows
+        .filter(row => row.data !== null && row.data !== undefined)
+        .map((row) => {
+          const data = structuredClone(row.data)
+          const returned = updater(data, row.variables)
+          return { ...row, data: returned === undefined ? data : returned }
+        })
       await db.queries.bulkPut(next)
     }
 
     return {
       async update(name: string, variablesOrUpdater: unknown, maybeUpdater?: Updater<unknown>) {
         if (typeof variablesOrUpdater === 'function') {
-          const rows = await db.queries.where('document').equals(name).toArray()
-          await updateRows(rows, variablesOrUpdater as Updater<unknown>)
+          await updateRows(name, () => true, variablesOrUpdater as Updater<unknown>)
         }
         else {
-          const row = await db.queries.get(queryKey(name, variablesOrUpdater))
-          if (row) await updateRows([row], maybeUpdater!)
+          const key = queryKey(name, variablesOrUpdater)
+          await updateRows(name, k => k === key, maybeUpdater!)
         }
       },
       async get(name: string, variables?: unknown) {
+        const h = queryHandler(name)
+        if (h?.read) return (await h.read({ db, variables: variables as never })) ?? undefined
         return (await db.queries.get(queryKey(name, variables)))?.data as never
       },
       async set(name: string, variables: unknown, data: unknown) {
-        const key = queryKey(name, variables)
-        await remember([await db.queries.get(key)], [key])
-        await db.queries.put({ key, document: name, variables, data, updatedAt: Date.now() })
+        await db.queries.put({ key: queryKey(name, variables), document: name, variables, data, updatedAt: Date.now() })
       },
       async invalidate(name: string) {
-        const rows = await db.queries.where('document').equals(name).toArray()
-        await remember(rows, rows.map(r => r.key))
-        await db.queries.bulkDelete(rows.map(r => r.key))
-        await refetchActive([name as QueryName])
+        await db.queries.where('document').equals(name).delete()
+        invalidated?.add(name as QueryName)
       },
     } as CacheApi
-  }
-
-  /** Put rows back as they were. Rows that did not exist (`data: undefined`) are deleted. */
-  async function restore(snapshot: Map<string, QueryRow | undefined> | QueryRow[]) {
-    const entries = snapshot instanceof Map
-      ? [...snapshot.entries()]
-      : snapshot.map(r => [r.key, r.data === undefined ? undefined : r] as const)
-    await db.transaction('rw', db.queries, async () => {
-      for (const [key, row] of entries) {
-        if (row) await db.queries.put(row)
-        else await db.queries.delete(key)
-      }
-    })
   }
 
   // --------------------------------------------------------------------------
   // Mutations / outbox
   // --------------------------------------------------------------------------
 
-  function handler(name: string): MutationHandler | undefined {
-    return (handlers as Record<string, MutationHandler | undefined>)[name]
+  function mutationHandler(name: string): MutationHandler | undefined {
+    return (mutationHandlers as Record<string, MutationHandler | undefined>)[name]
   }
 
-  /** Runs `apply` for a queued mutation and stores the snapshot it needs to be undone. */
-  async function applyMutation(row: MutationRow) {
-    const h = handler(row.document)
+  /**
+   * Runs `apply` for a queued mutation inside an undo-logged transaction and
+   * stores the log on the row. `rebase` skips the refetches `invalidate`
+   * asked for, since a rebase is itself the result of a fetch.
+   */
+  async function applyMutation(row: MutationRow, { rebase = false } = {}) {
+    const h = mutationHandler(row.document)
     if (!h?.apply) return
-    const touched = new Map<string, QueryRow | undefined>()
-    try {
-      await h.apply({ db, cache: createCacheApi(touched), variables: row.variables as never })
+    const invalidated = new Set<QueryName>()
+    const { undo } = await withUndoLog(db, () =>
+      h.apply!({ db, cache: createCacheApi(invalidated), variables: row.variables as never }))
+    await db.mutations.update(row.id, { undo })
+    if (!rebase && invalidated.size) await refetchActive(invalidated)
+  }
+
+  /** Re-applies every queued mutation on top of freshly stored server data. */
+  async function rebasePending() {
+    const queue = await db.mutations.orderBy('createdAt').toArray()
+    for (const row of queue) {
+      if (row.status !== 'syncing') await applyMutation(row, { rebase: true })
     }
-    catch (error) {
-      await restore(touched)
-      throw error
-    }
-    // Rows that were absent are kept too, with their key, so they can be deleted again.
-    const snapshot = [...touched.entries()].map(([key, r]) => r ?? { key, document: row.document, variables: null, data: undefined, updatedAt: 0 })
-    await db.mutations.update(row.id, { snapshot })
   }
 
   async function enqueue(name: string, variables: unknown) {
     if (document(name).kind !== 'mutation') throw new Error(`[nuxt-offline] "${name}" is not a mutation`)
     const id = await db.mutations.add({ document: name, variables, status: 'pending', createdAt: Date.now() } as MutationRow)
     const row = (await db.mutations.get(id))!
-    await applyMutation(row)
+    try {
+      await applyMutation(row)
+    }
+    catch (error) {
+      await db.mutations.delete(id)
+      throw error
+    }
     void sync()
     return row
   }
@@ -236,10 +271,8 @@ export function createOfflineClient(options: OfflineClientOptions) {
   /** Undo a queued mutation and drop it from the outbox. */
   async function rollback(id: number) {
     const row = await db.mutations.get(id)
-    if (!row) return
-    const h = handler(row.document)
-    const later = (await db.mutations.where('createdAt').above(row.createdAt).toArray())
-      .filter(m => m.status !== 'syncing')
+    if (!row || row.status === 'syncing') return
+    const h = mutationHandler(row.document)
 
     if (h?.revert) {
       await h.revert({ db, cache: createCacheApi(), variables: row.variables as never })
@@ -247,11 +280,13 @@ export function createOfflineClient(options: OfflineClientOptions) {
       return
     }
 
-    // Snapshot mode: rewind the rows this mutation touched, then replay the
-    // mutations queued after it on top of the restored data.
-    if (row.snapshot) await restore(row.snapshot)
+    // Undo this mutation's writes, then replay the mutations queued after it
+    // so their changes land on the restored data.
+    const later = (await db.mutations.where('createdAt').above(row.createdAt).toArray())
+      .filter(m => m.status !== 'syncing')
+    if (row.undo) await applyUndo(db, row.undo)
     await db.mutations.delete(id)
-    for (const m of later) await applyMutation(m)
+    for (const m of later) await applyMutation(m, { rebase: true })
   }
 
   async function retry(id: number) {
@@ -285,7 +320,7 @@ export function createOfflineClient(options: OfflineClientOptions) {
         await db.mutations.update(row.id, { status: 'syncing' })
         try {
           const result = await request(row.document, row.variables)
-          const h = handler(row.document)
+          const h = mutationHandler(row.document)
           await h?.reconcile?.({ db, cache: createCacheApi(), variables: row.variables as never }, result as never)
           if (h?.refetch) h.refetch.forEach(n => refetch.add(n))
           else refetchAll = true
@@ -308,13 +343,13 @@ export function createOfflineClient(options: OfflineClientOptions) {
     finally {
       state.syncing = false
     }
-    if (state.syncCount) await refetchActive(refetchAll ? undefined : [...refetch])
+    if (state.syncCount) await refetchActive(refetchAll ? undefined : refetch)
   }
 
+  /** Empties every table, including the outbox. */
   async function clear() {
-    await db.transaction('rw', db.queries, db.mutations, async () => {
-      await db.queries.clear()
-      await db.mutations.clear()
+    await db.transaction('rw', db.tables, async () => {
+      for (const table of db.tables) await table.clear()
     })
   }
 
@@ -322,7 +357,7 @@ export function createOfflineClient(options: OfflineClientOptions) {
   void sync()
 
   return {
-    db: db as OfflineDexie,
+    db,
     state,
     synced,
     documents,

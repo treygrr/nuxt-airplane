@@ -1,9 +1,9 @@
-import type { MutationHandlers } from '../types'
+import { HANDLER_KIND, type MutationHandlers } from '../types'
 
 /**
- * Declare how queued mutations touch the local cache. Files under
- * `offline/` that export a handler map are picked up automatically.
+ * Declare how queued mutations touch the local data. Files under the handlers
+ * directory that default-export one of these are picked up automatically.
  */
 export function defineMutationHandlers(handlers: MutationHandlers): MutationHandlers {
-  return handlers
+  return Object.defineProperty(handlers, HANDLER_KIND, { value: 'mutations' })
 }
