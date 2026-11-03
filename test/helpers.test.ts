@@ -26,4 +26,10 @@ describe('humanize', () => {
     expect(humanize('createV2Order')).toBe('Create v2 order')
     expect(humanize('delete_user')).toBe('Delete user')
   })
+
+  it('splits acronyms from the word that follows', () => {
+    expect(humanize('SendHTTPRequest')).toBe('Send http request')
+    expect(humanize('ExportCSVReport')).toBe('Export csv report')
+    expect(humanize('UpdateSKU')).toBe('Update sku')
+  })
 })

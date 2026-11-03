@@ -63,6 +63,11 @@ function summarize(m: { document: string, variables: unknown }) {
 <template>
   <main>
     <header :class="{ offline: !sync.online.value }">
+      <img
+        src="/logo.png"
+        alt="nuxt-airplane"
+        class="logo"
+      >
       <strong>{{ sync.online.value ? 'Online' : 'Offline' }}</strong>
       <span v-if="sync.syncing.value">Syncing {{ sync.syncCount.value }} / {{ sync.syncTotal.value }}…</span>
       <span v-else-if="sync.synced.value">Synced</span>
@@ -299,6 +304,7 @@ body { font-family: system-ui, sans-serif; margin: 0; background: #f6f6f6; color
 main { max-width: 720px; margin: 0 auto; padding: 16px; }
 header { display: flex; gap: 12px; align-items: center; padding: 10px 14px; border-radius: 8px; background: #d9f5e3; margin-bottom: 16px; }
 header.offline { background: #fde7c8; }
+header .logo { width: 28px; height: 28px; }
 header .force { margin-left: auto; }
 article { background: #fff; border-radius: 8px; padding: 12px 16px; margin: 12px 0; box-shadow: 0 1px 2px rgba(0,0,0,.08); }
 article.archived { opacity: .6; }
