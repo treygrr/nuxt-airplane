@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import { joinURL } from 'ufo'
+
 const { data: page } = await useAsyncData('index', () => queryCollection('landing').path('/').first())
 if (!page.value) {
   throw createError({ statusCode: 404, statusMessage: 'Page not found', fatal: true })
@@ -13,7 +15,7 @@ useSeoMeta({
   ogTitle: title,
   description,
   ogDescription: description,
-  ogImage: 'https://ui.nuxt.com/assets/templates/nuxt/docs-light.png'
+  ogImage: joinURL(useSiteConfig().url, useRuntimeConfig().app.baseURL, 'og-image.jpg')
 })
 </script>
 

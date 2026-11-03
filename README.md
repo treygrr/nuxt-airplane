@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="./docs/public/logo.png" width="140" height="140" alt="nuxt-airplane logo">
+</p>
+
 # nuxt-airplane
 
 [![npm version](https://img.shields.io/npm/v/nuxt-airplane?color=00DC82&labelColor=020420)](https://www.npmjs.com/package/nuxt-airplane)
