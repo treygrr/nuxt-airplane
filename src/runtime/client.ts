@@ -40,9 +40,14 @@ export interface QuerySnapshot {
   cached: boolean
 }
 
-/** `ArchiveSite` → `Archive site`, for mutations without a `describe`. */
+/** `ArchiveSite` → `Archive site`, `SendHTTPRequest` → `Send http request`, for mutations without a `describe`. */
 export function humanize(name: string) {
-  const words = name.replace(/[_-]+/g, ' ').replace(/([a-z0-9])([A-Z])/g, '$1 $2').toLowerCase()
+  const words = name
+    .replace(/[_-]+/g, ' ')
+    // Acronym followed by a word: `HTTPRequest` → `HTTP Request`.
+    .replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2')
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .toLowerCase()
   return words.charAt(0).toUpperCase() + words.slice(1)
 }
 
