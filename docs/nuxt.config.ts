@@ -86,6 +86,13 @@ export default defineNuxtConfig({
         contentFilters: [
           { field: 'path', operator: 'LIKE', value: '/api%' }
         ]
+      },
+      {
+        title: 'Contributing',
+        contentCollection: 'docs',
+        contentFilters: [
+          { field: 'path', operator: 'LIKE', value: '/contributing%' }
+        ]
       }
     ]
   },

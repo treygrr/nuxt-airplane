@@ -1,0 +1,13 @@
+type Site {
+  id: ID!
+  name: String!
+  archived: Boolean!
+}
+
+type Query {
+  sites: [Site!]!
+}
+
+type Mutation {
+  archiveSite(id: ID!): Site!
+}

@@ -156,6 +156,10 @@ const { online, syncing, synced, pending, syncTotal, syncCount, lastError, sync,
 
 Cached data and the outbox live unencrypted in IndexedDB under your origin: clear them on sign-out with `useAirplane().clear()`, don't queue mutations whose variables you wouldn't store (change-password, card numbers), and render server error messages as text. Credentials are never persisted; `schemaHeaders` never ships. Full notes in the [Security guide](https://treygrr.github.io/nuxt-airplane/guide/security).
 
+## Contributing
+
+See [CONTRIBUTING.md](./CONTRIBUTING.md) and the [pull request guidelines](https://treygrr.github.io/nuxt-airplane/contributing/pull-requests).
+
 ## Development
 
 ```sh

@@ -102,8 +102,8 @@ export function createAirplaneClient(options: AirplaneClientOptions) {
   })
 
   const state = reactive({
-    /** What the browser reports. */
-    networkOnline: typeof navigator === 'undefined' ? true : navigator.onLine,
+    /** What the browser reports; assumed online where `navigator.onLine` does not exist (Node, some webviews). */
+    networkOnline: typeof navigator === 'object' && typeof navigator.onLine === 'boolean' ? navigator.onLine : true,
     /** Set by `goOffline()`: behave as offline whatever the network says. */
     forcedOffline: false,
     /** Effective state the client acts on. */

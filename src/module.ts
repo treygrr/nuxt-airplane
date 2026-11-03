@@ -1,4 +1,4 @@
-import { basename, dirname, join, sep } from 'node:path'
+import { basename, dirname, join, resolve, sep } from 'node:path'
 import {
   addImportsDir,
   addPlugin,
@@ -137,7 +137,11 @@ export default defineNuxtModule<ModuleOptions>({
     addTypeTemplate({
       filename: 'types/nuxt-airplane.d.ts',
       getContents: async () => {
-        const schema = await loadSchema({ schema: options.schema, endpoint: introspectionUrl ?? '', cacheDir, headers: options.schemaHeaders }, logger)
+        // A relative SDL path is relative to the app, not to wherever the build was started from.
+        const schemaSource = options.schema && !/^https?:\/\//.test(options.schema)
+          ? resolve(nuxt.options.rootDir, options.schema)
+          : options.schema
+        const schema = await loadSchema({ schema: schemaSource, endpoint: introspectionUrl ?? '', cacheDir, headers: options.schemaHeaders }, logger)
         if (!schema) logger.warn('No GraphQL schema available yet, operations are untyped')
         return generateTypes(schema, docs, options.codegen)
       },
