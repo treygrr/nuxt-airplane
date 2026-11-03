@@ -123,7 +123,31 @@ beforeEach(() => {
 })
 afterEach(() => {
   vi.restoreAllMocks()
+  vi.unstubAllGlobals()
 })
+
+/** A minimal Web Locks API: one queue per name, callbacks run one at a time. */
+function fakeLocks() {
+  const tails = new Map<string, Promise<void>>()
+  return {
+    async request(name: string, optionsOrCallback: unknown, maybeCallback?: (lock: { name: string }) => Promise<unknown>) {
+      const callback = (typeof optionsOrCallback === 'function' ? optionsOrCallback : maybeCallback) as (lock: { name: string }) => Promise<unknown>
+      const previous = tails.get(name) ?? Promise.resolve()
+      let release!: () => void
+      const mine = new Promise<void>((resolve) => {
+        release = resolve
+      })
+      tails.set(name, previous.then(() => mine))
+      await previous
+      try {
+        return await callback({ name })
+      }
+      finally {
+        release()
+      }
+    },
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Queries
@@ -282,6 +306,62 @@ describe('mutations', () => {
   it('refuses to enqueue a query document', async () => {
     const client = createClient(server)
     await expect(client.enqueue('GetSites', undefined)).rejects.toThrow(/not a mutation/)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Cross-tab sync lock
+// ---------------------------------------------------------------------------
+
+describe('cross-tab sync lock', () => {
+  it('waits while another tab holds the lock, then sends what is still queued', async () => {
+    const locks = fakeLocks()
+    vi.stubGlobal('navigator', { onLine: true, locks })
+    const dbName = `test-lock-${++n}`
+    // Another tab is mid-sync and holds the lock.
+    let releaseOtherTab!: () => void
+    void locks.request(`nuxt-airplane:sync:${dbName}`, () => new Promise<void>((resolve) => {
+      releaseOtherTab = resolve
+    }))
+
+    const client = createClient(server, { dbName, mutationHandlers: blobHandlers })
+    await client.fetchQuery('GetSites', undefined)
+    const row = await client.enqueue('RenameSite', { id: 's1', name: 'Locked' })
+    await new Promise(r => setTimeout(r, 80))
+    expect(server.mutations()).toHaveLength(0)
+    expect((await client.db.mutations.get(row.id))?.status).toBe('pending')
+
+    releaseOtherTab()
+    await until(async () => (await client.db.mutations.count()) === 0, 'queued mutation to be sent after the lock is released')
+    expect(server.mutations().map(c => c.op)).toEqual(['RenameSite'])
+  })
+
+  it('sends each mutation exactly once when two tabs sync the same outbox', async () => {
+    const locks = fakeLocks()
+    vi.stubGlobal('navigator', { onLine: true, locks })
+    const dbName = `test-tabs-${++n}`
+    const tabA = createClient(server, { dbName, mutationHandlers: blobHandlers })
+    const tabB = createClient(server, { dbName, mutationHandlers: blobHandlers })
+    await tabA.fetchQuery('GetSites', undefined)
+
+    await Promise.all([
+      tabA.enqueue('RenameSite', { id: 's1', name: 'From A' }),
+      tabB.enqueue('ArchiveSite', { id: 's2' }),
+    ])
+    await until(async () => (await tabA.db.mutations.count()) === 0, 'outbox to drain')
+    await Promise.all([tabA.sync(), tabB.sync()])
+
+    expect(server.mutations().map(c => c.op).sort()).toEqual(['ArchiveSite', 'RenameSite'])
+    expect(server.sites).toMatchObject([{ name: 'From A' }, { archived: true }])
+  })
+
+  it('syncs without the Web Locks API', async () => {
+    vi.stubGlobal('navigator', { onLine: true })
+    const client = createClient(server, { mutationHandlers: blobHandlers })
+    await client.fetchQuery('GetSites', undefined)
+    await client.enqueue('ArchiveSite', { id: 's1' })
+    await until(async () => (await client.db.mutations.count()) === 0, 'outbox to drain')
+    expect(server.sites[0]!.archived).toBe(true)
   })
 })
 

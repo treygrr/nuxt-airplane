@@ -154,6 +154,7 @@ const { online, syncing, synced, pending, syncTotal, syncCount, lastError, sync,
 - `rollback(id)` undoes a queued mutation locally and drops it from the queue. Mutations queued after it are re-applied on top of the restored data.
 - A mutation the server rejects is marked `failed` and left in the queue; `retry(id)` or `rollback(id)` it.
 - A network failure stops the batch and keeps everything queued; the next `online` event (or `sync()`) resumes it.
+- Tabs share the database; a Web Lock makes sure only one of them sends the queue at a time.
 - `goOffline()` holds the client offline whatever the network says: queries serve the cache only and mutations stay queued. `goOnline()` releases it and syncs. `online` reflects the effective state; `networkOnline` and `forcedOffline` expose the two inputs. Handy for a "work offline" switch or for testing.
 
 ## Security
