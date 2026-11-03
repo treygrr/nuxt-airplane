@@ -10,6 +10,9 @@ orientation: horizontal
 #top
 :hero-background
 
+#headline
+:hero-logo
+
 #title
 [Airplane mode]{.text-primary} for your GraphQL app.
 
