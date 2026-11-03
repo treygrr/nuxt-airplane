@@ -1,76 +1,8 @@
+// The schema lives in ./schema.graphql (loaded by server/api/graphql.ts) so the
+// module can generate types from the same file without a running server.
 import { GraphQLError } from 'graphql'
 import { catalog, sites } from '../utils/db'
 import type { Site, SiteItem } from '../utils/db'
-
-export const typeDefs = /* GraphQL */ `
-  type Item {
-    id: ID!
-    name: String!
-  }
-
-  type SiteItem {
-    id: ID!
-    name: String!
-    onHand: Int!
-  }
-
-  type Site {
-    id: ID!
-    name: String!
-    archived: Boolean!
-    items: [SiteItem!]!
-  }
-
-  type ItemEdge {
-    cursor: String!
-    node: Item!
-  }
-
-  type PageInfo {
-    hasNextPage: Boolean!
-    hasPreviousPage: Boolean!
-    startCursor: String
-    endCursor: String
-  }
-
-  type ItemConnection {
-    edges: [ItemEdge!]!
-    pageInfo: PageInfo!
-    totalCount: Int!
-  }
-
-  type ItemPage {
-    items: [Item!]!
-    page: Int!
-    pageSize: Int!
-    totalCount: Int!
-    totalPages: Int!
-  }
-
-  type Query {
-    sites(archived: Boolean, search: String): [Site!]!
-    site(id: ID!): Site
-    items: [Item!]!
-    """
-    Items whose name contains the query, sorted by name, paginated per the
-    Relay connection spec (forward only).
-    """
-    searchItems(query: String, first: Int = 20, after: String): ItemConnection!
-    "The same search with classic numbered pages (1-based)."
-    itemsPage(query: String, page: Int = 1, pageSize: Int = 20): ItemPage!
-  }
-
-  type Mutation {
-    archiveSite(id: ID!): Site!
-    unarchiveSite(id: ID!): Site!
-    renameSite(id: ID!, name: String!): Site!
-    deleteSite(id: ID!): ID!
-
-    addSiteItem(siteId: ID!, itemId: ID!, onHand: Int = 0): Site!
-    removeSiteItem(siteId: ID!, itemId: ID!): Site!
-    updateSiteItemOnHand(siteId: ID!, itemId: ID!, onHand: Int!): SiteItem!
-  }
-`
 
 function notFound(message: string): never {
   throw new GraphQLError(message, { extensions: { code: 'NOT_FOUND' } })
