@@ -1,3 +1,4 @@
+import { readFile } from 'node:fs/promises'
 import { basename, dirname, join, resolve, sep } from 'node:path'
 import {
   addImportsDir,
@@ -12,6 +13,7 @@ import {
 import { hash } from 'ohash'
 import { glob } from 'tinyglobby'
 import { generateTypes, loadDocuments, loadSchema, type LoadedDocuments } from './codegen'
+import { WRAP_HINT, findUntaggedDefaultExport } from './handlers'
 
 export interface ModuleOptions {
   /** URL of the GraphQL endpoint. A path like `/api/graphql` is resolved against the app's own origin. */
@@ -133,6 +135,15 @@ export default defineNuxtModule<ModuleOptions>({
       write: true,
       getContents: async () => {
         const files = await handlerFiles()
+        // A default export the runtime would ignore is a build error, with the file named.
+        const offenders: string[] = []
+        for (const file of files) {
+          const untagged = findUntaggedDefaultExport(await readFile(file, 'utf8'))
+          if (untagged) offenders.push(`  ${file}: default export is ${untagged.reason}`)
+        }
+        if (offenders.length) {
+          throw new Error(`[nuxt-airplane] Files in the handlers directory must default-export the result of a define* helper:\n${offenders.join('\n')}\n${WRAP_HINT}`)
+        }
         const imports = files.map((file, i) => `import h${i} from ${JSON.stringify(file)}`)
         const list = files.map((_, i) => `h${i}`).join(', ')
         return `${imports.join('\n')}\nexport const handlers = [${list}]\n`

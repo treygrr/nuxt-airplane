@@ -11,11 +11,52 @@ export const MODULE_STORES = {
 /** Tables that hold module bookkeeping rather than cached data. */
 export const BOOKKEEPING_TABLES = new Set(['mutations', 'meta'])
 
-export function createDb(name: string, stores: Record<string, string> = {}, version = 1): AirplaneDexie {
+export interface CreateDbOptions {
+  /**
+   * Warn (once per table and index) when a boolean is written to an indexed
+   * key path, since IndexedDB cannot index booleans. Defaults to dev mode.
+   */
+  warnOnBooleanIndex?: boolean
+}
+
+export function createDb(name: string, stores: Record<string, string> = {}, version = 1, { warnOnBooleanIndex = import.meta.dev }: CreateDbOptions = {}): AirplaneDexie {
   const db = new Dexie(name) as AirplaneDexie
   db.version(version).stores({ ...MODULE_STORES, ...stores })
-  installUndoLog(db)
+  installUndoLog(db, warnOnBooleanIndex)
   return db
+}
+
+// ---------------------------------------------------------------------------
+// Boolean index check (development only)
+//
+// A row with `archived: true` in a table declared '&id, archived' is stored
+// fine but never matches `where('archived').equals(true)`, and nothing says
+// why. Inspect writes against the table's indexes and warn the first time.
+// ---------------------------------------------------------------------------
+
+/** Reads a (possibly dotted) key path off a row, like IndexedDB does. */
+function valueAt(row: unknown, keyPath: string): unknown {
+  return keyPath.split('.').reduce<unknown>((o, k) => (o && typeof o === 'object' ? (o as Record<string, unknown>)[k] : undefined), row)
+}
+
+function warnBooleanIndexes(table: DBCoreTable, values: readonly unknown[], warned: Set<string>) {
+  const { primaryKey, indexes } = table.schema
+  for (const index of [primaryKey, ...indexes]) {
+    // Dexie lists prefix indexes it derives from compound ones; skip those.
+    if (!index.keyPath || index.name?.includes('(virtual-from:')) continue
+    const label = index.name ?? 'primary key'
+    const id = `${table.name}/${label}`
+    if (warned.has(id)) continue
+    const paths = Array.isArray(index.keyPath) ? index.keyPath : [index.keyPath]
+    for (const value of values) {
+      const at = paths.findIndex(path => typeof valueAt(value, path) === 'boolean')
+      if (at === -1) continue
+      warned.add(id)
+      const where = paths.length > 1 ? `index "${label}" at "${paths[at]}"` : `index "${label}"`
+      console.warn(`[nuxt-airplane] Table "${table.name}": ${where} received a boolean, and IndexedDB cannot index booleans; store it as 0 | 1 (see the docs on stores).`)
+      break
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -60,7 +101,8 @@ async function recordBefore(table: DBCoreTable, req: DBCoreMutateRequest): Promi
   return { entries: keys.map((key, i) => ({ table: name, key, before: before[i] })) }
 }
 
-function installUndoLog(db: Dexie) {
+function installUndoLog(db: Dexie, warnOnBooleanIndex = false) {
+  const warned = new Set<string>()
   db.use({
     stack: 'dbcore',
     name: 'nuxt-airplane-undo',
@@ -73,6 +115,7 @@ function installUndoLog(db: Dexie) {
         return {
           ...table,
           async mutate(req) {
+            if (warnOnBooleanIndex && (req.type === 'add' || req.type === 'put')) warnBooleanIndexes(table, req.values, warned)
             const log = logs.get(req.trans as object)
             if (!log) return table.mutate(req)
             const { entries, afterMutate } = await recordBefore(table, req)

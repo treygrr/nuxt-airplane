@@ -102,11 +102,17 @@ export function createAirplaneClient(options: AirplaneClientOptions) {
       await clearCache()
     }
     if (stored !== cacheKey) await db.meta.put({ key: 'cacheKey', value: cacheKey })
-    // A tab closed mid-sync leaves rows marked `syncing`; they were never
-    // confirmed, so they go back in the queue. (Sends are idempotent from the
-    // outbox's point of view only if the API is; see the docs on retries.)
-    await db.mutations.where('status').equals('syncing').modify({ status: 'pending' })
+    await requeueStuck()
   })
+
+  /**
+   * A tab closed mid-sync leaves rows marked `syncing`; they were never
+   * confirmed, so they go back in the queue. (Sends are idempotent from the
+   * outbox's point of view only if the API is; see the docs on retries.)
+   */
+  async function requeueStuck() {
+    await db.mutations.where('status').equals('syncing').modify({ status: 'pending' })
+  }
 
   const state = reactive({
     /** What the browser reports; assumed online where `navigator.onLine` does not exist (Node, some webviews). */
@@ -441,7 +447,7 @@ export function createAirplaneClient(options: AirplaneClientOptions) {
   /** Send every pending mutation, oldest first. Stops at the first network failure. */
   function sync() {
     if (syncPromise) return syncPromise
-    syncPromise = runSync().finally(() => (syncPromise = null))
+    syncPromise = runSyncLocked().finally(() => (syncPromise = null))
     return syncPromise
   }
 
@@ -458,6 +464,28 @@ export function createAirplaneClient(options: AirplaneClientOptions) {
       if (row.status === 'pending') queue.push(row)
     }
     return queue
+  }
+
+  /**
+   * Every tab of the app shares the outbox, so only one may drain it at a
+   * time or a mutation is sent twice. A Web Lock named after the database
+   * serializes the tabs: a tab that finds it taken waits its turn, then sends
+   * whatever is still queued (usually nothing). The browser releases the lock
+   * when its holder closes, so a tab that dies mid-batch hands over to the
+   * next one, which re-queues the rows it left in `syncing`. Without the API
+   * (Node, insecure contexts, old browsers) each tab syncs on its own.
+   */
+  const syncLock = `nuxt-airplane:sync:${options.dbName}`
+
+  async function runSyncLocked() {
+    const locks = typeof navigator === 'object' ? navigator.locks : undefined
+    if (!locks) return runSync()
+    await locks.request(syncLock, async () => {
+      await ready
+      // Holding the lock, no other tab is mid-batch: any `syncing` row is stale.
+      await requeueStuck()
+      await runSync()
+    })
   }
 
   async function runSync() {
