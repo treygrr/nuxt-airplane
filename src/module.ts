@@ -38,6 +38,13 @@ export interface ModuleOptions {
    * Overridable at runtime with `NUXT_PUBLIC_AIRPLANE_CACHE_KEY`.
    */
   cacheKey?: string
+  /**
+   * When a mutation is rejected by the server, hold back the mutations queued
+   * after it until it is retried or rolled back, so the outbox keeps its
+   * order (an item added to a site that was never created would fail too).
+   * Set to `false` to skip failed mutations and keep sending the rest.
+   */
+  stopOnFailure: boolean
   /** Extra options passed to the `typescript` / `typescript-operations` codegen plugins. */
   codegen: Record<string, unknown>
 }
@@ -53,6 +60,7 @@ export default defineNuxtModule<ModuleOptions>({
     documents: ['**/*.gql', '**/*.graphql'],
     handlersDir: 'airplane',
     dbName: 'nuxt-airplane',
+    stopOnFailure: true,
     codegen: {},
   },
   async setup(options, nuxt) {
@@ -66,6 +74,7 @@ export default defineNuxtModule<ModuleOptions>({
       dbName: options.dbName,
       cacheKey: options.cacheKey ?? '',
       headers: options.headers ?? {},
+      stopOnFailure: options.stopOnFailure,
     }
 
     nuxt.options.build.transpile.push(resolver.resolve('./runtime'))

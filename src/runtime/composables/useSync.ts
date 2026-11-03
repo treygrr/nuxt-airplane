@@ -15,6 +15,8 @@ export interface UseSyncReturn {
   synced: ComputedRef<boolean>
   /** Mutations still waiting to reach the server, oldest first. */
   pending: Ref<MutationRow[]>
+  /** Pending mutations held back because an older one failed (see the `stopOnFailure` option). */
+  blocked: Ref<number>
   /** Size of the batch the current (or last) sync started with. */
   syncTotal: Ref<number>
   /** How many of that batch have been sent so far. */
@@ -46,6 +48,7 @@ export function useSync(): UseSyncReturn {
       syncing: computed(() => false),
       synced: computed(() => true),
       pending: computed(() => []),
+      blocked: computed(() => 0),
       syncTotal: computed(() => 0),
       syncCount: computed(() => 0),
       lastError: computed(() => null),
@@ -65,6 +68,7 @@ export function useSync(): UseSyncReturn {
     syncing: toRef(state, 'syncing'),
     synced: client.synced,
     pending: toRef(state, 'pending'),
+    blocked: toRef(state, 'blocked'),
     syncTotal: toRef(state, 'syncTotal'),
     syncCount: toRef(state, 'syncCount'),
     lastError: toRef(state, 'lastError'),

@@ -234,4 +234,6 @@ export interface AirplaneRuntimeConfig {
   headers?: Record<string, string>
   /** Deploy-specific part of the cache key; see the `cacheKey` module option. */
   cacheKey?: string
+  /** A failed mutation holds back the ones queued after it; see the `stopOnFailure` module option. Default `true`. */
+  stopOnFailure?: boolean
 }

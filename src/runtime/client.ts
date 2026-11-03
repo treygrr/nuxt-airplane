@@ -62,6 +62,8 @@ export type AirplaneClient = ReturnType<typeof createAirplaneClient>
 export function createAirplaneClient(options: AirplaneClientOptions) {
   const db = createDb(options.dbName, options.stores.stores, options.stores.version)
   const { documents, mutationHandlers, queryHandlers } = options
+  /** A failed mutation holds back the ones queued after it (ordered delivery). */
+  const stopOnFailure = options.stopOnFailure ?? true
 
   // A schema that no longer matches what is on disk (lowered version, changed
   // primary key) cannot be opened. This is a cache, so start over rather than
@@ -118,6 +120,12 @@ export function createAirplaneClient(options: AirplaneClientOptions) {
     syncing: false,
     /** Mutations still waiting to be sent, oldest first. */
     pending: [] as MutationRow[],
+    /** Pending mutations held back because an older one failed; `0` with `stopOnFailure: false`. */
+    get blocked(): number {
+      if (!stopOnFailure) return 0
+      const failed = this.pending.findIndex(m => m.status === 'failed')
+      return failed < 0 ? 0 : this.pending.slice(failed + 1).filter(m => m.status === 'pending').length
+    },
     /** Size of the batch the current (or last) sync started with. */
     syncTotal: 0,
     /** Mutations of that batch that have reached the server so far. */
@@ -408,16 +416,19 @@ export function createAirplaneClient(options: AirplaneClientOptions) {
     if (h?.revert) {
       await h.revert({ db, cache: createCacheApi(), variables: row.variables as never })
       await db.mutations.delete(id)
-      return
     }
-
-    // Undo this mutation's writes, then replay the mutations queued after it
-    // so their changes land on the restored data.
-    const later = (await db.mutations.where('createdAt').above(row.createdAt).toArray())
-      .filter(m => m.status !== 'syncing')
-    if (row.undo) await applyUndo(db, row.undo)
-    await db.mutations.delete(id)
-    for (const m of later) await applyMutation(m, { rebase: true })
+    else {
+      // Undo this mutation's writes, then replay the mutations queued after it
+      // so their changes land on the restored data. "After" is by id: two
+      // mutations queued in the same millisecond share a createdAt.
+      const later = (await db.mutations.where('id').above(row.id).toArray())
+        .filter(m => m.status !== 'syncing')
+      if (row.undo) await applyUndo(db, row.undo)
+      await db.mutations.delete(id)
+      for (const m of later) await applyMutation(m, { rebase: true })
+    }
+    // Dropping a failed mutation releases the ones held back behind it.
+    void sync()
   }
 
   async function retry(id: number) {
@@ -434,10 +445,25 @@ export function createAirplaneClient(options: AirplaneClientOptions) {
     return syncPromise
   }
 
+  /**
+   * The pending rows to send now, oldest first. With `stopOnFailure` the
+   * queue ends at the oldest failed row: what was queued after it may depend
+   * on it, so it waits until that row is retried or rolled back.
+   */
+  async function sendable() {
+    const rows = await db.mutations.orderBy('createdAt').toArray()
+    const queue: MutationRow[] = []
+    for (const row of rows) {
+      if (row.status === 'failed' && stopOnFailure) break
+      if (row.status === 'pending') queue.push(row)
+    }
+    return queue
+  }
+
   async function runSync() {
     await ready
     if (!state.online) return
-    const queue = await db.mutations.where('status').equals('pending').sortBy('createdAt')
+    const queue = await sendable()
     if (!queue.length) return
 
     state.syncing = true
@@ -463,6 +489,8 @@ export function createAirplaneClient(options: AirplaneClientOptions) {
           if (error instanceof GraphQLRequestError) {
             // The server rejected it: park it so the user can retry or roll it back.
             await db.mutations.update(row.id, { status: 'failed', error: error.message })
+            // The rest of the batch was queued after it, so it is held back too.
+            if (stopOnFailure) break
             continue
           }
           // Network trouble: leave the rest queued for the next attempt.

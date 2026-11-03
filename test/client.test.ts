@@ -286,6 +286,55 @@ describe('mutations', () => {
 })
 
 // ---------------------------------------------------------------------------
+// Ordered delivery
+// ---------------------------------------------------------------------------
+
+describe('ordered delivery', () => {
+  async function failFirst(client: AirplaneClient) {
+    await client.fetchQuery('GetSites', undefined)
+    client.goOffline()
+    const a = await client.enqueue('RenameSite', { id: 's1', name: 'bad' })
+    const b = await client.enqueue('ArchiveSite', { id: 's2' })
+    client.goOnline()
+    await until(async () => (await client.db.mutations.get(a.id))?.status === 'failed', 'first mutation to fail')
+    return { a, b }
+  }
+
+  it('holds back the mutations queued after a failed one until it is rolled back', async () => {
+    const client = createClient(server, { mutationHandlers: blobHandlers })
+    const { a, b } = await failFirst(client)
+    await new Promise(r => setTimeout(r, 50))
+    expect(server.mutations().map(c => c.op)).toEqual(['RenameSite'])
+    expect((await client.db.mutations.get(b.id))?.status).toBe('pending')
+    await until(() => client.state.blocked === 1, 'blocked count')
+
+    await client.rollback(a.id)
+    await until(async () => (await client.db.mutations.count()) === 0, 'outbox to drain')
+    expect(server.sites[1]!.archived).toBe(true)
+    expect(client.state.blocked).toBe(0)
+  })
+
+  it('retry sends the failed mutation and the ones behind it, in order', async () => {
+    const client = createClient(server, { mutationHandlers: blobHandlers })
+    const { a } = await failFirst(client)
+    await client.db.mutations.update(a.id, { variables: { id: 's1', name: 'good' } })
+    await client.retry(a.id)
+    await until(async () => (await client.db.mutations.count()) === 0, 'outbox to drain')
+    expect(server.mutations().map(c => c.op)).toEqual(['RenameSite', 'RenameSite', 'ArchiveSite'])
+    expect(server.sites).toMatchObject([{ name: 'good' }, { archived: true }])
+  })
+
+  it('keeps sending past a failed mutation with stopOnFailure: false', async () => {
+    const client = createClient(server, { mutationHandlers: blobHandlers, stopOnFailure: false })
+    const { a, b } = await failFirst(client)
+    await until(async () => (await client.db.mutations.get(b.id)) === undefined, 'second mutation to sync')
+    expect((await client.db.mutations.get(a.id))?.status).toBe('failed')
+    expect(server.sites[1]!.archived).toBe(true)
+    expect(client.state.blocked).toBe(0)
+  })
+})
+
+// ---------------------------------------------------------------------------
 // Rollback and rebase
 // ---------------------------------------------------------------------------
 

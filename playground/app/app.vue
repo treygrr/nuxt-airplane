@@ -71,7 +71,7 @@ function summarize(m: { document: string, variables: unknown }) {
       <strong>{{ sync.online.value ? 'Online' : 'Offline' }}</strong>
       <span v-if="sync.syncing.value">Syncing {{ sync.syncCount.value }} / {{ sync.syncTotal.value }}…</span>
       <span v-else-if="sync.synced.value">Synced</span>
-      <span v-else>{{ sync.pending.value.length }} pending</span>
+      <span v-else>{{ sync.pending.value.length }} pending<template v-if="sync.blocked.value"> · {{ sync.blocked.value }} blocked</template></span>
       <span
         v-if="sync.lastError.value"
         class="error"
