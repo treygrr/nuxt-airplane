@@ -1,0 +1,42 @@
+# Dependency update PRs, grouped so they arrive as a few reviewable PRs a week
+# instead of dozens. They go through the same `ci` and `pr` checks as any PR.
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: chore
+      include: scope
+    groups:
+      nuxt:
+        patterns:
+          - 'nuxt'
+          - '@nuxt/*'
+          - 'nitropack'
+      graphql:
+        patterns:
+          - 'graphql'
+          - '@graphql-codegen/*'
+      dev-tooling:
+        dependency-type: development
+        patterns:
+          - 'eslint*'
+          - 'vitest'
+          - 'vue-tsc'
+          - 'typescript'
+          - 'changelogen'
+          - 'fake-indexeddb'
+      production:
+        dependency-type: production
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    commit-message:
+      prefix: ci

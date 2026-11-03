@@ -1,4 +1,11 @@
-<!-- Guidelines: https://treygrr.github.io/nuxt-airplane/contributing/pull-requests -->
+<!--
+Title format (checked by CI): type(scope): lower-case subject
+  feat(client): prefetch every page of a paginated query
+  fix(sync): re-queue rows left in syncing by a closed tab
+  docs: add protected-API recipe to the auth guide
+  chore(deps): bump dexie to 4.5
+Guidelines: https://treygrr.github.io/nuxt-airplane/contributing/pull-requests
+-->
 
 ## What and why
 

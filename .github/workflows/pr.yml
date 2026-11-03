@@ -1,0 +1,221 @@
+# Runs on every pull request alongside `ci` (lint, tests, type checks).
+# Everything here is about making the PR easier to review and safe to merge.
+name: pr
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  # The PR title becomes the squash-merge commit, and changelogen builds the
+  # changelog from commit messages, so it has to be a Conventional Commit.
+  title:
+    name: Conventional title
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: read
+    steps:
+      - uses: amannn/action-semantic-pull-request@v5
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          types: |
+            feat
+            fix
+            perf
+            refactor
+            docs
+            test
+            chore
+            ci
+            build
+          requireScope: false
+          subjectPattern: ^(?![A-Z]).+$
+          subjectPatternError: 'Start the subject in lower case ("fix: re-queue stuck rows"), as the changelog will quote it.'
+
+  # Area labels from the paths touched, so the PR list reads at a glance.
+  label:
+    name: Label by area
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/labeler@v5
+        with:
+          sync-labels: true
+
+  # Flags newly added dependencies with known vulnerabilities or disallowed licenses.
+  dependencies:
+    name: Dependency review
+    runs-on: ubuntu-latest
+    if: github.event.action != 'edited'
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/dependency-review-action@v4
+        with:
+          fail-on-severity: high
+          comment-summary-in-pr: on-failure
+
+  # Which parts of the repo changed, to skip the slow jobs when they don't apply.
+  changes:
+    name: Detect changes
+    runs-on: ubuntu-latest
+    if: github.event.action != 'edited'
+    outputs:
+      module: ${{ steps.filter.outputs.module }}
+      docs: ${{ steps.filter.outputs.docs }}
+      playground: ${{ steps.filter.outputs.playground }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            module:
+              - 'src/**'
+              - 'package.json'
+              - 'package-lock.json'
+            docs:
+              - 'docs/**'
+              - 'package-lock.json'
+            playground:
+              - 'playground/**'
+              - 'src/**'
+              - 'package-lock.json'
+
+  # Builds the npm package exactly as `npm publish` would, records what the
+  # tarball contains and how big it is, and keeps it as a downloadable artifact.
+  package:
+    name: Package
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.module == 'true'
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24.21.0
+          cache: npm
+      - run: npm ci
+      - name: Build and pack
+        run: |
+          npm run prepack
+          # --ignore-scripts: prepack already ran, and its build log would corrupt the JSON.
+          npm pack --json --ignore-scripts > pack.json
+          node -e '
+            // npm prints an array (npm ≤10) or an object keyed by package name (npm 11+).
+            const out = require("./pack.json")
+            const p = Array.isArray(out) ? out[0] : Object.values(out)[0]
+            const kb = n => (n / 1024).toFixed(1) + " kB"
+            const lines = [
+              `## 📦 ${p.name}@${p.version}`,
+              "",
+              `**${p.entryCount} files**, ${kb(p.size)} packed, ${kb(p.unpackedSize)} unpacked`,
+              "",
+              "<details><summary>Tarball contents</summary>",
+              "",
+              "| File | Size |", "| --- | ---: |",
+              ...p.files.map(f => `| ${f.path} | ${kb(f.size)} |`),
+              "",
+              "</details>",
+            ]
+            require("fs").appendFileSync(process.env.GITHUB_STEP_SUMMARY, lines.join("\n") + "\n")
+          '
+      - name: Guard the tarball contents
+        run: |
+          node -e '
+            const out = require("./pack.json")
+            const p = Array.isArray(out) ? out[0] : Object.values(out)[0]
+            const bad = p.files.map(f => f.path).filter(f => !/^(dist\/|README\.md$|LICENSE$|package\.json$)/.test(f))
+            if (bad.length) { console.error("Unexpected files in the package:", bad); process.exit(1) }
+          '
+      - uses: actions/upload-artifact@v4
+        with:
+          name: npm-package
+          path: '*.tgz'
+          retention-days: 14
+
+  # Publishes a preview build to pkg.pr.new so reviewers can try the PR with
+  #   npm i https://pkg.pr.new/treygrr/nuxt-airplane@<sha>
+  # Needs the pkg.pr.new GitHub App installed on the repo; until then this job
+  # only reports, it does not fail the PR.
+  preview:
+    name: Preview package
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.module == 'true' && github.event.pull_request.head.repo.full_name == github.repository
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24.21.0
+          cache: npm
+      - run: npm ci
+      - run: npm run prepack
+      - run: npx pkg-pr-new publish --compact --comment=update
+
+  # The docs deploy from main; make sure a docs PR still builds, and keep the
+  # static output as an artifact for a local preview.
+  docs:
+    name: Docs build
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.docs == 'true'
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24.21.0
+          cache: npm
+      - run: npm ci
+      - run: npm run dev:prepare
+      - run: npx nuxt build docs --preset github_pages
+        env:
+          NUXT_APP_BASE_URL: /nuxt-airplane/
+          NUXT_SITE_URL: https://treygrr.github.io
+      - uses: actions/upload-artifact@v4
+        with:
+          name: docs-site
+          path: docs/.output/public
+          retention-days: 7
+
+  # The playground is the manual test bed; it must at least build.
+  playground:
+    name: Playground build
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.playground == 'true'
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24.21.0
+          cache: npm
+      - run: npm ci
+      - run: npm run dev:prepare
+      - run: npx nuxt build playground
+
+  # A pointer to the guidelines for someone's first PR here.
+  welcome:
+    name: Welcome
+    runs-on: ubuntu-latest
+    if: github.event.action == 'opened'
+    permissions:
+      pull-requests: write
+    steps:
+      - uses: actions/first-interaction@v1
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          pr-message: |
+            Thanks for your first pull request to nuxt-airplane! 🛫
+
+            A maintainer will take a look within a few days. In the meantime the checks above run lint, tests and type checks, verify the PR title is a Conventional Commit, review new dependencies and build the package. If you haven't yet, the [pull request guidelines](https://treygrr.github.io/nuxt-airplane/contributing/pull-requests) list what a PR needs (tests, docs, playground) and how review works.
