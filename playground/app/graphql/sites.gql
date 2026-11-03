@@ -22,6 +22,19 @@ query GetItems {
   }
 }
 
+query ItemsPage($query: String, $page: Int, $pageSize: Int) {
+  itemsPage(query: $query, page: $page, pageSize: $pageSize) {
+    page
+    pageSize
+    totalCount
+    totalPages
+    items {
+      id
+      name
+    }
+  }
+}
+
 query SearchItems($query: String, $first: Int, $after: String) {
   searchItems(query: $query, first: $first, after: $after) {
     totalCount

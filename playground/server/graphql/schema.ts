@@ -39,6 +39,14 @@ export const typeDefs = /* GraphQL */ `
     totalCount: Int!
   }
 
+  type ItemPage {
+    items: [Item!]!
+    page: Int!
+    pageSize: Int!
+    totalCount: Int!
+    totalPages: Int!
+  }
+
   type Query {
     sites(archived: Boolean, search: String): [Site!]!
     site(id: ID!): Site
@@ -48,6 +56,8 @@ export const typeDefs = /* GraphQL */ `
     Relay connection spec (forward only).
     """
     searchItems(query: String, first: Int = 20, after: String): ItemConnection!
+    "The same search with classic numbered pages (1-based)."
+    itemsPage(query: String, page: Int = 1, pageSize: Int = 20): ItemPage!
   }
 
   type Mutation {
@@ -92,11 +102,30 @@ function decodeCursor(cursor: string): CatalogItem {
 }
 const compareItems = (a: CatalogItem, b: CatalogItem) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id)
 
+function matchItems(query?: string | null) {
+  const q = query?.trim().toLowerCase()
+  return catalog.filter(i => !q || i.name.toLowerCase().includes(q)).sort(compareItems)
+}
+
+function itemsPage({ query, page, pageSize }: { query?: string | null, page?: number | null, pageSize?: number | null }) {
+  const size = pageSize ?? 20
+  const current = page ?? 1
+  if (size < 1 || size > 100) badInput('pageSize must be between 1 and 100')
+  if (current < 1) badInput('page must be >= 1')
+  const matches = matchItems(query)
+  return {
+    items: matches.slice((current - 1) * size, current * size),
+    page: current,
+    pageSize: size,
+    totalCount: matches.length,
+    totalPages: Math.max(1, Math.ceil(matches.length / size)),
+  }
+}
+
 function searchItems({ query, first, after }: { query?: string | null, first?: number | null, after?: string | null }) {
   const limit = first ?? 20
   if (limit < 1 || limit > 100) badInput('first must be between 1 and 100')
-  const q = query?.trim().toLowerCase()
-  const matches = catalog.filter(i => !q || i.name.toLowerCase().includes(q)).sort(compareItems)
+  const matches = matchItems(query)
   const start = after ? matches.findIndex(i => compareItems(i, decodeCursor(after)) > 0) : 0
   const page = start === -1 ? [] : matches.slice(start, start + limit)
   const edges = page.map(node => ({ cursor: encodeCursor(node), node }))
@@ -123,6 +152,7 @@ export const resolvers = {
     site: (_: unknown, { id }: { id: string }) => sites.find(s => s.id === id) ?? null,
     items: () => catalog,
     searchItems: (_: unknown, args: { query?: string | null, first?: number | null, after?: string | null }) => searchItems(args),
+    itemsPage: (_: unknown, args: { query?: string | null, page?: number | null, pageSize?: number | null }) => itemsPage(args),
   },
 
   SiteItem: {

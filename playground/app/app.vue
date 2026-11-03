@@ -25,6 +25,13 @@ const itemSearch = ref('')
 const itemQuery = computed(() => itemSearch.value.trim() || null)
 const cursors = ref<(string | null)[]>([null])
 watch(itemQuery, () => (cursors.value = [null]))
+
+// The same catalog with classic numbered pages: one query whose `page`
+// variable changes, so every visited page is its own cached row.
+const pagingMode = ref<'cursor' | 'pages'>('cursor')
+const page = ref(1)
+watch(itemQuery, () => (page.value = 1))
+const itemsPage = useQuery('ItemsPage', () => ({ query: itemQuery.value, page: page.value, pageSize: 20 }))
 const catalog = computed(() => itemsData.value?.items ?? [])
 const picked = reactive<Record<string, string>>({})
 
@@ -234,14 +241,54 @@ function summarize(m: { document: string, variables: unknown }) {
           placeholder="Search items…"
         >
       </div>
-      <ItemsPage
-        v-for="(after, i) in cursors"
-        :key="after ?? 'first'"
-        :query="itemQuery"
-        :after="after"
-        :last="i === cursors.length - 1"
-        @next="cursor => cursors.push(cursor)"
-      />
+      <div class="filters">
+        <label><input
+          v-model="pagingMode"
+          type="radio"
+          value="cursor"
+        > Load more</label>
+        <label><input
+          v-model="pagingMode"
+          type="radio"
+          value="pages"
+        > Pages</label>
+      </div>
+
+      <template v-if="pagingMode === 'cursor'">
+        <ItemsPage
+          v-for="(after, i) in cursors"
+          :key="after ?? 'first'"
+          :query="itemQuery"
+          :after="after"
+          :last="i === cursors.length - 1"
+          @next="cursor => cursors.push(cursor)"
+        />
+      </template>
+
+      <template v-else>
+        <p v-if="itemsPage.loading.value">
+          Loading…
+        </p>
+        <template v-else-if="itemsPage.data.value">
+          <p class="meta">
+            {{ itemsPage.data.value.itemsPage.totalCount }} items · page {{ itemsPage.data.value.itemsPage.page }} of {{ itemsPage.data.value.itemsPage.totalPages }}
+            <span v-if="itemsPage.fetching.value">· refreshing…</span>
+          </p>
+          <ul class="items">
+            <li
+              v-for="item in itemsPage.data.value.itemsPage.items"
+              :key="item.id"
+            >
+              {{ item.name }}
+            </li>
+          </ul>
+          <PageNav
+            :page="page"
+            :total-pages="itemsPage.data.value.itemsPage.totalPages"
+            @go="p => (page = p)"
+          />
+        </template>
+      </template>
     </section>
   </main>
 </template>
