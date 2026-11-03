@@ -9,6 +9,8 @@ import {
   type MutationHandlers,
   type MutationHandler,
   type MutationRow,
+  type AirplaneRequestContext,
+  type AirplaneRequestOptions,
   type AirplaneRuntimeConfig,
   type AirplaneStores,
   type OperationDocument,
@@ -25,6 +27,9 @@ export interface AirplaneClientOptions extends AirplaneRuntimeConfig {
   mutationHandlers: MutationHandlers
   queryHandlers: QueryHandlers
   stores: AirplaneStores
+  request: AirplaneRequestOptions
+  /** Runs a function inside the Nuxt app context (so composables work in `headers`). */
+  runWithContext?: <T>(fn: () => T) => T | Promise<Awaited<T>>
 }
 
 /** What `useQuery` observes: the live data plus the cache row's metadata. */
@@ -152,13 +157,29 @@ export function createAirplaneClient(options: AirplaneClientOptions) {
     return doc
   }
 
+  /** Static headers from config, then the per-request ones from `defineAirplaneRequest`. */
+  async function requestHeaders(ctx: AirplaneRequestContext) {
+    const headers = new Headers({ 'content-type': 'application/json', ...options.headers })
+    const { headers: dynamic } = options.request
+    const extra = typeof dynamic === 'function'
+      ? await (options.runWithContext ? options.runWithContext(() => dynamic(ctx)) : dynamic(ctx))
+      : dynamic
+    new Headers(extra ?? undefined).forEach((value, key) => headers.set(key, value))
+    return headers
+  }
+
   async function request<T>(name: string, variables: unknown): Promise<T> {
-    const res = await fetch(options.endpoint, {
+    const doc = document(name)
+    const ctx: AirplaneRequestContext = { document: name, kind: doc.kind, variables }
+    const doFetch = options.request.fetch ?? globalThis.fetch
+    const res = await doFetch(options.endpoint, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ query: document(name).source, variables: variables ?? undefined }),
+      headers: await requestHeaders(ctx),
+      credentials: options.request.credentials,
+      body: JSON.stringify({ query: doc.source, variables: variables ?? undefined }),
     })
-    const body = await res.json() as GraphQLResponse<T>
+    await options.request.onResponse?.(res, ctx)
+    const body = await res.json().catch(() => ({})) as GraphQLResponse<T>
     if (body.errors?.length) throw new GraphQLRequestError(body.errors)
     if (!res.ok) throw new Error(`[nuxt-airplane] ${res.status} ${res.statusText}`)
     return body.data as T

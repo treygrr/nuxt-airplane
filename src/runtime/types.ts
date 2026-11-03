@@ -177,9 +177,32 @@ export interface AirplaneStores {
   version?: number
 }
 
+/** What is being sent, for `headers` / `onResponse` to decide on. */
+export interface AirplaneRequestContext {
+  document: string
+  kind: OperationDocument['kind']
+  variables: unknown
+}
+
+/** How requests to the GraphQL endpoint are made; see `defineAirplaneRequest`. */
+export interface AirplaneRequestOptions {
+  /**
+   * Extra headers, or a function returning them. The function runs for every
+   * request, inside the Nuxt app context, so it can read a cookie or state and
+   * always sends the current token, also for mutations synced later.
+   */
+  headers?: HeadersInit | ((ctx: AirplaneRequestContext) => HeadersInit | undefined | Promise<HeadersInit | undefined>)
+  /** `fetch` credentials mode, e.g. `'include'` for cookie auth across origins. */
+  credentials?: RequestCredentials
+  /** A fetch implementation to use instead of the global one. */
+  fetch?: typeof globalThis.fetch
+  /** Sees every response before it is parsed, e.g. to react to a 401. */
+  onResponse?: (response: Response, ctx: AirplaneRequestContext) => unknown
+}
+
 /** Marks what a file under the handlers directory default-exports. */
 export const HANDLER_KIND: unique symbol = Symbol.for('nuxt-airplane:kind')
-export type HandlerKind = 'mutations' | 'queries' | 'stores'
+export type HandlerKind = 'mutations' | 'queries' | 'stores' | 'request'
 
 export interface GraphQLError {
   message: string
@@ -202,6 +225,8 @@ export class GraphQLRequestError extends Error {
 export interface AirplaneRuntimeConfig {
   endpoint: string
   dbName: string
+  /** Static headers from the `headers` module option. */
+  headers?: Record<string, string>
   /** Deploy-specific part of the cache key; see the `cacheKey` module option. */
   cacheKey?: string
 }

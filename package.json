@@ -16,6 +16,9 @@
   "homepage": "https://github.com/treygrr/nuxt-airplane#readme",
   "bugs": "https://github.com/treygrr/nuxt-airplane/issues",
   "license": "MIT",
+  "engines": {
+    "node": "^20.19.0 || >=22.12.0"
+  },
   "type": "module",
   "exports": {
     ".": {
@@ -57,9 +60,11 @@
     "@graphql-codegen/typescript-operations": "^6.2.0",
     "@nuxt/kit": "^4.6.3",
     "dexie": "^4.4.7",
-    "graphql": "^17.0.2",
     "ohash": "^2.0.12",
     "tinyglobby": "^0.2.17"
+  },
+  "peerDependencies": {
+    "graphql": "^16.8.0 || ^17.0.0"
   },
   "devDependencies": {
     "@nuxt/devtools": "^3.4.2",
@@ -70,6 +75,7 @@
     "@types/node": "latest",
     "changelogen": "^0.6.2",
     "eslint": "^10.12.0",
+    "graphql": "^17.0.2",
     "nuxt": "^4.6.3",
     "typescript": "^6.0.3",
     "vitest": "^5.0.3",

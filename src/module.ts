@@ -25,6 +25,10 @@ export interface ModuleOptions {
   documents: string[]
   /** Directory, relative to `srcDir`, scanned for `defineMutationHandlers` / `defineQueryHandlers` / `defineAirplaneStores` files. */
   handlersDir: string
+  /** Static headers sent with every request, e.g. an API key. Public: they ship to the browser. */
+  headers?: Record<string, string>
+  /** Headers for build-time introspection of a protected endpoint, e.g. from `process.env`. Never shipped. */
+  schemaHeaders?: Record<string, string>
   /** Name of the IndexedDB database. */
   dbName: string
   /**
@@ -60,6 +64,7 @@ export default defineNuxtModule<ModuleOptions>({
       endpoint: options.endpoint,
       dbName: options.dbName,
       cacheKey: options.cacheKey ?? '',
+      headers: options.headers ?? {},
     }
 
     nuxt.options.build.transpile.push(resolver.resolve('./runtime'))
@@ -132,7 +137,7 @@ export default defineNuxtModule<ModuleOptions>({
     addTypeTemplate({
       filename: 'types/nuxt-airplane.d.ts',
       getContents: async () => {
-        const schema = await loadSchema({ schema: options.schema, endpoint: introspectionUrl ?? '', cacheDir }, logger)
+        const schema = await loadSchema({ schema: options.schema, endpoint: introspectionUrl ?? '', cacheDir, headers: options.schemaHeaders }, logger)
         if (!schema) logger.warn('No GraphQL schema available yet, operations are untyped')
         return generateTypes(schema, docs, options.codegen)
       },

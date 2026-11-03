@@ -1,6 +1,12 @@
 # nuxt-airplane
 
+[![npm version](https://img.shields.io/npm/v/nuxt-airplane?color=00DC82&labelColor=020420)](https://www.npmjs.com/package/nuxt-airplane)
+[![License](https://img.shields.io/npm/l/nuxt-airplane?color=00DC82&labelColor=020420)](./LICENSE)
+[![Nuxt](https://img.shields.io/badge/Nuxt-4-00DC82?logo=nuxt&labelColor=020420)](https://nuxt.com)
+
 Airplane mode for your GraphQL app.
+
+📖 **[Documentation](https://treygrr.github.io/nuxt-airplane/)**
 
 Give it an endpoint and your `.gql` files. Every operation becomes a typed
 `useQuery` or `useMutation`, results live in IndexedDB (via Dexie), and anything
@@ -93,6 +99,19 @@ The handler context gives you:
 - `cache.get(name, variables?)`, `cache.set(name, variables, data)`, `cache.invalidate(name)`.
 - `db`: the Dexie instance (`queries` and `mutations` tables) if you need to go lower.
 - `variables`: the mutation's input, typed.
+
+## Auth and headers
+
+```ts
+// app/airplane/request.ts
+export default defineAirplaneRequest({
+  headers: () => ({ Authorization: `Bearer ${useCookie('token').value}` }), // runs per request, composables work
+  credentials: 'include',
+  onResponse: res => { if (res.status === 401) navigateTo('/login') },
+})
+```
+
+Headers are computed when a request is sent, so a mutation queued offline goes out later with the token valid at that moment. Static headers go in the `headers` module option; `schemaHeaders` covers build-time introspection of a protected endpoint.
 
 ## Your own tables
 

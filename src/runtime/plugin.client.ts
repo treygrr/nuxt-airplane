@@ -6,6 +6,7 @@ import {
   HANDLER_KIND,
   type HandlerKind,
   type MutationHandlers,
+  type AirplaneRequestOptions,
   type AirplaneRuntimeConfig,
   type AirplaneStores,
   type OperationDocument,
@@ -17,6 +18,7 @@ function collect(exports: unknown[]) {
   const mutationHandlers: MutationHandlers = {}
   const queryHandlers: QueryHandlers = {}
   const stores: AirplaneStores = { stores: {} }
+  const request: AirplaneRequestOptions = {}
   for (const item of exports) {
     if (item === undefined) continue
     const kind = item && typeof item === 'object' ? (item as Record<symbol, HandlerKind | undefined>)[HANDLER_KIND] : undefined
@@ -25,6 +27,7 @@ function collect(exports: unknown[]) {
       continue
     }
     if (kind === 'queries') Object.assign(queryHandlers, item)
+    else if (kind === 'request') Object.assign(request, item)
     else if (kind === 'stores') {
       const def = item as AirplaneStores
       Object.assign(stores.stores, def.stores)
@@ -32,18 +35,19 @@ function collect(exports: unknown[]) {
     }
     else Object.assign(mutationHandlers, item)
   }
-  return { mutationHandlers, queryHandlers, stores }
+  return { mutationHandlers, queryHandlers, stores, request }
 }
 
 export default defineNuxtPlugin({
   name: 'nuxt-airplane',
-  setup() {
+  setup(nuxtApp) {
     const config = useRuntimeConfig().public.airplane as AirplaneRuntimeConfig
     const airplane = createAirplaneClient({
       ...config,
       documents: documents as Record<string, OperationDocument>,
       documentsHash,
       ...collect(handlers),
+      runWithContext: fn => nuxtApp.runWithContext(fn),
     })
     return { provide: { airplane } }
   },

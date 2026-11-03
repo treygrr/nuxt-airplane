@@ -32,23 +32,25 @@ export interface SchemaSource {
   endpoint: string
   /** Where the last good schema is cached for builds with no server running. */
   cacheDir: string
+  /** Headers for the introspection request. */
+  headers?: Record<string, string>
 }
 
 function isUrl(value: string) {
   return /^https?:\/\//.test(value)
 }
 
-async function introspect(url: string, attempts = 10): Promise<GraphQLSchema> {
+async function introspect(url: string, headers: Record<string, string> = {}, attempts = 10): Promise<GraphQLSchema> {
   const res = await fetch(url, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: { 'content-type': 'application/json', ...headers },
     body: JSON.stringify({ query: getIntrospectionQuery() }),
     signal: AbortSignal.timeout(15_000),
   })
   // A dev server that is still booting answers 503; give it a moment.
   if (res.status === 503 && attempts > 1) {
     await new Promise(r => setTimeout(r, 1000))
-    return introspect(url, attempts - 1)
+    return introspect(url, headers, attempts - 1)
   }
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}`)
   const body = await res.json()
@@ -70,7 +72,7 @@ export async function loadSchema(source: SchemaSource, log: { warn: (msg: string
     }
     else {
       const url = source.schema ?? source.endpoint
-      if (isUrl(url)) schema = await introspect(url)
+      if (isUrl(url)) schema = await introspect(url, source.headers)
     }
   }
   catch (error) {
