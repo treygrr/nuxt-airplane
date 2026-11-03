@@ -36,6 +36,7 @@ export default defineNuxtConfig({
 | `documents` | `['**/*.gql', '**/*.graphql']` | Globs (relative to `srcDir`) of the files holding your operations. |
 | `handlersDir` | `airplane` | Directory (relative to `srcDir`) scanned for mutation handler files. |
 | `dbName` | `nuxt-airplane` | IndexedDB database name. |
+| `stopOnFailure` | `true` | A failed mutation holds back the ones queued after it until retried or rolled back (`useSync().blocked` counts them). |
 | `cacheKey` | – | Deploy key (git SHA, build id). A change wipes cached data on next load, outbox kept; a hash of your documents is always mixed in. `NUXT_PUBLIC_AIRPLANE_CACHE_KEY` overrides it. |
 | `codegen` | `{}` | Extra config for the `typescript` / `typescript-operations` codegen plugins. |
 
@@ -152,7 +153,7 @@ const { online, syncing, synced, pending, syncTotal, syncCount, lastError, sync,
 
 - `pending` lists the queued mutations oldest first, each with a human-readable `description` (from the handler's `describe` hook, or the humanized document name), its variables and status.
 - `rollback(id)` undoes a queued mutation locally and drops it from the queue. Mutations queued after it are re-applied on top of the restored data.
-- A mutation the server rejects is marked `failed` and left in the queue; `retry(id)` or `rollback(id)` it.
+- A mutation the server rejects is marked `failed` and left in the queue, and the mutations queued after it wait (`blocked`) until you `retry(id)` or `rollback(id)` it; set `stopOnFailure: false` to keep sending past failures.
 - A network failure stops the batch and keeps everything queued; the next `online` event (or `sync()`) resumes it.
 - Tabs share the database; a Web Lock makes sure only one of them sends the queue at a time.
 - `goOffline()` holds the client offline whatever the network says: queries serve the cache only and mutations stay queued. `goOnline()` releases it and syncs. `online` reflects the effective state; `networkOnline` and `forcedOffline` expose the two inputs. Handy for a "work offline" switch or for testing.
