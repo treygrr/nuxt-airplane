@@ -1,0 +1,65 @@
+fragment SiteFields on Site {
+  id
+  name
+  archived
+  items {
+    id
+    name
+    onHand
+  }
+}
+
+query GetSites($archived: Boolean, $search: String) {
+  sites(archived: $archived, search: $search) {
+    ...SiteFields
+  }
+}
+
+query GetItems {
+  items {
+    id
+    name
+  }
+}
+
+mutation ArchiveSite($id: ID!) {
+  archiveSite(id: $id) {
+    ...SiteFields
+  }
+}
+
+mutation UnarchiveSite($id: ID!) {
+  unarchiveSite(id: $id) {
+    ...SiteFields
+  }
+}
+
+mutation RenameSite($id: ID!, $name: String!) {
+  renameSite(id: $id, name: $name) {
+    ...SiteFields
+  }
+}
+
+mutation DeleteSite($id: ID!) {
+  deleteSite(id: $id)
+}
+
+mutation AddSiteItem($siteId: ID!, $itemId: ID!, $onHand: Int) {
+  addSiteItem(siteId: $siteId, itemId: $itemId, onHand: $onHand) {
+    ...SiteFields
+  }
+}
+
+mutation RemoveSiteItem($siteId: ID!, $itemId: ID!) {
+  removeSiteItem(siteId: $siteId, itemId: $itemId) {
+    ...SiteFields
+  }
+}
+
+mutation UpdateSiteItemOnHand($siteId: ID!, $itemId: ID!, $onHand: Int!) {
+  updateSiteItemOnHand(siteId: $siteId, itemId: $itemId, onHand: $onHand) {
+    id
+    name
+    onHand
+  }
+}

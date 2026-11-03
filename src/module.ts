@@ -1,4 +1,4 @@
-import { join } from 'node:path'
+import { basename, dirname, join, sep } from 'node:path'
 import {
   addImportsDir,
   addPlugin,
@@ -71,8 +71,19 @@ export default defineNuxtModule<ModuleOptions>({
       return docs
     }
 
+    /**
+     * Every handler file, except that a folder with an `index` file is one
+     * unit: only the index is imported, so it can compose the files beside it.
+     */
     async function handlerFiles() {
-      return (await glob(['**/*.{ts,js,mts,mjs}'], { cwd: join(srcDir, options.handlersDir), absolute: true })).sort()
+      const dir = join(srcDir, options.handlersDir)
+      const files = (await glob(['**/*.{ts,js,mts,mjs}'], { cwd: dir, absolute: true })).sort()
+      const isIndex = (file: string) => /^index\.[mc]?[tj]s$/.test(basename(file))
+      const indexDirs = files.filter(isIndex).map(file => dirname(file))
+      return files.filter((file) => {
+        const owner = indexDirs.find(d => file.startsWith(d + sep))
+        return !owner || (dirname(file) === owner && isIndex(file))
+      })
     }
 
     await reloadDocuments()

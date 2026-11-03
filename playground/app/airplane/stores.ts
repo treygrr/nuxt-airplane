@@ -5,7 +5,8 @@
 export interface SiteRow {
   id: string
   name: string
-  archived: boolean
+  /** IndexedDB cannot index booleans, so it is stored as 0 | 1. */
+  archived: 0 | 1
 }
 
 export interface ItemRow {

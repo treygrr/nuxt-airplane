@@ -116,6 +116,8 @@ export default defineMutationHandlers({
 })
 ```
 
+One file per operation also works: `defineMutationHandler('RenameSite', { … })` and `defineQueryHandler('GetSites', { … })` declare a single operation, and a folder with an `index.ts` is imported through its index only, so you can compose there.
+
 ## Sync state
 
 ```ts

@@ -1,5 +1,12 @@
 <script setup lang="ts">
-const { data: sitesData, loading, fetching, error, updatedAt, refresh } = useQuery('GetSites')
+const showArchived = ref(false)
+const search = ref('')
+// Filtering is a query variable: the server applies it to the response and
+// `read` applies the same filter to the local tables, so it works offline.
+const { data: sitesData, loading, fetching, error, updatedAt, refresh } = useQuery('GetSites', () => ({
+  archived: showArchived.value ? null : false,
+  search: search.value.trim() || null,
+}))
 const { data: itemsData } = useQuery('GetItems')
 const sync = useSync()
 
@@ -11,8 +18,7 @@ const addItem = useMutation('AddSiteItem')
 const removeItem = useMutation('RemoveSiteItem')
 const setOnHand = useMutation('UpdateSiteItemOnHand')
 
-const showArchived = ref(false)
-const sites = computed(() => (sitesData.value?.sites ?? []).filter(s => showArchived.value || !s.archived))
+const sites = computed(() => sitesData.value?.sites ?? [])
 const catalog = computed(() => itemsData.value?.items ?? [])
 const picked = reactive<Record<string, string>>({})
 
@@ -114,13 +120,20 @@ function summarize(m: { document: string, variables: unknown }) {
         <small v-if="fetching">refreshing…</small>
         <small v-else-if="updatedAt">as of {{ new Date(updatedAt).toLocaleTimeString() }}</small>
       </h1>
-      <label><input
-        v-model="showArchived"
-        type="checkbox"
-      > Show archived</label>
-      <button @click="refresh()">
-        Refresh
-      </button>
+      <div class="filters">
+        <input
+          v-model="search"
+          type="search"
+          placeholder="Search sites…"
+        >
+        <label><input
+          v-model="showArchived"
+          type="checkbox"
+        > Show archived</label>
+        <button @click="refresh()">
+          Refresh
+        </button>
+      </div>
       <p
         v-if="error"
         class="error"
@@ -218,6 +231,8 @@ article { background: #fff; border-radius: 8px; padding: 12px 16px; margin: 12px
 article.archived { opacity: .6; }
 article h3 { margin: 0 0 8px; display: flex; gap: 8px; align-items: baseline; }
 article h3 em, .pending em { font-size: .8em; color: #777; }
+.filters { display: flex; gap: 12px; align-items: center; margin: 8px 0 12px; }
+.filters input[type=search] { flex: 1; padding: 6px 8px; }
 .actions { display: flex; gap: 6px; margin: 8px 0; }
 table { width: 100%; border-collapse: collapse; }
 td { padding: 4px 0; }

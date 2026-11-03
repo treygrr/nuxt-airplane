@@ -22,7 +22,7 @@ export const typeDefs = /* GraphQL */ `
   }
 
   type Query {
-    sites(archived: Boolean): [Site!]!
+    sites(archived: Boolean, search: String): [Site!]!
     site(id: ID!): Site
     items: [Item!]!
   }
@@ -61,8 +61,12 @@ function assertOnHand(onHand: number) {
 
 export const resolvers = {
   Query: {
-    sites: (_: unknown, { archived }: { archived?: boolean | null }) =>
-      archived == null ? sites : sites.filter(s => s.archived === archived),
+    sites: (_: unknown, { archived, search }: { archived?: boolean | null, search?: string | null }) => {
+      const q = search?.trim().toLowerCase()
+      return sites.filter(s =>
+        (archived == null || s.archived === archived)
+        && (!q || s.name.toLowerCase().includes(q)))
+    },
     site: (_: unknown, { id }: { id: string }) => sites.find(s => s.id === id) ?? null,
     items: () => catalog,
   },

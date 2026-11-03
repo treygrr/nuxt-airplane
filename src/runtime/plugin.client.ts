@@ -18,9 +18,12 @@ function collect(exports: unknown[]) {
   const queryHandlers: QueryHandlers = {}
   const stores: AirplaneStores = { stores: {} }
   for (const item of exports) {
-    if (!item || typeof item !== 'object') continue
-    // Untagged objects are mutation handlers, as before `defineQueryHandlers` existed.
-    const kind = ((item as Record<symbol, HandlerKind>)[HANDLER_KIND] ?? 'mutations') as HandlerKind
+    if (item === undefined) continue
+    const kind = item && typeof item === 'object' ? (item as Record<symbol, HandlerKind | undefined>)[HANDLER_KIND] : undefined
+    if (!kind) {
+      if (import.meta.dev) console.warn('[nuxt-airplane] Ignoring a default export in the handlers directory that was not created with defineMutationHandler(s), defineQueryHandler(s) or defineAirplaneStores.')
+      continue
+    }
     if (kind === 'queries') Object.assign(queryHandlers, item)
     else if (kind === 'stores') {
       const def = item as AirplaneStores
