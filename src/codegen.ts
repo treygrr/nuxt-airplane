@@ -38,12 +38,18 @@ function isUrl(value: string) {
   return /^https?:\/\//.test(value)
 }
 
-async function introspect(url: string): Promise<GraphQLSchema> {
+async function introspect(url: string, attempts = 10): Promise<GraphQLSchema> {
   const res = await fetch(url, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ query: getIntrospectionQuery() }),
+    signal: AbortSignal.timeout(15_000),
   })
+  // A dev server that is still booting answers 503; give it a moment.
+  if (res.status === 503 && attempts > 1) {
+    await new Promise(r => setTimeout(r, 1000))
+    return introspect(url, attempts - 1)
+  }
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}`)
   const body = await res.json()
   if (body.errors?.length) throw new Error(body.errors.map((e: { message: string }) => e.message).join(', '))
@@ -171,7 +177,20 @@ function operationMap(ops: OperationDocument[], kind: OperationDocument['kind'],
  * Builds the `.d.ts` that types every operation and augments the global
  * `NuxtOfflineQueries` / `NuxtOfflineMutations` maps the composables key off.
  */
-export async function generateTypes(schema: GraphQLSchema | null, docs: LoadedDocuments): Promise<string> {
+const virtualModules = `
+declare module '#nuxt-offline/documents' {
+  export const documents: Record<string, { name: string, kind: 'query' | 'mutation' | 'subscription', source: string }>
+}
+declare module '#nuxt-offline/handlers' {
+  export const handlers: Record<string, unknown>
+}
+`
+
+export async function generateTypes(
+  schema: GraphQLSchema | null,
+  docs: LoadedDocuments,
+  config: Record<string, unknown> = {},
+): Promise<string> {
   const ops = Object.values(docs.operations)
 
   if (!schema) {
@@ -183,7 +202,7 @@ export async function generateTypes(schema: GraphQLSchema | null, docs: LoadedDo
       '  interface NuxtOfflineQueries { [name: string]: { result: any, variables: any } }',
       '  interface NuxtOfflineMutations { [name: string]: { result: any, variables: any } }',
       '}',
-      '',
+      virtualModules,
     ].join('\n')
   }
 
@@ -191,7 +210,12 @@ export async function generateTypes(schema: GraphQLSchema | null, docs: LoadedDo
     filename: 'nuxt-offline.ts',
     schema: parse(printSchema(schema)),
     documents: docs.documentNodes.map(document => ({ document })),
-    config: { namingConvention: 'keep' },
+    config: {
+      namingConvention: 'keep',
+      // `ID` comes back as a string over the wire; typing it as such keeps variables simple.
+      scalars: { ID: { input: 'string', output: 'string' } },
+      ...config,
+    },
     plugins: [{ typescript: {} }, { typescriptOperations: {} }],
     pluginMap: { typescript: typescriptPlugin, typescriptOperations: typescriptOperationsPlugin },
   })
@@ -207,6 +231,6 @@ export async function generateTypes(schema: GraphQLSchema | null, docs: LoadedDo
     operationMap(ops, 'mutation', 'Mutation'),
     '  }',
     '}',
-    '',
+    virtualModules,
   ].join('\n')
 }

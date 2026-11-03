@@ -16,5 +16,6 @@ export default createConfigForNuxt({
   },
 })
   .append(
-    // your custom flat config here...
+    // The docs site is its own workspace with its own ESLint config.
+    { ignores: ['docs/**'] },
   )

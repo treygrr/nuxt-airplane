@@ -1,4 +1,4 @@
-import { join, relative } from 'node:path'
+import { join } from 'node:path'
 import {
   addImportsDir,
   addPlugin,
@@ -26,6 +26,8 @@ export interface ModuleOptions {
   handlersDir: string
   /** Name of the IndexedDB database. */
   dbName: string
+  /** Extra options passed to the `typescript` / `typescript-operations` codegen plugins. */
+  codegen: Record<string, unknown>
 }
 
 export default defineNuxtModule<ModuleOptions>({
@@ -38,6 +40,7 @@ export default defineNuxtModule<ModuleOptions>({
     documents: ['**/*.gql', '**/*.graphql'],
     handlersDir: 'offline',
     dbName: 'nuxt-offline',
+    codegen: {},
   },
   async setup(options, nuxt) {
     const resolver = createResolver(import.meta.url)
@@ -51,6 +54,9 @@ export default defineNuxtModule<ModuleOptions>({
     }
 
     nuxt.options.build.transpile.push(resolver.resolve('./runtime'))
+    nuxt.options.vite.optimizeDeps ||= {}
+    nuxt.options.vite.optimizeDeps.include ||= []
+    nuxt.options.vite.optimizeDeps.include.push('dexie', 'ohash')
 
     // ------------------------------------------------------------------
     // Schema + documents
@@ -101,15 +107,8 @@ export default defineNuxtModule<ModuleOptions>({
       getContents: async () => {
         const schema = await loadSchema({ schema: options.schema, endpoint: introspectionUrl ?? '', cacheDir }, logger)
         if (!schema) logger.warn('No GraphQL schema available yet, operations are untyped')
-        return generateTypes(schema, docs)
+        return generateTypes(schema, docs, options.codegen)
       },
-    })
-
-    // Expose the handlers template's typings so handler files can import `#nuxt-offline/*` if they want.
-    nuxt.hook('prepare:types', ({ tsConfig }) => {
-      tsConfig.compilerOptions ||= {}
-      tsConfig.compilerOptions.paths ||= {}
-      tsConfig.compilerOptions.paths['#nuxt-offline/documents'] = [relative(nuxt.options.buildDir, documentsTemplate.dst)]
     })
 
     async function regenerate() {
@@ -122,16 +121,32 @@ export default defineNuxtModule<ModuleOptions>({
     // ------------------------------------------------------------------
 
     if (nuxt.options.dev) {
-      nuxt.hook('listen', async (_server, listener) => {
-        if (!introspectionUrl && !options.schema) {
-          introspectionUrl = new URL(options.endpoint, listener.url).href
-          await regenerate()
-        }
+      // A relative endpoint lives in this app, so it can only be introspected
+      // once the dev server listens and Nitro has built the route.
+      // The order of those two events depends on the CLI, so whichever comes
+      // last triggers it. The request must not be awaited inside the hook: the
+      // dev server only starts answering once the hook chain has returned.
+      let devUrl: string | undefined
+      let nitroBuilt = false
+      function introspectDevServer() {
+        if (introspectionUrl || options.schema || !devUrl || !nitroBuilt) return
+        introspectionUrl = new URL(options.endpoint, devUrl).href
+        regenerate().catch(error => logger.error('Failed to generate GraphQL types', error))
+      }
+      nuxt.hook('listen', (_server, listener) => {
+        devUrl = listener.url
+        introspectDevServer()
+      })
+      nuxt.hook('nitro:init', (nitro) => {
+        nitro.hooks.hook('dev:reload', () => {
+          nitroBuilt = true
+          introspectDevServer()
+        })
       })
 
       nuxt.hook('builder:watch', async (_event, path) => {
         const abs = join(srcDir, path)
-        const isDocument = /\.(gql|graphql)$/.test(abs)
+        const isDocument = /\.(?:gql|graphql)$/.test(abs)
         const isHandler = abs.startsWith(join(srcDir, options.handlersDir))
         if (isDocument || isHandler) await regenerate()
       })

@@ -55,7 +55,9 @@ export type OfflineDexie = Dexie & {
   mutations: EntityTable<MutationRow, 'id'>
 }
 
-export type Updater<T> = (data: T, variables: unknown) => T | void
+/** Mutate `data` in place, or return a replacement. */
+// eslint-disable-next-line @typescript-eslint/no-invalid-void-type
+export type Updater<T> = (data: T, variables: unknown) => T | undefined | void
 
 /** Read and write the cached query data from inside a mutation handler. */
 export interface CacheApi {

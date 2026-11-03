@@ -1,4 +1,4 @@
-import { computed, onScopeDispose, ref, shallowRef, toValue, watch, type MaybeRefOrGetter, type Ref } from 'vue'
+import { computed, getCurrentInstance, onMounted, onScopeDispose, ref, shallowRef, toValue, watch, type MaybeRefOrGetter, type Ref } from 'vue'
 import { queryKey } from '../client'
 import type { QueryName, QueryResult, QueryVariables } from '../types'
 import { useOffline } from './useOffline'
@@ -26,7 +26,7 @@ export function useQuery<N extends QueryName>(
   variables?: MaybeRefOrGetter<QueryVariables<N> | undefined>,
   options: UseQueryOptions = {},
 ): UseQueryReturn<QueryResult<N>> {
-  const data = shallowRef<QueryResult<N> | null>(null)
+  const data = shallowRef(null) as Ref<QueryResult<N> | null>
   const loading = ref(true)
   const fetching = ref(false)
   const error = shallowRef<Error | null>(null)
@@ -81,9 +81,14 @@ export function useQuery<N extends QueryName>(
     void refresh()
   })
 
-  client.active.set(key.value, refresh)
-  subscribe()
-  void refresh()
+  function start() {
+    client!.active.set(key.value, refresh)
+    subscribe()
+    void refresh()
+  }
+  // Inside a component, wait for hydration so the first render matches the server's.
+  if (getCurrentInstance()) onMounted(start)
+  else start()
 
   onScopeDispose(() => {
     client.active.delete(key.value)

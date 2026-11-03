@@ -3,7 +3,12 @@ import type { MutationRow } from '../types'
 import { useOffline } from './useOffline'
 
 export interface UseSyncReturn {
+  /** Effective state: the browser reports a connection and `goOffline()` is not in effect. */
   online: Ref<boolean>
+  /** What the browser reports, ignoring `goOffline()`. */
+  networkOnline: Ref<boolean>
+  /** `true` while held offline by `goOffline()`. */
+  forcedOffline: Ref<boolean>
   /** A sync batch is being sent. */
   syncing: Ref<boolean>
   /** Nothing is queued and nothing is being sent. */
@@ -22,6 +27,10 @@ export interface UseSyncReturn {
   rollback: (id: number) => Promise<void>
   /** Put a failed mutation back in the queue and sync. */
   retry: (id: number) => Promise<void>
+  /** Hold the client offline regardless of the network until `goOnline()`. */
+  goOffline: () => void
+  /** Release `goOffline()` and sync the queue. */
+  goOnline: () => void
 }
 
 export function useSync(): UseSyncReturn {
@@ -30,6 +39,8 @@ export function useSync(): UseSyncReturn {
     const off = async () => {}
     return {
       online: computed(() => true),
+      networkOnline: computed(() => true),
+      forcedOffline: computed(() => false),
       syncing: computed(() => false),
       synced: computed(() => true),
       pending: computed(() => []),
@@ -39,11 +50,15 @@ export function useSync(): UseSyncReturn {
       sync: off,
       rollback: off,
       retry: off,
+      goOffline: () => {},
+      goOnline: () => {},
     }
   }
   const { state } = client
   return {
     online: toRef(state, 'online'),
+    networkOnline: toRef(state, 'networkOnline'),
+    forcedOffline: toRef(state, 'forcedOffline'),
     syncing: toRef(state, 'syncing'),
     synced: client.synced,
     pending: toRef(state, 'pending'),
@@ -53,5 +68,7 @@ export function useSync(): UseSyncReturn {
     sync: client.sync,
     rollback: client.rollback,
     retry: client.retry,
+    goOffline: client.goOffline,
+    goOnline: client.goOnline,
   }
 }

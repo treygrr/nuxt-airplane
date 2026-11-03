@@ -22,8 +22,10 @@ export interface OfflineClientOptions extends OfflineRuntimeConfig {
   handlers: MutationHandlers
 }
 
+/** `undefined`, `null` and `{}` all mean "no variables" and share a key. */
 export function queryKey(name: string, variables: unknown) {
-  return `${name}:${hash(variables ?? null)}`
+  const normalized = variables && typeof variables === 'object' && Object.keys(variables).length ? variables : null
+  return `${name}:${hash(normalized)}`
 }
 
 export type OfflineClient = ReturnType<typeof createOfflineClient>
@@ -33,7 +35,14 @@ export function createOfflineClient(options: OfflineClientOptions) {
   const { documents, handlers } = options
 
   const state = reactive({
-    online: typeof navigator === 'undefined' ? true : navigator.onLine,
+    /** What the browser reports. */
+    networkOnline: typeof navigator === 'undefined' ? true : navigator.onLine,
+    /** Set by `goOffline()`: behave as offline whatever the network says. */
+    forcedOffline: false,
+    /** Effective state the client acts on. */
+    get online(): boolean {
+      return this.networkOnline && !this.forcedOffline
+    },
     syncing: false,
     /** Mutations still waiting to be sent, oldest first. */
     pending: [] as MutationRow[],
@@ -53,10 +62,24 @@ export function createOfflineClient(options: OfflineClientOptions) {
 
   if (typeof window !== 'undefined') {
     window.addEventListener('online', () => {
-      state.online = true
+      state.networkOnline = true
       void sync()
     })
-    window.addEventListener('offline', () => (state.online = false))
+    window.addEventListener('offline', () => (state.networkOnline = false))
+  }
+
+  /**
+   * Hold the client offline regardless of the network: queries stop fetching
+   * and mutations stay queued until `goOnline()`.
+   */
+  function goOffline() {
+    state.forcedOffline = true
+  }
+
+  /** Release the hold from `goOffline()` and sync the queue if the network is up. */
+  function goOnline() {
+    state.forcedOffline = false
+    void sync()
   }
 
   // --------------------------------------------------------------------------
@@ -190,7 +213,7 @@ export function createOfflineClient(options: OfflineClientOptions) {
     if (!h?.apply) return
     const touched = new Map<string, QueryRow | undefined>()
     try {
-      await h.apply({ db, cache: createCacheApi(touched), variables: row.variables })
+      await h.apply({ db, cache: createCacheApi(touched), variables: row.variables as never })
     }
     catch (error) {
       await restore(touched)
@@ -219,7 +242,7 @@ export function createOfflineClient(options: OfflineClientOptions) {
       .filter(m => m.status !== 'syncing')
 
     if (h?.revert) {
-      await h.revert({ db, cache: createCacheApi(), variables: row.variables })
+      await h.revert({ db, cache: createCacheApi(), variables: row.variables as never })
       await db.mutations.delete(id)
       return
     }
@@ -263,7 +286,7 @@ export function createOfflineClient(options: OfflineClientOptions) {
         try {
           const result = await request(row.document, row.variables)
           const h = handler(row.document)
-          await h?.reconcile?.({ db, cache: createCacheApi(), variables: row.variables }, result as never)
+          await h?.reconcile?.({ db, cache: createCacheApi(), variables: row.variables as never }, result as never)
           if (h?.refetch) h.refetch.forEach(n => refetch.add(n))
           else refetchAll = true
           await db.mutations.delete(row.id)
@@ -311,6 +334,8 @@ export function createOfflineClient(options: OfflineClientOptions) {
     rollback,
     retry,
     sync,
+    goOffline,
+    goOnline,
     clear,
   }
 }

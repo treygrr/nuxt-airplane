@@ -1,84 +1,115 @@
-<!--
-Get your module up and running quickly.
+# nuxt-offline
 
-Find and replace all on all files (CMD+SHIFT+F):
-- Name: My Module
-- Package name: my-module
-- Description: My new Nuxt module
--->
+Offline-first GraphQL for Nuxt. Point the module at a GraphQL endpoint and your
+`.gql` files; it generates types, registers `useQuery` / `useMutation` for every
+named operation, caches results in IndexedDB (via Dexie) and queues mutations
+while offline, replaying them when the connection is back.
 
-# My Module
+## Setup
 
-[![npm version][npm-version-src]][npm-version-href]
-[![npm downloads][npm-downloads-src]][npm-downloads-href]
-[![License][license-src]][license-href]
-[![Nuxt][nuxt-src]][nuxt-href]
-
-My new Nuxt module for doing amazing things.
-
-- [✨ &nbsp;Release Notes](/CHANGELOG.md)
-<!-- - [🏀 Online playground](https://stackblitz.com/github/your-org/my-module?file=playground%2Fapp.vue) -->
-<!-- - [📖 &nbsp;Documentation](https://example.com) -->
-
-## Features
-
-<!-- Highlight some of the features your module provide here -->
-- ⛰ &nbsp;Foo
-- 🚠 &nbsp;Bar
-- 🌲 &nbsp;Baz
-
-## Quick Setup
-
-Install the module to your Nuxt application with one command:
-
-```bash
-npx nuxt module add my-module
+```ts
+// nuxt.config.ts
+export default defineNuxtConfig({
+  modules: ['nuxt-offline'],
+  offline: {
+    endpoint: 'https://api.example.com/graphql',
+  },
+})
 ```
 
-That's it! You can now use My Module in your Nuxt app ✨
+| Option | Default | |
+| --- | --- | --- |
+| `endpoint` | `/api/graphql` | GraphQL endpoint. A relative path is resolved against the app itself. |
+| `schema` | – | SDL file or URL. When omitted the endpoint is introspected. In dev a relative endpoint is introspected once the dev server is up; the last good schema is cached in `node_modules/.cache/nuxt-offline`. |
+| `documents` | `['**/*.gql', '**/*.graphql']` | Globs (relative to `srcDir`) of the files holding your operations. |
+| `handlersDir` | `offline` | Directory (relative to `srcDir`) scanned for mutation handler files. |
+| `dbName` | `nuxt-offline` | IndexedDB database name. |
+| `codegen` | `{}` | Extra config for the `typescript` / `typescript-operations` codegen plugins. |
 
+## Operations
 
-## Contribution
+Every named operation in your documents becomes available by name. Fragments are
+resolved across files.
 
-<details>
-  <summary>Local development</summary>
-  
-  ```bash
-  # Install dependencies
-  npm install
-  
-  # Generate type stubs
-  npm run dev:prepare
-  
-  # Develop with the playground
-  npm run dev
-  
-  # Build the playground
-  npm run dev:build
-  
-  # Run ESLint
-  npm run lint
-  
-  # Run Vitest
-  npm run test
-  npm run test:watch
-  
-  # Release new version
-  npm run release
-  ```
+```graphql
+# app/graphql/sites.gql
+query GetSites { sites { id name archived } }
+mutation RenameSite($id: ID!, $name: String!) { renameSite(id: $id, name: $name) { id name } }
+```
 
-</details>
+```vue
+<script setup lang="ts">
+const { data, loading, fetching, error, refresh } = useQuery('GetSites')
+const rename = useMutation('RenameSite')
 
+await rename.mutate({ id: 'site-1', name: 'New name' })
+</script>
+```
 
-<!-- Badges -->
-[npm-version-src]: https://img.shields.io/npm/v/my-module/latest.svg?style=flat&colorA=020420&colorB=00DC82
-[npm-version-href]: https://npmjs.com/package/my-module
+Both are fully typed from the schema: the document name is checked, variables
+and `data` get the generated operation types.
 
-[npm-downloads-src]: https://img.shields.io/npm/dm/my-module.svg?style=flat&colorA=020420&colorB=00DC82
-[npm-downloads-href]: https://npm.chart.dev/my-module
+`useQuery` returns **live data from the local cache**, not the network response.
+A cached result renders immediately and a refetch runs in the background when
+online; any mutation handler that touches the cache updates `data` right away.
 
-[license-src]: https://img.shields.io/npm/l/my-module.svg?style=flat&colorA=020420&colorB=00DC82
-[license-href]: https://npmjs.com/package/my-module
+`useMutation().mutate()` resolves as soon as the change is applied locally and
+queued. Sending it to the server happens in the sync loop.
 
-[nuxt-src]: https://img.shields.io/badge/Nuxt-020420?logo=nuxt
-[nuxt-href]: https://nuxt.com
+## Mutation handlers
+
+Handlers describe how a queued mutation shows up in the local cache. Put files
+under `app/offline/` and they are picked up automatically.
+
+```ts
+// app/offline/sites.ts
+export default defineMutationHandlers({
+  RenameSite: {
+    // Runs when the mutation is queued, so the UI reflects it immediately.
+    apply: ({ cache, variables }) =>
+      cache.update('GetSites', (data) => {
+        const site = data.sites.find(s => s.id === variables.id)
+        if (site) site.name = variables.name
+      }),
+    // Optional: merge the server's response once it has been sent.
+    reconcile: ({ cache, variables }, result) => { /* ... */ },
+    // Optional: undo `apply`. When omitted, the rows `apply` touched are
+    // snapshotted and restored on rollback.
+    revert: ({ cache, variables }) => { /* ... */ },
+    // Queries to refetch after the server accepted it. Defaults to every active query.
+    refetch: ['GetSites'],
+  },
+})
+```
+
+The handler context gives you:
+
+- `cache.update(name, updater)` / `cache.update(name, variables, updater)`: edit cached responses in place or return a replacement.
+- `cache.get(name, variables?)`, `cache.set(name, variables, data)`, `cache.invalidate(name)`.
+- `db`: the Dexie instance (`queries` and `mutations` tables) if you need to go lower.
+- `variables`: the mutation's input, typed.
+
+## Sync state
+
+```ts
+const { online, syncing, synced, pending, syncTotal, syncCount, lastError, sync, rollback, retry, goOffline, goOnline } = useSync()
+```
+
+- `pending` lists the queued mutations (document name, variables, status) oldest first.
+- `rollback(id)` undoes a queued mutation locally and drops it from the queue. Mutations queued after it are re-applied on top of the restored data.
+- A mutation the server rejects is marked `failed` and left in the queue; `retry(id)` or `rollback(id)` it.
+- A network failure stops the batch and keeps everything queued; the next `online` event (or `sync()`) resumes it.
+- `goOffline()` holds the client offline whatever the network says: queries serve the cache only and mutations stay queued. `goOnline()` releases it and syncs. `online` reflects the effective state; `networkOnline` and `forcedOffline` expose the two inputs. Handy for a "work offline" switch or for testing.
+
+## Development
+
+```sh
+npm install
+npm run dev          # playground with an in-memory Apollo server at /api/graphql
+npm run lint
+npm run test
+npm run test:types
+```
+
+The playground (`playground/`) has a sites/items inventory demo: toggle the
+network in devtools, make changes, roll some back, and go online again.

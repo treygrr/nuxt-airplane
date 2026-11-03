@@ -23,7 +23,8 @@
     "dist"
   ],
   "workspaces": [
-    "playground"
+    "playground",
+    "docs"
   ],
   "scripts": {
     "prepack": "nuxt-module-build build",
@@ -34,7 +35,9 @@
     "lint": "eslint .",
     "test": "vitest run",
     "test:watch": "vitest watch",
-    "test:types": "vue-tsc --noEmit && cd playground && vue-tsc --noEmit"
+    "test:types": "vue-tsc --noEmit && cd playground && vue-tsc --noEmit",
+    "docs:dev": "nuxt dev docs",
+    "docs:build": "nuxt build docs"
   },
   "dependencies": {
     "@graphql-codegen/core": "^6.2.2",
