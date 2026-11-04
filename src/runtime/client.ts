@@ -116,6 +116,15 @@ export function substituteTempIds<T>(value: T, ids: Record<string, string>): { v
   return { value: replaced ? next : value, replaced, unresolved: [...unresolved] }
 }
 
+/** The APQ error a response carries, if any, by message or by extension code. */
+function persistedQueryError(body: GraphQLResponse): 'PersistedQueryNotFound' | 'PersistedQueryNotSupported' | undefined {
+  for (const error of body.errors ?? []) {
+    const code = error.extensions?.code
+    if (error.message === 'PersistedQueryNotFound' || code === 'PERSISTED_QUERY_NOT_FOUND') return 'PersistedQueryNotFound'
+    if (error.message === 'PersistedQueryNotSupported' || code === 'PERSISTED_QUERY_NOT_SUPPORTED') return 'PersistedQueryNotSupported'
+  }
+}
+
 /** A mutation about to be sent still carries a temp id the server never assigned. */
 export class UnresolvedTempIdError extends Error {
   override name = 'UnresolvedTempIdError'
@@ -255,19 +264,43 @@ export function createAirplaneClient(options: AirplaneClientOptions) {
     return headers
   }
 
-  async function request<T>(name: string, variables: unknown): Promise<T> {
-    const doc = document(name)
-    const ctx: AirplaneRequestContext = { document: name, kind: doc.kind, variables }
+  async function post<T>(ctx: AirplaneRequestContext, payload: Record<string, unknown>) {
     const doFetch = options.request.fetch ?? globalThis.fetch
     const res = await doFetch(options.endpoint, {
       method: 'POST',
       headers: await requestHeaders(ctx),
       credentials: options.request.credentials,
-      body: JSON.stringify({ query: doc.source, variables: variables ?? undefined }),
+      body: JSON.stringify(payload),
       signal: AbortSignal.timeout(options.request.timeout ?? 30_000),
     })
     await options.request.onResponse?.(res, ctx)
     const body = await res.json().catch(() => ({})) as GraphQLResponse<T>
+    return { res, body }
+  }
+
+  /**
+   * With `persistedQueries: 'automatic'`, a server that answers
+   * `PersistedQueryNotSupported` gets full documents for the rest of the
+   * session instead of a wasted round trip per request.
+   */
+  let persistedUnsupported = false
+
+  async function request<T>(name: string, variables: unknown): Promise<T> {
+    const doc = document(name)
+    const ctx: AirplaneRequestContext = { document: name, kind: doc.kind, variables }
+    const mode = options.persistedQueries
+    const extensions = mode && doc.hash && !persistedUnsupported
+      ? { persistedQuery: { version: 1, sha256Hash: doc.hash } }
+      : undefined
+
+    let { res, body } = await post<T>(ctx, { variables: variables ?? undefined, extensions, query: extensions ? undefined : doc.source })
+    if (extensions && mode === 'automatic') {
+      const miss = persistedQueryError(body)
+      if (miss === 'PersistedQueryNotSupported') persistedUnsupported = true
+      // Not found: send the text along with the hash so the server registers
+      // it. Not supported: send the text alone, and keep doing so.
+      if (miss) ({ res, body } = await post<T>(ctx, { variables: variables ?? undefined, query: doc.source, extensions: miss === 'PersistedQueryNotFound' ? extensions : undefined }))
+    }
     if (body.errors?.length) throw new GraphQLRequestError(body.errors)
     if (!res.ok) throw new Error(`[nuxt-airplane] ${res.status} ${res.statusText}`)
     // A 200 without `data` (proxy page, empty body) must not end up in the cache.

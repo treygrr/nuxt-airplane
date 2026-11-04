@@ -1,5 +1,6 @@
 // Build-time pieces: document loading with fragment resolution, type
 // generation, and schema loading from file, introspection and the cache.
+import { createHash } from 'node:crypto'
 import { mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -47,6 +48,10 @@ describe('loadDocuments', () => {
     expect(docs.operations.GetSite!.source).not.toContain('fragment')
     expect(docs.files).toHaveLength(2)
     expect(logger.warn).not.toHaveBeenCalled()
+    // The persisted query id: SHA-256 of exactly the text that is sent.
+    for (const op of Object.values(docs.operations)) {
+      expect(op.hash).toBe(createHash('sha256').update(op.source).digest('hex'))
+    }
   })
 
   it('skips anonymous and duplicate operations, and files that do not parse, with a warning', async () => {

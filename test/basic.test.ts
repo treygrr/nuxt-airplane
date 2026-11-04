@@ -32,6 +32,16 @@ describe('module', async () => {
     expect(source).toMatch(/export const documentsHash = "[\w-]+"/)
   })
 
+  it('writes the persisted query manifest and ships the hashes', async () => {
+    const manifest = JSON.parse(await built('nuxt-airplane/persisted-queries.json')) as { format: string, operations: { id: string, name: string, type: string, body: string }[] }
+    expect(manifest.format).toBe('apollo-persisted-query-manifest')
+    const getSites = manifest.operations.find(op => op.name === 'GetSites')!
+    expect(getSites).toMatchObject({ type: 'query' })
+    expect(getSites.id).toMatch(/^[0-9a-f]{64}$/)
+    expect(getSites.body).toContain('fragment SiteFields')
+    expect(await built('nuxt-airplane/documents.mjs')).toContain(`"hash": "${getSites.id}"`)
+  })
+
   it('generates operation types from the SDL schema', async () => {
     const types = await built('types/nuxt-airplane.d.ts')
     expect(types).toContain('export type GetSitesQuery = ')
@@ -51,6 +61,7 @@ describe('module', async () => {
     const html = await $fetch('/')
     expect(html).toContain('/api/graphql')
     expect(html).toContain('fixture-1')
+    expect(html).toContain('automatic')
     expect(html).not.toContain('build-only-token')
   })
 })

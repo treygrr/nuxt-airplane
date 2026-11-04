@@ -38,6 +38,8 @@ export interface OperationDocument {
   name: string
   kind: 'query' | 'mutation' | 'subscription'
   source: string
+  /** SHA-256 of `source`, hex, computed at build time; what persisted queries send instead of the text. */
+  hash?: string
 }
 
 /**
@@ -269,4 +271,14 @@ export interface AirplaneRuntimeConfig {
   cacheKey?: string
   /** A failed mutation holds back the ones queued after it; see the `stopOnFailure` module option. Default `true`. */
   stopOnFailure?: boolean
+  /** Send operations by hash instead of text; see the `persistedQueries` module option. `''` means off. */
+  persistedQueries?: PersistedQueriesMode | ''
 }
+
+/**
+ * - `'automatic'`: the hash goes first; the text follows only when the server
+ *   answers `PersistedQueryNotFound` (Apollo's automatic persisted queries).
+ * - `'manifest'`: only the hash is ever sent. The server must know the
+ *   documents from the manifest written at build time.
+ */
+export type PersistedQueriesMode = false | 'automatic' | 'manifest'
