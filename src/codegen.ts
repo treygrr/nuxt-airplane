@@ -198,9 +198,9 @@ function objectType(schema: GraphQLSchema, type: GraphQLNamedType, m: MergedSele
  * `id: ID` field, that selects `id`, counts; the row type gets the union of
  * the fields of every such selection, required when all of them have it, and
  * the same rule applies to each object below it. A selection that only
- * navigates through the type to child entities (`site { id items { … } }`)
- * contributes its fields but does not make the others optional: it never
- * stores a full row.
+ * navigates through the type to what is below it (`site { id items { … } }`,
+ * whatever `items` is) contributes its fields but does not make the others
+ * optional: it never stores a full row.
  */
 function analyzeEntities(schema: GraphQLSchema, documentNodes: DocumentNode[], fragments: Map<string, FragmentDefinitionNode>) {
   const seen = new Map<string, MergedSelection>()
@@ -234,9 +234,11 @@ function analyzeEntities(schema: GraphQLSchema, documentNodes: DocumentNode[], f
   }
 
   /**
-   * Whether a selection only navigates through `on` to child entities: every
-   * field is `id`, `__typename`, or an entity selected with its id. Such a
-   * selection never stores a full row of `on`.
+   * Whether a selection only navigates through `on` to what is below it: it
+   * selects no leaf (scalar or enum) field other than `id` and `__typename`.
+   * Object children of any kind, an entity, a connection, an embedded value,
+   * carry none of `on`'s own data, so such a selection never stores a full
+   * row of `on`.
    */
   function navigation(sets: SelectionSetNode[], on: GraphQLNamedType | undefined): boolean {
     return sets.every(set => set.selections.every((s) => {
@@ -244,9 +246,7 @@ function analyzeEntities(schema: GraphQLSchema, documentNodes: DocumentNode[], f
         const { condition, selectionSet } = fragmentOf(s, on)
         return !condition || !selectionSet || navigation([selectionSet], condition)
       }
-      if (s.name.value === '__typename' || (s.name.value === 'id' && !s.alias)) return true
-      const def = isObjectType(on) || isInterfaceType(on) ? on.getFields()[s.name.value] : undefined
-      return !!def && !!s.selectionSet && hasIdField(getNamedType(def.type)) && hasId(s.selectionSet)
+      return s.name.value === '__typename' || (s.name.value === 'id' && !s.alias) || !!s.selectionSet
     }))
   }
 
@@ -300,7 +300,8 @@ function analyzeEntities(schema: GraphQLSchema, documentNodes: DocumentNode[], f
     for (const [key, { sets: subsets, type }] of below) {
       const entry = into.fields.get(key)!
       entry.sub ??= emptySelection()
-      merge(entry.sub, subsets, type, counts)
+      // An object below a navigation selection is still a full occurrence of itself.
+      merge(entry.sub, subsets, type)
       if (hasIdField(type) && subsets.some(hasId)) merge(entitySelection(type.name), subsets, type, !navigation(subsets, type))
     }
     for (const [name, { sets: armSets, type }] of arms) {
