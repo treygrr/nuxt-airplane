@@ -34,7 +34,7 @@ export default defineNuxtConfig({
 | `endpoint` | `/api/graphql` | GraphQL endpoint. A relative path is resolved against the app itself. |
 | `schema` | – | SDL file or URL. When omitted the endpoint is introspected. In dev a relative endpoint is introspected once the dev server is up; the last good schema is cached in `node_modules/.cache/nuxt-airplane`. |
 | `documents` | `['**/*.gql', '**/*.graphql']` | Globs (relative to `srcDir`) of the files holding your operations. |
-| `handlersDir` | `airplane` | Directory (relative to `srcDir`) scanned for mutation handler files. |
+| `handlersDir` | `airplane` | Directory (relative to `srcDir`) scanned for handler files. |
 | `dbName` | `nuxt-airplane` | IndexedDB database name. |
 | `stopOnFailure` | `true` | A failed mutation holds back the ones queued after it until retried or rolled back (`useSync().blocked` counts them). |
 | `cacheKey` | – | Deploy key (git SHA, build id). A change wipes cached data on next load, outbox kept; a hash of your documents is always mixed in. `NUXT_PUBLIC_AIRPLANE_CACHE_KEY` overrides it. |
@@ -131,30 +131,31 @@ export default defineAirplaneRequest({
 
 Headers are computed when a request is sent, so a mutation queued offline goes out later with the token valid at that moment. Static headers go in the `headers` module option; `schemaHeaders` covers build-time introspection of a protected endpoint.
 
-## Your own tables
+## Tables and indexes
 
-Responses are stored one row per entity, in tables inferred from your documents: every type selected with an `id` gets a `db.<Type>` table, typed from the schema. Mutation handlers write to the rows directly and every query showing them updates on its own. Add a `read` handler with `defineQueryHandlers` when a query should answer filters it has never sent, or `store` and `read` for storage of your own shape. Rollback still works: writes made during `apply` are recorded by an undo log.
+Every type your documents select with an `id` gets a `db.<Type>` table, keyed
+on it, with a row type built from the fields the documents select. Nothing to
+declare. `defineAirplaneStores` adds the indexes your `read` handlers sort or
+filter on, and can declare tables of your own.
 
 ```ts
 // app/airplane/stores.ts
-declare global { interface NuxtAirplaneStores { sites: { id: string, name: string, archived: boolean } } }
-export default defineAirplaneStores({ sites: '&id, name, archived' })
+export default defineAirplaneStores({ Site: 'name' })
 
 // app/airplane/queries.ts
 export default defineQueryHandlers({
   GetSites: {
-    // Rows land in `db.Site` on their own; a custom read answers any filter offline.
+    store: ({ db }, data) => db.Site.bulkPut(data.sites),
+    // Reads the `name` index; answers a filter the server has never seen, offline.
     read: async ({ db, variables }) => ({
-      sites: (await db.Site.toArray()).filter(s => variables?.archived == null || s.archived === variables.archived),
+      sites: (await db.Site.orderBy('name').toArray()).filter(s => variables?.archived == null || s.archived === variables.archived),
     }),
   },
 })
-
-// app/airplane/sites.ts
-export default defineMutationHandlers({
-  RenameSite: { apply: ({ db, variables }) => db.Site.update(variables.id, { name: variables.name }) },
-})
 ```
+
+Rollback works without a `revert` handler: writes made during `apply`, to any
+table, are recorded by an undo log.
 
 One file per operation also works: `defineMutationHandler('RenameSite', { … })` and `defineQueryHandler('GetSites', { … })` declare a single operation, and a folder with an `index.ts` is imported through its index only, so you can compose there.
 
@@ -171,7 +172,7 @@ const { online, syncing, synced, pending, syncTotal, syncCount, lastError, sync,
 - A mutation the server rejects is marked `failed` and left in the queue, and the mutations queued after it wait (`blocked`) until you `retry(id)` or `rollback(id)` it; set `stopOnFailure: false` to keep sending past failures.
 - A network failure stops the batch and keeps everything queued; the next `online` event (or `sync()`) resumes it.
 - Tabs share the database; a Web Lock makes sure only one of them sends the queue at a time.
-- `goOffline()` holds the client offline whatever the network says: queries serve the cache only and mutations stay queued. `goOnline()` releases it and syncs. `online` reflects the effective state; `networkOnline` and `forcedOffline` expose the two inputs. Handy for a "work offline" switch or for testing.
+- `goOffline()` holds the client offline whatever the network says: queries are read from the tables only and mutations stay queued. `goOnline()` releases it and syncs. `online` reflects the effective state; `networkOnline` and `forcedOffline` expose the two inputs. Handy for a "work offline" switch or for testing.
 
 ## Security
 
