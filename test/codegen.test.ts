@@ -135,6 +135,37 @@ describe('entities', () => {
     expect(docs.entities.User).toBeUndefined()
   })
 
+  it('does not count a selection that only reaches below the type through a connection or an embedded object', async () => {
+    const schema = buildSchema(`
+      enum Status { OPEN, CLOSED }
+      type Item { id: ID!, label: String! }
+      type ItemConnection { nodes: [Item!], totalCount: Int! }
+      type Settings { theme: String! }
+      type Site { id: ID!, name: String!, status: Status!, items(first: Int): ItemConnection!, settings: Settings! }
+      type Query { site(id: ID!): Site }
+    `)
+    const dir = await tempDir()
+    await writeFile(join(dir, 'ops.gql'), `
+      query GetSite($id: ID!) { site(id: $id) { id name status } }
+      query GetSiteItems($id: ID!) { site(id: $id) { id items { totalCount nodes { id label } } } }
+      query GetSiteSettings($id: ID!) { site(id: $id) { id settings { theme } } }
+      query GetSiteKey($id: ID!) { site(id: $id) { siteId: id name } }
+    `)
+    const docs = await loadDocuments(['*.gql'], dir, log(), schema)
+    // GetSite is the only full node selection: name and status required. What
+    // the navigation queries reach is on the row, optional, with its own
+    // fields required as selected. GetSiteKey aliases the id, so it is not a
+    // selection of Site at all.
+    expect(docs.rows.Site).toEqual({
+      id: { ts: 'string', required: true },
+      name: { ts: 'string', required: true },
+      status: { ts: 'Status', required: true },
+      items: { ts: '{ totalCount: number, nodes: Array<ItemRow> | null }', required: false },
+      settings: { ts: '{ theme: string }', required: false },
+    })
+    expect(docs.rows.Item).toEqual({ id: { ts: 'string', required: true }, label: { ts: 'string', required: true } })
+  })
+
   it('types a partly covered union or interface as the result does, so rows go in and come back out', async () => {
     const schema = buildSchema(`
       type Product { id: ID!, title: String!, code: String }
