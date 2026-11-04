@@ -5,6 +5,7 @@ import { BOOKKEEPING_TABLES, applyUndo, createDb, withUndoLog } from './db'
 import {
   GraphQLRequestError,
   type CacheApi,
+  type EntityInfo,
   type GraphQLResponse,
   type MutationHandlers,
   type MutationHandler,
@@ -25,6 +26,8 @@ export interface AirplaneClientOptions extends AirplaneRuntimeConfig {
   documents: Record<string, OperationDocument>
   /** Hash of the compiled documents, mixed into the cache key. */
   documentsHash: string
+  /** Types found with an id in the documents; each gets a table. */
+  entities?: Record<string, EntityInfo>
   mutationHandlers: MutationHandlers
   queryHandlers: QueryHandlers
   stores: AirplaneStores
@@ -132,8 +135,29 @@ export class UnresolvedTempIdError extends Error {
 
 export type AirplaneClient = ReturnType<typeof createAirplaneClient>
 
+/**
+ * The tables to open: one per entity keyed on its id, plus the user's. A
+ * user entry for an entity table lists extra indexes; the key is implied.
+ */
+export function mergeStores(entities: Record<string, EntityInfo>, user: Record<string, string>) {
+  const stores: Record<string, string> = {}
+  for (const [name, { key }] of Object.entries(entities)) stores[name] = `&${key}`
+  for (const [name, spec] of Object.entries(user)) {
+    const entity = entities[name]
+    if (!entity) {
+      stores[name] = spec
+      continue
+    }
+    const extra = spec.split(',').map(s => s.trim()).filter(s => s && s.replace(/^[&+*]+/, '') !== entity.key)
+    stores[name] = [`&${entity.key}`, ...extra].join(', ')
+  }
+  return stores
+}
+
 export function createAirplaneClient(options: AirplaneClientOptions) {
-  const db = createDb(options.dbName, options.stores.stores, options.stores.version)
+  const entities = options.entities ?? {}
+  const normalizeAll = options.normalize ?? true
+  const db = createDb(options.dbName, mergeStores(entities, options.stores.stores), options.stores.version)
   const { documents, mutationHandlers, queryHandlers } = options
   /** A failed mutation holds back the ones queued after it (ordered delivery). */
   const stopOnFailure = options.stopOnFailure ?? true
@@ -309,11 +333,100 @@ export function createAirplaneClient(options: AirplaneClientOptions) {
   }
 
   // --------------------------------------------------------------------------
-  // Queries
+  // Normalization
+  //
+  // A response object whose type has a table (`__typename` in `entities`)
+  // and whose id is present is written to that table and replaced, in the
+  // structure that held it, by `{ __typename, id }`. The structure with the
+  // references is the skeleton stored under the query's key. Reading a query
+  // hydrates the skeleton from the tables, inside a live query, so a mutation
+  // that updates a row updates every query showing it.
   // --------------------------------------------------------------------------
 
   function queryHandler(name: string): QueryHandler | undefined {
     return (queryHandlers as Record<string, QueryHandler | undefined>)[name]
+  }
+
+  /**
+   * Whether a query's responses go through the entity tables. A `store`
+   * handler takes that over; a `read` handler alone still gets the rows
+   * written, so it can build the result from them.
+   */
+  function normalized(name: string) {
+    return normalizeAll && !queryHandler(name)?.store
+  }
+
+  function entityOf(value: unknown): { table: string, id: string } | undefined {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return
+    const { __typename } = value as { __typename?: string }
+    const entity = __typename && entities[__typename]
+    if (!entity) return
+    const id = (value as Record<string, unknown>)[entity.key]
+    return id == null ? undefined : { table: __typename, id: String(id) }
+  }
+
+  const isPlain = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && Object.getPrototypeOf(v) === Object.prototype
+
+  /** Splits `value` into a skeleton of references and the rows it contained, innermost first. */
+  function normalize(value: unknown, rows = new Map<string, Map<string, Record<string, unknown>>>()): { skeleton: unknown, rows: typeof rows } {
+    const walk = (v: unknown): unknown => {
+      if (Array.isArray(v)) return v.map(walk)
+      if (!isPlain(v)) return v
+      const out: Record<string, unknown> = {}
+      for (const [k, item] of Object.entries(v)) out[k] = walk(item)
+      const entity = entityOf(out)
+      if (!entity) return out
+      const table = rows.get(entity.table) ?? new Map()
+      // The same entity can appear several times in one response: merge the selections.
+      table.set(entity.id, { ...table.get(entity.id), ...out })
+      rows.set(entity.table, table)
+      return { __typename: entity.table, [entities[entity.table]!.key]: out[entities[entity.table]!.key] }
+    }
+    return { skeleton: walk(value), rows }
+  }
+
+  /** Upserts rows, merging into what the table already holds so fields fetched by another query survive. */
+  async function writeRows(rows: Map<string, Map<string, Record<string, unknown>>>) {
+    for (const [table, byId] of rows) {
+      const t = db.table(table)
+      const ids = [...byId.keys()]
+      const existing = await t.bulkGet(ids)
+      await t.bulkPut(ids.map((id, i) => ({ ...(existing[i] as object | undefined), ...byId.get(id)! })))
+    }
+  }
+
+  /**
+   * Puts rows back into a skeleton. A reference whose row is gone is dropped
+   * from lists and becomes `null` elsewhere, which is how a deleted row
+   * leaves every query. A reference back to an ancestor stays a reference.
+   */
+  async function hydrate(value: unknown, ancestors: string[] = []): Promise<unknown> {
+    if (Array.isArray(value)) {
+      const items = await Promise.all(value.map(v => hydrate(v, ancestors)))
+      return items.filter((v, i) => v !== null || value[i] === null)
+    }
+    if (!isPlain(value)) return value
+    const entity = entityOf(value)
+    let source: Record<string, unknown> = value
+    let scope = ancestors
+    if (entity) {
+      const key = `${entity.table}:${entity.id}`
+      if (ancestors.includes(key)) return { ...value }
+      const row = await db.table(entity.table).get(entity.id) as Record<string, unknown> | undefined
+      if (!row) return null
+      source = { ...row, ...value, ...row }
+      scope = [...ancestors, key]
+    }
+    const out: Record<string, unknown> = {}
+    for (const [k, item] of Object.entries(source)) out[k] = await hydrate(item, scope)
+    return out
+  }
+
+  /** Writes a structure's entities and returns the skeleton to store in its place. */
+  async function storeNormalized(data: unknown) {
+    const { skeleton, rows } = normalize(data)
+    await writeRows(rows)
+    return skeleton
   }
 
   /** Refresh callbacks of the queries currently mounted somewhere. */
@@ -330,8 +443,10 @@ export function createAirplaneClient(options: AirplaneClientOptions) {
     const row = { key: queryKey(name, variables), document: name, variables, updatedAt: Date.now() }
     await db.transaction('rw', db.tables, async () => {
       await h?.store?.({ db, variables: variables as never }, data as never)
-      // With a `read` handler the row only carries metadata.
-      await db.queries.put({ ...row, data: h?.read ? null : data })
+      // Normalized queries keep the skeleton, blob queries the whole response,
+      // and with a `read` handler the row only carries metadata.
+      const skeleton = normalized(name) ? await storeNormalized(data) : data
+      await db.queries.put({ ...row, data: h?.read ? null : skeleton })
     })
   }
 
@@ -385,7 +500,9 @@ export function createAirplaneClient(options: AirplaneClientOptions) {
     const key = queryKey(name, variables)
     const subscription = liveQuery(async (): Promise<QuerySnapshot> => {
       const row = await db.queries.get(key)
-      const data = h?.read ? await h.read({ db, variables: variables as never }) : row?.data
+      const data = h?.read
+        ? await h.read({ db, variables: variables as never })
+        : normalized(name) ? await hydrate(row?.data) : row?.data
       // With `read`, the tables hold data as soon as any variant of this
       // document has been fetched, so a new filter is not "loading" offline.
       const cached = h?.read
@@ -417,13 +534,16 @@ export function createAirplaneClient(options: AirplaneClientOptions) {
   function createCacheApi(invalidated?: Set<QueryName>): CacheApi {
     async function updateRows(name: string, filter: (key: string) => boolean, updater: Updater<unknown>) {
       const rows = (await db.queries.where('document').equals(name).toArray()).filter(r => filter(r.key))
-      const next = rows
-        .filter(row => row.data !== null && row.data !== undefined)
-        .map((row) => {
-          const data = structuredClone(row.data)
-          const returned = updater(data, row.variables)
-          return { ...row, data: returned === undefined ? data : returned }
-        })
+      const viaTables = normalized(name)
+      const next = []
+      for (const row of rows) {
+        if (row.data === null || row.data === undefined) continue
+        // Handlers see the data as a query sees it; what they write is split back into the tables.
+        const data = viaTables ? await hydrate(row.data) : structuredClone(row.data)
+        const returned = updater(data, row.variables)
+        const result = returned === undefined ? data : returned
+        next.push({ ...row, data: viaTables ? await storeNormalized(result) : result })
+      }
       await db.queries.bulkPut(next)
     }
 
@@ -440,10 +560,12 @@ export function createAirplaneClient(options: AirplaneClientOptions) {
       async get(name: string, variables?: unknown) {
         const h = queryHandler(name)
         if (h?.read) return (await h.read({ db, variables: variables as never })) ?? undefined
-        return (await db.queries.get(queryKey(name, variables)))?.data as never
+        const data = (await db.queries.get(queryKey(name, variables)))?.data
+        return (normalized(name) ? await hydrate(data) : data) as never
       },
       async set(name: string, variables: unknown, data: unknown) {
-        await db.queries.put({ key: queryKey(name, variables), document: name, variables, data, updatedAt: Date.now() })
+        const stored = normalized(name) ? await storeNormalized(data) : data
+        await db.queries.put({ key: queryKey(name, variables), document: name, variables, data: stored, updatedAt: Date.now() })
       },
       async invalidate(name: string) {
         await db.queries.where('document').equals(name).delete()
@@ -498,9 +620,40 @@ export function createAirplaneClient(options: AirplaneClientOptions) {
   }
 
   async function resolveTempId(tempId: string, id: string) {
+    await moveEntity(tempId, id)
     const entries = Object.entries(await readTempIds()).filter(([key]) => key !== tempId)
     entries.push([tempId, id])
     await db.meta.put({ key: TEMP_IDS_KEY, value: JSON.stringify(Object.fromEntries(entries.slice(-TEMP_IDS_MAX))) })
+  }
+
+  /**
+   * Re-keys a normalized row created under a placeholder and repoints the
+   * references to it in every stored skeleton, so the row stays in the
+   * queries listing it once the server has named it.
+   */
+  async function moveEntity(tempId: string, id: string) {
+    const tables = Object.keys(entities)
+    if (!tables.length) return
+    await db.transaction('rw', db.tables, async () => {
+      for (const table of tables) {
+        const t = db.table(table)
+        const row = await t.get(tempId) as Record<string, unknown> | undefined
+        if (!row) continue
+        await t.delete(tempId)
+        await t.put({ ...row, [entities[table]!.key]: id })
+      }
+      const rename = (v: unknown): unknown => {
+        if (Array.isArray(v)) return v.map(rename)
+        if (!isPlain(v)) return v
+        const out: Record<string, unknown> = {}
+        for (const [k, item] of Object.entries(v)) out[k] = rename(item)
+        const entity = entityOf(out)
+        if (entity && entity.id === tempId) out[entities[entity.table]!.key] = id
+        return out
+      }
+      const rows = await db.queries.toArray()
+      await db.queries.bulkPut(rows.map(r => ({ ...r, data: rename(r.data) })))
+    })
   }
 
   /** The context `reconcile` runs with. */
@@ -733,6 +886,7 @@ export function createAirplaneClient(options: AirplaneClientOptions) {
     state,
     synced,
     documents,
+    entities,
     active,
     fetchQuery,
     prefetch,

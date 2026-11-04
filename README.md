@@ -120,7 +120,7 @@ Headers are computed when a request is sent, so a mutation queued offline goes o
 
 ## Your own tables
 
-Opt a query into normalized storage: declare Dexie tables with `defineAirplaneStores`, then tell the module how to `store` a response and `read` it back with `defineQueryHandlers`. Mutation handlers write to the tables directly and every query reading them updates on its own. Rollback still works: writes made during `apply` are recorded by an undo log.
+Responses are stored one row per entity, in tables inferred from your documents: every type selected with an `id` gets a `db.<Type>` table, typed from the schema. Mutation handlers write to the rows directly and every query showing them updates on its own. Add a `read` handler with `defineQueryHandlers` when a query should answer filters it has never sent, or `store` and `read` for storage of your own shape. Rollback still works: writes made during `apply` are recorded by an undo log.
 
 ```ts
 // app/airplane/stores.ts
@@ -130,14 +130,16 @@ export default defineAirplaneStores({ sites: '&id, name, archived' })
 // app/airplane/queries.ts
 export default defineQueryHandlers({
   GetSites: {
-    store: ({ db }, data) => db.sites.bulkPut(data.sites),
-    read: async ({ db }) => ({ sites: await db.sites.toArray() }),
+    // Rows land in `db.Site` on their own; a custom read answers any filter offline.
+    read: async ({ db, variables }) => ({
+      sites: (await db.Site.toArray()).filter(s => variables?.archived == null || s.archived === variables.archived),
+    }),
   },
 })
 
 // app/airplane/sites.ts
 export default defineMutationHandlers({
-  RenameSite: { apply: ({ db, variables }) => db.sites.update(variables.id, { name: variables.name }) },
+  RenameSite: { apply: ({ db, variables }) => db.Site.update(variables.id, { name: variables.name }) },
 })
 ```
 

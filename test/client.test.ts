@@ -4,7 +4,7 @@
 import 'fake-indexeddb/auto'
 import { createHash } from 'node:crypto'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { createAirplaneClient, isTempId, newTempId, substituteTempIds, type AirplaneClient, type AirplaneClientOptions } from '../src/runtime/client'
+import { createAirplaneClient, isTempId, mergeStores, newTempId, substituteTempIds, type AirplaneClient, type AirplaneClientOptions } from '../src/runtime/client'
 import type { AirplaneRequestContext, AirplaneRequestOptions, MutationHandlers, OperationDocument, QueryHandlers } from '../src/runtime/types'
 
 // ---------------------------------------------------------------------------
@@ -179,6 +179,29 @@ function cutNetworkFor(op: string) {
     return impl(url, init)
   })
   return () => (down = false)
+}
+
+/** Tags every response object that has an id with its type, as the compiled documents make a server do. */
+function withTypenames() {
+  const impl = server.fetch.getMockImplementation()!
+  const tag = (v: unknown): unknown => {
+    if (Array.isArray(v)) return v.map(tag)
+    if (!v || typeof v !== 'object') return v
+    const out = Object.fromEntries(Object.entries(v).map(([k, x]) => [k, tag(x)]))
+    if ('id' in out) out.__typename = String(out.id).startsWith('s') ? 'Site' : 'Item'
+    return out
+  }
+  server.fetch.mockImplementation(async (url, init) => {
+    const body = await (await impl(url, init)).json()
+    return Response.json({ ...body, data: tag(body.data) })
+  })
+}
+const ENTITIES = { Site: { key: 'id' }, Item: { key: 'id' } }
+
+/** The live data of a query, as `useQuery` would see it. */
+function watchData(client: AirplaneClient, name: string, variables?: unknown) {
+  const { snapshot } = client.watchQuery(name, variables)
+  return <T = unknown>() => snapshot.value.data as T
 }
 
 async function cachedSites(client: AirplaneClient) {
@@ -546,6 +569,127 @@ describe('rollback', () => {
     // A refetch lands with the server's (older) state.
     await client.fetchQuery('GetSites', undefined)
     expect((await cachedSites(client))![0]!.name).toBe('Local')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Normalized cache (the default)
+// ---------------------------------------------------------------------------
+
+describe('normalized cache', () => {
+  it('merges the inferred tables with the user stores', () => {
+    expect(mergeStores({ Site: { key: 'id' } }, { Site: 'name, archived', Other: '++id, x' }))
+      .toEqual({ Site: '&id, name, archived', Other: '++id, x' })
+    expect(mergeStores({ Site: { key: 'id' } }, { Site: '&id, name' })).toEqual({ Site: '&id, name' })
+    expect(mergeStores({ Site: { key: 'id' } }, {})).toEqual({ Site: '&id' })
+  })
+
+  it('stores rows per type, keeps a skeleton of references, and reads the query back whole', async () => {
+    withTypenames()
+    const client = createClient(server, { entities: ENTITIES })
+    await client.fetchQuery('GetSites', undefined)
+    expect(await client.db.table('Site').get('s1')).toEqual({ __typename: 'Site', id: 's1', name: 'North', archived: false })
+    const row = (await client.db.queries.toArray())[0]!
+    expect(row.data).toEqual({ sites: [{ __typename: 'Site', id: 's1' }, { __typename: 'Site', id: 's2' }] })
+
+    const sites = watchData(client, 'GetSites')
+    await until(() => sites<{ sites: Site[] }>()?.sites?.length === 2, 'hydrated data')
+    expect(sites<{ sites: Site[] }>().sites[0]).toEqual({ __typename: 'Site', id: 's1', name: 'North', archived: false })
+  })
+
+  it('shows a row update in every query, and drops a deleted row from lists', async () => {
+    withTypenames()
+    const client = createClient(server, { entities: ENTITIES })
+    await client.fetchQuery('GetSites', undefined)
+    await client.fetchQuery('GetSite', { id: 's1' })
+    const list = watchData(client, 'GetSites')
+    const one = watchData(client, 'GetSite', { id: 's1' })
+
+    await client.db.table('Site').update('s1', { name: 'Renamed' })
+    await until(() => one<{ site: Site }>()?.site?.name === 'Renamed', 'single query updated')
+    expect(list<{ sites: Site[] }>().sites[0]!.name).toBe('Renamed')
+
+    await client.db.table('Site').delete('s1')
+    await until(() => list<{ sites: Site[] }>()?.sites?.length === 1, 'row dropped from the list')
+    expect(one<{ site: Site | null }>().site).toBeNull()
+  })
+
+  it('merges fields fetched by different queries into one row', async () => {
+    withTypenames()
+    const client = createClient(server, { entities: ENTITIES })
+    await client.fetchQuery('GetSites', undefined)
+    // A narrower selection of the same site must not wipe what the wider one stored.
+    server.fetch.mockImplementationOnce(async () => Response.json({ data: { site: { __typename: 'Site', id: 's1', name: 'Narrow' } } }))
+    await client.fetchQuery('GetSite', { id: 's1' })
+    expect(await client.db.table('Site').get('s1')).toEqual({ __typename: 'Site', id: 's1', name: 'Narrow', archived: false })
+  })
+
+  it('lets handlers edit a query as they see it and splits the writes back into the tables', async () => {
+    withTypenames()
+    const client = createClient(server, { entities: ENTITIES, mutationHandlers: blobHandlers })
+    await client.fetchQuery('GetSites', undefined)
+    await client.fetchQuery('GetSite', { id: 's1' })
+    client.goOffline()
+
+    const row = await client.enqueue('RenameSite', { id: 's1', name: 'Nord' })
+    expect((await client.db.table('Site').get('s1') as Site).name).toBe('Nord')
+    const one = watchData(client, 'GetSite', { id: 's1' })
+    await until(() => one<{ site: Site }>()?.site?.name === 'Nord', 'other query sees the rename')
+
+    // The undo log covers the entity table like any other.
+    await client.rollback(row.id)
+    expect((await client.db.table('Site').get('s1') as Site).name).toBe('North')
+  })
+
+  it('moves a row created under a temp id to the server id, references included', async () => {
+    withTypenames()
+    const handlers = {
+      CreateSite: {
+        apply: ({ cache, variables, tempId }: never) =>
+          (cache as never as { update: SitesUpdate }).update('GetSites', (data) => {
+            data.sites.push({ __typename: 'Site', id: (tempId as () => string)(), name: (variables as { name: string }).name, archived: false } as Site)
+          }),
+        reconcile: ({ tempIds, resolve }: never, result: { createSite: Site }) =>
+          (resolve as (t: string, id: string) => Promise<void>)((tempIds as string[])[0]!, result.createSite.id),
+      },
+    } as unknown as MutationHandlers
+    const client = createClient(server, { entities: ENTITIES, mutationHandlers: handlers })
+    await client.fetchQuery('GetSites', undefined)
+    client.goOffline()
+    await client.enqueue('CreateSite', { name: 'West' })
+    const tmp = (await client.db.table('Site').toArray() as Site[]).find(s => s.name === 'West')!.id
+    expect(isTempId(tmp)).toBe(true)
+
+    client.goOnline()
+    await until(async () => (await client.db.mutations.count()) === 0, 'outbox to drain')
+    expect(await client.db.table('Site').get(tmp)).toBeUndefined()
+    expect(await client.db.table('Site').get('s3')).toMatchObject({ name: 'West' })
+    const list = watchData(client, 'GetSites')
+    await until(() => list<{ sites: Site[] }>()?.sites?.some(s => s.id === 's3') ?? false, 'list points at the real row')
+  })
+
+  it('caches whole responses with normalize: false', async () => {
+    withTypenames()
+    const client = createClient(server, { entities: ENTITIES, normalize: false })
+    await client.fetchQuery('GetSites', undefined)
+    expect(await client.db.table('Site').count()).toBe(0)
+    expect((await cachedSites(client))![0]).toMatchObject({ id: 's1', name: 'North' })
+  })
+
+  it('writes the rows for a query with only a read handler, and nothing for one with a store handler', async () => {
+    withTypenames()
+    const read = vi.fn(async () => ({ sites: [] }))
+    const reader = createClient(server, { entities: ENTITIES, queryHandlers: { GetSites: { read } } as unknown as QueryHandlers })
+    await reader.fetchQuery('GetSites', undefined)
+    expect(await reader.db.table('Site').count()).toBe(2)
+    expect((await reader.db.queries.toArray())[0]!.data).toBeNull()
+
+    const store = vi.fn()
+    const storer = createClient(server, { entities: ENTITIES, queryHandlers: { GetSites: { store } } as unknown as QueryHandlers })
+    await storer.fetchQuery('GetSites', undefined)
+    expect(store).toHaveBeenCalledTimes(1)
+    expect(await storer.db.table('Site').count()).toBe(0)
+    expect((await cachedSites(storer))![0]).toMatchObject({ id: 's1', name: 'North' })
   })
 })
 

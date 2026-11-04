@@ -1,7 +1,7 @@
-// Classic numbered pages over the same catalog. `read` slices the local
-// `items` table at the same offset as the server, so a page that was fetched
-// comes back identical; offline, a page that was never fetched shows what the
-// local data has at that offset, and `totalPages` reflects local data.
+// Classic numbered pages over the same catalog. `read` slices the `Item`
+// table at the same offset as the server, so a page that was fetched comes
+// back identical; offline, a page that was never fetched shows what the local
+// data has at that offset, and `totalPages` reflects local data.
 
 export default defineQueryHandler('ItemsPage', {
   // Numbered pages prefetch the same way: page + 1 until the last one.
@@ -11,15 +11,12 @@ export default defineQueryHandler('ItemsPage', {
       : null,
   },
 
-  // A page is a subset: upsert only.
-  store: ({ db }, data) => db.items.bulkPut(data.itemsPage.items),
-
   async read({ db, variables }) {
     const { query, page, pageSize } = variables ?? {}
     const size = pageSize ?? 20
     const current = page ?? 1
     const q = query?.trim().toLowerCase()
-    const matches = (await db.items.orderBy('name').toArray())
+    const matches = (await db.Item.orderBy('name').toArray())
       .filter(i => !q || i.name.toLowerCase().includes(q))
       .sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id))
     return {
