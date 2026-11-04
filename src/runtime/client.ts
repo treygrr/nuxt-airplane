@@ -586,11 +586,27 @@ export function createAirplaneClient(options: AirplaneClientOptions) {
   }
 
   let syncPromise: Promise<void> | null = null
+  /** `sync()` was called while a run was in progress: run again when it ends. */
+  let syncAgain = false
 
-  /** Send every pending mutation, oldest first. Stops at the first network failure. */
+  /**
+   * Send every pending mutation, oldest first. Stops at the first network
+   * failure. One run at a time: a call made during a run (a mutation queued
+   * mid-batch, the network coming back) does not join the batch already
+   * snapshotted but is honoured by a second run right after it, and the
+   * returned promise settles when the queue is drained or blocked.
+   */
   function sync() {
-    if (syncPromise) return syncPromise
-    syncPromise = runSyncLocked().finally(() => (syncPromise = null))
+    if (syncPromise) {
+      syncAgain = true
+      return syncPromise
+    }
+    syncPromise = (async () => {
+      do {
+        syncAgain = false
+        await runSyncLocked()
+      } while (syncAgain)
+    })().finally(() => (syncPromise = null))
     return syncPromise
   }
 
@@ -693,9 +709,6 @@ export function createAirplaneClient(options: AirplaneClientOptions) {
     await ready
     if (!state.online) throw new Error(`[nuxt-airplane] Cannot send "${name}" while offline`)
     await sync()
-    // The sync just awaited may have started while offline, or before the last
-    // row was queued, and sent nothing: run a fresh one for what is still sendable.
-    if (state.online && (await sendable()).length) await sync()
     const outbound = await outboundVariables(name, variables)
     const result = await request<T>(name, outbound)
     const h = mutationHandler(name)
