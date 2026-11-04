@@ -52,6 +52,12 @@ query SearchItems($query: String, $first: Int, $after: String) {
   }
 }
 
+mutation CreateSite($name: String!) {
+  createSite(name: $name) {
+    ...SiteFields
+  }
+}
+
 mutation ArchiveSite($id: ID!) {
   archiveSite(id: $id) {
     ...SiteFields

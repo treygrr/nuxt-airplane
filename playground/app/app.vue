@@ -10,6 +10,7 @@ const { data: sitesData, loading, fetching, error, updatedAt, refresh } = useQue
 const { data: itemsData } = useQuery('GetItems')
 const sync = useSync()
 
+const create = useMutation('CreateSite')
 const archive = useMutation('ArchiveSite')
 const unarchive = useMutation('UnarchiveSite')
 const rename = useMutation('RenameSite')
@@ -34,6 +35,16 @@ watch(itemQuery, () => (page.value = 1))
 const itemsPage = useQuery('ItemsPage', () => ({ query: itemQuery.value, page: page.value, pageSize: 20 }))
 const catalog = computed(() => itemsData.value?.items ?? [])
 const picked = reactive<Record<string, string>>({})
+
+// Works offline too: the site shows up with a placeholder id, and anything
+// done to it before the connection is back is sent with the real id.
+const newSiteName = ref('')
+function createSite() {
+  const name = newSiteName.value.trim()
+  if (!name) return
+  create.mutate({ name })
+  newSiteName.value = ''
+}
 
 function promptRename(site: { id: string, name: string }) {
   const name = window.prompt('New name', site.name)
@@ -153,6 +164,22 @@ function summarize(m: { document: string, variables: unknown }) {
           Refresh
         </button>
       </div>
+      <form
+        class="filters"
+        @submit.prevent="createSite()"
+      >
+        <input
+          v-model="newSiteName"
+          type="text"
+          placeholder="New site name…"
+        >
+        <button
+          type="submit"
+          :disabled="!newSiteName.trim()"
+        >
+          Create site
+        </button>
+      </form>
       <p
         v-if="error"
         class="error"
@@ -171,6 +198,10 @@ function summarize(m: { document: string, variables: unknown }) {
         <h3>
           {{ site.name }}
           <em v-if="site.archived">archived</em>
+          <em
+            v-if="site.id.startsWith('tmp-')"
+            title="Created offline; gets its id when the create reaches the server"
+          >not yet on the server</em>
         </h3>
         <div class="actions">
           <button @click="promptRename(site)">
@@ -311,7 +342,7 @@ article.archived { opacity: .6; }
 article h3 { margin: 0 0 8px; display: flex; gap: 8px; align-items: baseline; }
 article h3 em, .pending em { font-size: .8em; color: #777; }
 .filters { display: flex; gap: 12px; align-items: center; margin: 8px 0 12px; }
-.filters input[type=search] { flex: 1; padding: 6px 8px; }
+.filters input[type=search], .filters input[type=text] { flex: 1; padding: 6px 8px; }
 .actions { display: flex; gap: 6px; margin: 8px 0; }
 table { width: 100%; border-collapse: collapse; }
 td { padding: 4px 0; }

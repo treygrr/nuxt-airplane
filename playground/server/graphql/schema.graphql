@@ -56,6 +56,7 @@ type Query {
 }
 
 type Mutation {
+  createSite(name: String!): Site!
   archiveSite(id: ID!): Site!
   unarchiveSite(id: ID!): Site!
   renameSite(id: ID!, name: String!): Site!
