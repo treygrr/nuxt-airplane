@@ -7,12 +7,13 @@ import * as typescriptPlugin from '@graphql-codegen/typescript'
 import * as typescriptOperationsPlugin from '@graphql-codegen/typescript-operations'
 import {
   Kind,
-  TypeInfo,
   buildClientSchema,
   buildSchema,
   getIntrospectionQuery,
   getNamedType,
+  isAbstractType,
   isEnumType,
+  isInterfaceType,
   isListType,
   isNonNullType,
   isObjectType,
@@ -21,9 +22,9 @@ import {
   print,
   printSchema,
   visit,
-  visitWithTypeInfo,
   type DocumentNode,
   type FragmentDefinitionNode,
+  type GraphQLNamedType,
   type GraphQLOutputType,
   type GraphQLSchema,
   type OperationDefinitionNode,
@@ -127,55 +128,130 @@ function hasIdField(type: unknown) {
 
 const SCALARS: Record<string, string> = { ID: 'string', String: 'string', Int: 'number', Float: 'number', Boolean: 'boolean' }
 
-/** The TypeScript type of a stored field: scalars mapped, other entities as their row type, the rest as the generated type. */
-function rowFieldType(type: GraphQLOutputType, entities: Set<string>): string {
-  if (isNonNullType(type)) return rowFieldType(type.ofType, entities).replace(/ \| null$/, '')
+/**
+ * A selection set merged across every place it was selected: how many times,
+ * and for each field (by response key) how many of those selected it, its
+ * schema type and, for an object field, the merged selection below it.
+ */
+interface MergedSelection {
+  selections: number
+  fields: Map<string, { count: number, type: GraphQLOutputType, sub: MergedSelection | null }>
+}
+
+/** Whether every occurrence of a merged selection selected the type's `id`. */
+const selectsId = (m: MergedSelection) => m.fields.get('id')?.count === m.selections
+
+/**
+ * The TypeScript type of a stored field: scalars mapped, another entity
+ * selected with its id as its row type, any other object as the fields the
+ * documents select on it, so a query's result is assignable to its row.
+ */
+function fieldType(type: GraphQLOutputType, sub: MergedSelection | null, entities: Set<string>): string {
+  if (isNonNullType(type)) return fieldType(type.ofType, sub, entities).replace(/ \| null$/, '')
   const inner = isListType(type)
-    ? `Array<${rowFieldType(type.ofType, entities)}>`
+    ? `Array<${fieldType(type.ofType, sub, entities)}>`
     : isScalarType(type)
       ? SCALARS[type.name] ?? `Scalars['${type.name}']['output']`
       : isEnumType(type)
         ? type.name
-        : entities.has(type.name) ? `${type.name}Row` : type.name
+        : !sub
+            ? type.name
+            : entities.has(type.name) && selectsId(sub) ? `${type.name}Row` : objectType(sub, entities)
   return `${inner} | null`
+}
+
+/** An inline object type from a merged selection; a field is optional unless every occurrence selected it. */
+function objectType(m: MergedSelection, entities: Set<string>): string {
+  const members = [...m.fields].map(([key, f]) => `${key}${f.count === m.selections ? '' : '?'}: ${fieldType(f.type, f.sub, entities)}`)
+  return `{ ${members.join(', ')} }`
 }
 
 /**
  * Finds the types the documents select with an id, which each get a table,
  * and the fields stored for each. A selection set on an object type with an
  * `id: ID` field, that selects `id`, counts; the row type gets the union of
- * the fields of every such selection, required when all of them have it.
+ * the fields of every such selection, required when all of them have it, and
+ * the same rule applies to each object below it.
  */
 function analyzeEntities(schema: GraphQLSchema, documentNodes: DocumentNode[], fragments: Map<string, FragmentDefinitionNode>) {
-  const seen = new Map<string, { selections: number, fields: Map<string, number> }>()
+  const seen = new Map<string, MergedSelection>()
+  const entitySelection = (name: string) => {
+    const entry = seen.get(name) ?? { selections: 0, fields: new Map() }
+    seen.set(name, entry)
+    return entry
+  }
 
-  /** Field names of a selection set, following spreads and inline fragments. */
-  function fieldsOf(set: SelectionSetNode, into = new Set<string>()): Set<string> {
-    for (const s of set.selections) {
-      if (s.kind === Kind.FIELD) into.add(s.name.value)
-      else if (s.kind === Kind.INLINE_FRAGMENT) fieldsOf(s.selectionSet, into)
-      else if (s.kind === Kind.FRAGMENT_SPREAD) {
-        const fragment = fragments.get(s.name.value)
-        if (fragment) fieldsOf(fragment.selectionSet, into)
+  /** Whether a selection set selects the plain `id` field, following spreads and inline fragments. */
+  function hasId(set: SelectionSetNode): boolean {
+    return set.selections.some(s =>
+      s.kind === Kind.FIELD
+        ? s.name.value === 'id' && !s.alias
+        : s.kind === Kind.INLINE_FRAGMENT
+          ? hasId(s.selectionSet)
+          : !!fragments.get(s.name.value) && hasId(fragments.get(s.name.value)!.selectionSet))
+  }
+
+  /** Whether a type condition only applies to some of what `on` can be, so the fields under it are optional. */
+  function narrows(condition: GraphQLNamedType, on: GraphQLNamedType | undefined) {
+    if (!on || condition === on) return false
+    return !(isAbstractType(condition) && isObjectType(on) && schema.isSubType(condition, on))
+  }
+
+  /**
+   * Merges one occurrence of a selection (possibly spread over several sets
+   * that GraphQL merges, like `a { x } a { y }`) on `parent` into `into`,
+   * following fragment spreads and inline fragments. A selection on an
+   * entity type that selects its id is also merged into that entity's row.
+   */
+  function merge(into: MergedSelection, sets: SelectionSetNode[], parent: GraphQLNamedType | undefined) {
+    into.selections++
+    const counted = new Set<string>()
+    const below = new Map<string, { sets: SelectionSetNode[], type: GraphQLNamedType }>()
+    const walk = (set: SelectionSetNode, on: GraphQLNamedType | undefined, narrowed: boolean) => {
+      for (const s of set.selections) {
+        if (s.kind === Kind.FIELD) {
+          if (s.name.value === '__typename') continue
+          const def = isObjectType(on) || isInterfaceType(on) ? on.getFields()[s.name.value] : undefined
+          if (!def) continue
+          const key = (s.alias ?? s.name).value
+          const entry = into.fields.get(key) ?? { count: 0, type: def.type, sub: null }
+          into.fields.set(key, entry)
+          if (!narrowed && !counted.has(key)) {
+            counted.add(key)
+            entry.count++
+          }
+          if (s.selectionSet) {
+            const b = below.get(key) ?? { sets: [], type: getNamedType(def.type) }
+            b.sets.push(s.selectionSet)
+            below.set(key, b)
+          }
+          continue
+        }
+        const condition = s.kind === Kind.INLINE_FRAGMENT
+          ? (s.typeCondition ? schema.getType(s.typeCondition.name.value) ?? undefined : on)
+          : (fragments.has(s.name.value) ? schema.getType(fragments.get(s.name.value)!.typeCondition.name.value) ?? undefined : undefined)
+        const selectionSet = s.kind === Kind.INLINE_FRAGMENT ? s.selectionSet : fragments.get(s.name.value)?.selectionSet
+        if (!condition || !selectionSet) continue
+        // Narrowing a union or interface to an entity is a selection of that entity too.
+        if (narrows(condition, on) && hasIdField(condition) && hasId(selectionSet)) merge(entitySelection(condition.name), [selectionSet], condition)
+        walk(selectionSet, condition, narrowed || narrows(condition, on))
       }
     }
-    return into
+    for (const set of sets) walk(set, parent, false)
+    for (const [key, { sets: subsets, type }] of below) {
+      const entry = into.fields.get(key)!
+      entry.sub ??= { selections: 0, fields: new Map() }
+      merge(entry.sub, subsets, type)
+      if (hasIdField(type) && subsets.some(hasId)) merge(entitySelection(type.name), subsets, type)
+    }
   }
 
   for (const doc of documentNodes) {
-    const typeInfo = new TypeInfo(schema)
-    visit(doc, visitWithTypeInfo(typeInfo, {
-      SelectionSet(node) {
-        const type = getNamedType(typeInfo.getType())
-        if (!hasIdField(type)) return
-        const fields = fieldsOf(node)
-        if (!fields.has('id')) return
-        const entry = seen.get(type!.name) ?? { selections: 0, fields: new Map() }
-        entry.selections++
-        for (const f of fields) entry.fields.set(f, (entry.fields.get(f) ?? 0) + 1)
-        seen.set(type!.name, entry)
-      },
-    }))
+    for (const def of doc.definitions) {
+      if (def.kind !== Kind.OPERATION_DEFINITION) continue
+      const root = def.operation === 'query' ? schema.getQueryType() : def.operation === 'mutation' ? schema.getMutationType() : schema.getSubscriptionType()
+      merge({ selections: 0, fields: new Map() }, [def.selectionSet], root ?? undefined)
+    }
   }
 
   const entities: Record<string, EntityInfo> = {}
@@ -183,15 +259,9 @@ function analyzeEntities(schema: GraphQLSchema, documentNodes: DocumentNode[], f
   const names = new Set(seen.keys())
   for (const [name, entry] of seen) {
     entities[name] = { key: 'id' }
-    const type = schema.getType(name)
-    if (!isObjectType(type)) continue
-    const schemaFields = type.getFields()
     rows[name] = {}
-    for (const [field, count] of entry.fields) {
-      if (field === '__typename') continue
-      const def = schemaFields[field]
-      if (!def) continue
-      rows[name][field] = { ts: rowFieldType(def.type, names), required: field === 'id' || count === entry.selections }
+    for (const [key, f] of entry.fields) {
+      rows[name][key] = { ts: fieldType(f.type, f.sub, names), required: key === 'id' || f.count === entry.selections }
     }
   }
   return { entities, rows }
