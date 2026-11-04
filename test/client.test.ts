@@ -2,6 +2,7 @@
 // standing in for the GraphQL server. Everything the module promises about
 // caching, the outbox, rollback, rebase, prefetch and cache keys is exercised here.
 import 'fake-indexeddb/auto'
+import { createHash } from 'node:crypto'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createAirplaneClient, isTempId, newTempId, substituteTempIds, type AirplaneClient, type AirplaneClientOptions } from '../src/runtime/client'
 import type { AirplaneRequestContext, AirplaneRequestOptions, MutationHandlers, OperationDocument, QueryHandlers } from '../src/runtime/types'
@@ -20,6 +21,10 @@ const documents: Record<string, OperationDocument> = {
   CreateSite: { name: 'CreateSite', kind: 'mutation', source: 'mutation CreateSite($name: String!) { createSite(name: $name) { id name archived } }' },
   SearchItems: { name: 'SearchItems', kind: 'query', source: 'query SearchItems($after: String) { searchItems(after: $after) { edges { node { id } } pageInfo { hasNextPage endCursor } } }' },
 }
+
+const sha256 = (text: string) => createHash('sha256').update(text).digest('hex')
+/** The same documents with the build-time hash persisted queries send. */
+const hashedDocuments = Object.fromEntries(Object.entries(documents).map(([name, doc]) => [name, { ...doc, hash: sha256(doc.source) }]))
 
 function createServer() {
   const sites: Site[] = [
@@ -138,6 +143,31 @@ async function until(check: () => boolean | Promise<boolean>, what = 'condition'
     await new Promise(r => setTimeout(r, 10))
   }
   throw new Error(`Timed out waiting for ${what}`)
+}
+
+/**
+ * Puts an APQ layer in front of the fake server: a hash-only request is
+ * answered from the documents it has seen, else with PersistedQueryNotFound.
+ * Returns what each request carried.
+ */
+function withApq(support = true) {
+  const impl = server.fetch.getMockImplementation()!
+  const known = new Map<string, string>()
+  const sent: { query: boolean, hash: boolean }[] = []
+  server.fetch.mockImplementation(async (url, init) => {
+    const body = JSON.parse(init!.body as string) as { query?: string, variables?: unknown, extensions?: { persistedQuery?: { sha256Hash: string } } }
+    const hash = body.extensions?.persistedQuery?.sha256Hash
+    sent.push({ query: !!body.query, hash: !!hash })
+    if (hash && !support) return Response.json({ errors: [{ message: 'PersistedQueryNotSupported', extensions: { code: 'PERSISTED_QUERY_NOT_SUPPORTED' } }] })
+    let query = body.query
+    if (!query && hash) {
+      query = known.get(hash)
+      if (!query) return Response.json({ errors: [{ message: 'PersistedQueryNotFound', extensions: { code: 'PERSISTED_QUERY_NOT_FOUND' } }] })
+    }
+    if (hash && body.query) known.set(hash, body.query)
+    return impl(url, { ...init, body: JSON.stringify({ query, variables: body.variables }) })
+  })
+  return sent
 }
 
 async function cachedSites(client: AirplaneClient) {
@@ -483,6 +513,63 @@ describe('rollback', () => {
     // A refetch lands with the server's (older) state.
     await client.fetchQuery('GetSites', undefined)
     expect((await cachedSites(client))![0]!.name).toBe('Local')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Persisted queries
+// ---------------------------------------------------------------------------
+
+describe('persisted queries', () => {
+  it('sends the hash first and the text only once the server asks for it', async () => {
+    const sent = withApq()
+    const client = createClient(server, { documents: hashedDocuments, persistedQueries: 'automatic' })
+    await client.fetchQuery('GetSites', undefined)
+    await client.fetchQuery('GetSites', undefined)
+    expect(sent).toEqual([
+      { hash: true, query: false }, // miss
+      { hash: true, query: true }, // registers the text
+      { hash: true, query: false }, // known from now on
+    ])
+    expect(await cachedSites(client)).toHaveLength(2)
+  })
+
+  it('falls back to full documents for the session when the server does not support it', async () => {
+    const sent = withApq(false)
+    const client = createClient(server, { documents: hashedDocuments, persistedQueries: 'automatic' })
+    await client.fetchQuery('GetSites', undefined)
+    await client.fetchQuery('GetSite', { id: 's1' })
+    expect(sent).toEqual([
+      { hash: true, query: false },
+      { hash: false, query: true },
+      { hash: false, query: true },
+    ])
+  })
+
+  it('never sends the text in manifest mode and surfaces an unknown hash as an error', async () => {
+    const sent = withApq()
+    const client = createClient(server, { documents: hashedDocuments, persistedQueries: 'manifest' })
+    await expect(client.fetchQuery('GetSites', undefined)).rejects.toThrow('PersistedQueryNotFound')
+    expect(sent).toEqual([{ hash: true, query: false }])
+    expect(await client.db.queries.count()).toBe(0)
+  })
+
+  it('sends the text when a document has no hash, and when the option is off', async () => {
+    const sent = withApq()
+    const unhashed = createClient(server, { persistedQueries: 'automatic' })
+    await unhashed.fetchQuery('GetSites', undefined)
+    const off = createClient(server, { documents: hashedDocuments })
+    await off.fetchQuery('GetSites', undefined)
+    expect(sent).toEqual([{ hash: false, query: true }, { hash: false, query: true }])
+  })
+
+  it('applies to mutations sent from the outbox', async () => {
+    const sent = withApq()
+    const client = createClient(server, { documents: hashedDocuments, persistedQueries: 'automatic', mutationHandlers: blobHandlers })
+    await client.enqueue('ArchiveSite', { id: 's1' })
+    await until(async () => (await client.db.mutations.count()) === 0, 'outbox to drain')
+    expect(server.sites[0]!.archived).toBe(true)
+    expect(sent.slice(0, 2)).toEqual([{ hash: true, query: false }, { hash: true, query: true }])
   })
 })
 

@@ -9,5 +9,6 @@ export default defineNuxtConfig({
     schema: './schema.graphql',
     schemaHeaders: { Authorization: 'Bearer build-only-token' },
     cacheKey: 'fixture-1',
+    persistedQueries: 'automatic',
   },
 })

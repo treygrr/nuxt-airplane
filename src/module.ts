@@ -14,6 +14,7 @@ import { hash } from 'ohash'
 import { glob } from 'tinyglobby'
 import { generateTypes, loadDocuments, loadSchema, type LoadedDocuments } from './codegen'
 import { WRAP_HINT, findUntaggedDefaultExport } from './handlers'
+import type { PersistedQueriesMode } from './runtime/types'
 
 export interface ModuleOptions {
   /** URL of the GraphQL endpoint. A path like `/api/graphql` is resolved against the app's own origin. */
@@ -47,6 +48,15 @@ export interface ModuleOptions {
    * Set to `false` to skip failed mutations and keep sending the rest.
    */
   stopOnFailure: boolean
+  /**
+   * Send operations by their SHA-256 hash instead of their text.
+   * - `'automatic'`: Apollo-style automatic persisted queries. The hash is
+   *   sent first; the text follows only when the server answers
+   *   `PersistedQueryNotFound`. Works with any server that supports APQ.
+   * - `'manifest'`: only the hash is ever sent. Register the documents on the
+   *   server from the manifest written to `.nuxt/nuxt-airplane/persisted-queries.json`.
+   */
+  persistedQueries: PersistedQueriesMode
   /** Extra options passed to the `typescript` / `typescript-operations` codegen plugins. */
   codegen: Record<string, unknown>
 }
@@ -63,6 +73,7 @@ export default defineNuxtModule<ModuleOptions>({
     handlersDir: 'airplane',
     dbName: 'nuxt-airplane',
     stopOnFailure: true,
+    persistedQueries: false,
     codegen: {},
   },
   async setup(options, nuxt) {
@@ -77,6 +88,8 @@ export default defineNuxtModule<ModuleOptions>({
       cacheKey: options.cacheKey ?? '',
       headers: options.headers ?? {},
       stopOnFailure: options.stopOnFailure,
+      // A string so Nuxt's runtime config typing does not pin it to boolean.
+      persistedQueries: options.persistedQueries || '',
     }
 
     nuxt.options.build.transpile.push(resolver.resolve('./runtime'))
@@ -129,6 +142,20 @@ export default defineNuxtModule<ModuleOptions>({
         '',
       ].join('\n'),
     })
+
+    if (options.persistedQueries) {
+      // Apollo's persisted query manifest format, which Apollo Router and
+      // Server read as is and which is a plain `{ id, body }` list for others.
+      addTemplate({
+        filename: 'nuxt-airplane/persisted-queries.json',
+        write: true,
+        getContents: () => JSON.stringify({
+          format: 'apollo-persisted-query-manifest',
+          version: 1,
+          operations: Object.values(docs.operations).map(op => ({ id: op.hash, name: op.name, type: op.kind, body: op.source })),
+        }, null, 2),
+      })
+    }
 
     const handlersTemplate = addTemplate({
       filename: 'nuxt-airplane/handlers.mjs',

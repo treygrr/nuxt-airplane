@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { existsSync } from 'node:fs'
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
@@ -158,7 +159,8 @@ export async function loadDocuments(
     }
     const documentNode: DocumentNode = { kind: Kind.DOCUMENT, definitions: [node, ...needed.values()] }
     documentNodes.push(documentNode)
-    operations[name] = { name, kind: node.operation, source: print(documentNode) }
+    const source = print(documentNode)
+    operations[name] = { name, kind: node.operation, source, hash: createHash('sha256').update(source).digest('hex') }
   }
 
   return { operations, documentNodes, files }
@@ -181,7 +183,7 @@ function operationMap(ops: OperationDocument[], kind: OperationDocument['kind'],
  */
 const virtualModules = `
 declare module '#nuxt-airplane/documents' {
-  export const documents: Record<string, { name: string, kind: 'query' | 'mutation' | 'subscription', source: string }>
+  export const documents: Record<string, { name: string, kind: 'query' | 'mutation' | 'subscription', source: string, hash: string }>
   export const documentsHash: string
 }
 declare module '#nuxt-airplane/handlers' {
