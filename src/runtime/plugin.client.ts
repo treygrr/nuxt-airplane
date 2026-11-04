@@ -1,9 +1,10 @@
 import { defineNuxtPlugin, useRuntimeConfig } from '#app'
-import { documents, documentsHash } from '#nuxt-airplane/documents'
+import { documents, documentsHash, entities } from '#nuxt-airplane/documents'
 import { handlers } from '#nuxt-airplane/handlers'
 import { createAirplaneClient } from './client'
 import {
   HANDLER_KIND,
+  type EntityInfo,
   type HandlerKind,
   type MutationHandlers,
   type AirplaneRequestOptions,
@@ -47,6 +48,7 @@ export default defineNuxtPlugin({
       ...config,
       documents: documents as Record<string, OperationDocument>,
       documentsHash,
+      entities: entities as Record<string, EntityInfo>,
       ...collect(handlers),
       runWithContext: fn => nuxtApp.runWithContext(fn),
     })

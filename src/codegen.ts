@@ -7,20 +7,30 @@ import * as typescriptPlugin from '@graphql-codegen/typescript'
 import * as typescriptOperationsPlugin from '@graphql-codegen/typescript-operations'
 import {
   Kind,
+  TypeInfo,
   buildClientSchema,
   buildSchema,
   getIntrospectionQuery,
+  getNamedType,
+  isEnumType,
+  isListType,
+  isNonNullType,
+  isObjectType,
+  isScalarType,
   parse,
   print,
   printSchema,
   visit,
+  visitWithTypeInfo,
   type DocumentNode,
   type FragmentDefinitionNode,
+  type GraphQLOutputType,
   type GraphQLSchema,
   type OperationDefinitionNode,
+  type SelectionSetNode,
 } from 'graphql'
 import { glob } from 'tinyglobby'
-import type { OperationDocument } from './runtime/types'
+import type { EntityInfo, OperationDocument } from './runtime/types'
 
 // ---------------------------------------------------------------------------
 // Schema
@@ -96,9 +106,115 @@ export async function loadSchema(source: SchemaSource, log: { warn: (msg: string
 
 export interface LoadedDocuments {
   operations: Record<string, OperationDocument>
-  /** Every operation with the fragments it needs, for codegen. */
+  /**
+   * Every operation with the fragments it needs, for codegen. Without the
+   * injected `__typename`, so result types keep it optional and a `read`
+   * handler need not produce it.
+   */
   documentNodes: DocumentNode[]
   files: string[]
+  /**
+   * Object types selected with their `id` somewhere in the documents, keyed by
+   * typename: each gets a table. Empty without a schema.
+   */
+  entities: Record<string, EntityInfo>
+  /** Row fields per entity, for the generated types: TS type and whether every selection includes it. */
+  rows: Record<string, Record<string, { ts: string, required: boolean }>>
+}
+
+/**
+ * Adds `__typename` to every selection set below the root, so the runtime can
+ * tell which table a response object belongs to. Idempotent.
+ */
+export function addTypenames(doc: DocumentNode): DocumentNode {
+  const withTypename = (set: SelectionSetNode | undefined) => {
+    if (!set || set.selections.some(s => s.kind === Kind.FIELD && s.name.value === '__typename')) return set
+    return { ...set, selections: [...set.selections, { kind: Kind.FIELD, name: { kind: Kind.NAME, value: '__typename' } }] } as SelectionSetNode
+  }
+  return visit(doc, {
+    Field: node => (node.selectionSet ? { ...node, selectionSet: withTypename(node.selectionSet) } : undefined),
+    InlineFragment: node => ({ ...node, selectionSet: withTypename(node.selectionSet)! }),
+    FragmentDefinition: node => ({ ...node, selectionSet: withTypename(node.selectionSet)! }),
+  })
+}
+
+/** Whether an object type can be normalized: it has an `id` field of type `ID`. */
+function hasIdField(type: unknown) {
+  if (!isObjectType(type)) return false
+  const id = type.getFields().id
+  return !!id && getNamedType(id.type).name === 'ID'
+}
+
+const SCALARS: Record<string, string> = { ID: 'string', String: 'string', Int: 'number', Float: 'number', Boolean: 'boolean' }
+
+/** The TypeScript type of a stored field: scalars mapped, entities as references, the rest as the generated type. */
+function rowFieldType(type: GraphQLOutputType, entities: Set<string>): string {
+  if (isNonNullType(type)) return rowFieldType(type.ofType, entities).replace(/ \| null$/, '')
+  const inner = isListType(type)
+    ? `Array<${rowFieldType(type.ofType, entities)}>`
+    : isScalarType(type)
+      ? SCALARS[type.name] ?? `Scalars['${type.name}']['output']`
+      : isEnumType(type)
+        ? type.name
+        : entities.has(type.name) ? `EntityRef<'${type.name}'>` : type.name
+  return `${inner} | null`
+}
+
+/**
+ * Finds the entities the documents select and the fields stored for each.
+ * A selection set on an object type with an `id: ID` field, that selects
+ * `id`, is an entity selection; the row gets the union of the fields of every
+ * such selection, required when all of them have it.
+ */
+function analyzeEntities(schema: GraphQLSchema, documentNodes: DocumentNode[], fragments: Map<string, FragmentDefinitionNode>) {
+  const seen = new Map<string, { selections: number, fields: Map<string, number> }>()
+
+  /** Field names of a selection set, following spreads and inline fragments. */
+  function fieldsOf(set: SelectionSetNode, into = new Set<string>()): Set<string> {
+    for (const s of set.selections) {
+      if (s.kind === Kind.FIELD) into.add(s.name.value)
+      else if (s.kind === Kind.INLINE_FRAGMENT) fieldsOf(s.selectionSet, into)
+      else if (s.kind === Kind.FRAGMENT_SPREAD) {
+        const fragment = fragments.get(s.name.value)
+        if (fragment) fieldsOf(fragment.selectionSet, into)
+      }
+    }
+    return into
+  }
+
+  for (const doc of documentNodes) {
+    const typeInfo = new TypeInfo(schema)
+    visit(doc, visitWithTypeInfo(typeInfo, {
+      SelectionSet(node) {
+        const type = getNamedType(typeInfo.getType())
+        if (!hasIdField(type)) return
+        const fields = fieldsOf(node)
+        if (!fields.has('id')) return
+        const entry = seen.get(type!.name) ?? { selections: 0, fields: new Map() }
+        entry.selections++
+        for (const f of fields) entry.fields.set(f, (entry.fields.get(f) ?? 0) + 1)
+        seen.set(type!.name, entry)
+      },
+    }))
+  }
+
+  const entities: Record<string, EntityInfo> = {}
+  const rows: LoadedDocuments['rows'] = {}
+  const names = new Set(seen.keys())
+  for (const [name, entry] of seen) {
+    entities[name] = { key: 'id' }
+    const type = schema.getType(name)
+    if (!isObjectType(type)) continue
+    const schemaFields = type.getFields()
+    rows[name] = {}
+    for (const [field, count] of entry.fields) {
+      if (field === '__typename') continue
+      const def = schemaFields[field]
+      if (!def) continue
+      rows[name][field] = { ts: rowFieldType(def.type, names), required: field === 'id' || count === entry.selections }
+    }
+  }
+  return { entities, rows }
 }
 
 function fragmentSpreads(node: OperationDefinitionNode | FragmentDefinitionNode) {
@@ -111,6 +227,7 @@ export async function loadDocuments(
   patterns: string[],
   cwd: string,
   log: { warn: (msg: string) => void },
+  schema: GraphQLSchema | null = null,
 ): Promise<LoadedDocuments> {
   const files = (await glob(patterns, { cwd, absolute: true, ignore: ['**/node_modules/**'] })).sort()
   const fragments = new Map<string, FragmentDefinitionNode>()
@@ -159,11 +276,13 @@ export async function loadDocuments(
     }
     const documentNode: DocumentNode = { kind: Kind.DOCUMENT, definitions: [node, ...needed.values()] }
     documentNodes.push(documentNode)
-    const source = print(documentNode)
+    // What is sent asks for `__typename` everywhere, so responses can be split into tables.
+    const source = print(addTypenames(documentNode))
     operations[name] = { name, kind: node.operation, source, hash: createHash('sha256').update(source).digest('hex') }
   }
 
-  return { operations, documentNodes, files }
+  const { entities, rows } = schema ? analyzeEntities(schema, documentNodes, fragments) : { entities: {}, rows: {} }
+  return { operations, documentNodes, files, entities, rows }
 }
 
 // ---------------------------------------------------------------------------
@@ -185,6 +304,7 @@ const virtualModules = `
 declare module '#nuxt-airplane/documents' {
   export const documents: Record<string, { name: string, kind: 'query' | 'mutation' | 'subscription', source: string, hash: string }>
   export const documentsHash: string
+  export const entities: Record<string, { key: string }>
 }
 declare module '#nuxt-airplane/handlers' {
   export const handlers: unknown[]
@@ -225,15 +345,27 @@ export async function generateTypes(
     pluginMap: { typescript: typescriptPlugin, typescriptOperations: typescriptOperationsPlugin },
   })
 
+  // One row type per entity table, and the global map that types `db.<Typename>`.
+  const rowTypes = Object.entries(docs.rows).map(([name, fields]) => {
+    const members = Object.entries(fields).map(([field, { ts, required }]) => `${field}${required ? '' : '?'}: ${ts}`)
+    return `export type ${name}Row = { __typename: '${name}', ${members.join(', ')} }`
+  })
+  const storesMap = Object.keys(docs.rows).map(name => `    ${JSON.stringify(name)}: ${name}Row`).join('\n')
+
   return [
     '// Generated by nuxt-airplane from your GraphQL documents. Do not edit.',
+    `import type { EntityRef } from '#nuxt-airplane'`,
     generated,
+    ...rowTypes,
     'declare global {',
     '  interface NuxtAirplaneQueries {',
     operationMap(ops, 'query', 'Query'),
     '  }',
     '  interface NuxtAirplaneMutations {',
     operationMap(ops, 'mutation', 'Mutation'),
+    '  }',
+    '  interface NuxtAirplaneStores {',
+    storesMap,
     '  }',
     '}',
     virtualModules,

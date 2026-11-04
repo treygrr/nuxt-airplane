@@ -4,9 +4,9 @@ import { createHash } from 'node:crypto'
 import { mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { buildSchema, graphqlSync, getIntrospectionQuery } from 'graphql'
+import { buildSchema, graphqlSync, getIntrospectionQuery, parse, print } from 'graphql'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { generateTypes, loadDocuments, loadSchema } from '../src/codegen'
+import { addTypenames, generateTypes, loadDocuments, loadSchema } from '../src/codegen'
 
 const SDL = `
   type Site { id: ID!, name: String!, archived: Boolean! }
@@ -77,6 +77,70 @@ describe('loadDocuments', () => {
     const docs = await loadDocuments(['*.gql'], dir, logger)
     expect(docs.operations.GetSites).toBeDefined()
     expect(logger.warn).toHaveBeenCalledWith(expect.stringMatching(/unknown fragment "Missing"/))
+  })
+})
+
+describe('entities', () => {
+  const NESTED = buildSchema(`
+    type SiteItem { id: ID!, name: String!, onHand: Int! }
+    type Site { id: ID!, name: String!, archived: Boolean!, items: [SiteItem!]!, tags: [String!] }
+    type PageInfo { hasNextPage: Boolean! }
+    type Query { sites: [Site!]!, site(id: ID!): Site, pageInfo: PageInfo! }
+  `)
+
+  async function nestedDocs() {
+    const dir = await tempDir()
+    await writeFile(join(dir, 'ops.gql'), `
+      fragment SiteFields on Site { id name }
+      query GetSites { sites { ...SiteFields archived items { id name onHand } } }
+      query GetSite($id: ID!) { site(id: $id) { ...SiteFields tags } }
+      query GetPage { pageInfo { hasNextPage } }
+    `)
+    return loadDocuments(['*.gql'], dir, log(), NESTED)
+  }
+
+  it('adds __typename below the root, once', () => {
+    const doc = addTypenames(parse('query Q { sites { id items { id } } }'))
+    const printed = print(addTypenames(doc))
+    expect(printed.match(/__typename/g)).toHaveLength(2)
+    expect(printed).not.toMatch(/^query Q \{\s*__typename/m)
+    expect(printed).toMatch(/items \{\s*id\s*__typename\s*\}/)
+  })
+
+  it('finds the types selected with an id and the union of their fields', async () => {
+    const docs = await nestedDocs()
+    expect(Object.keys(docs.entities).sort()).toEqual(['Site', 'SiteItem'])
+    expect(docs.entities.Site).toEqual({ key: 'id' })
+    expect(docs.operations.GetSites!.source).toContain('__typename')
+    // Selected in every Site selection: required. Only in some: optional. Nested entity: a reference.
+    expect(docs.rows.Site).toEqual({
+      id: { ts: 'string', required: true },
+      name: { ts: 'string', required: true },
+      archived: { ts: 'boolean', required: false },
+      items: { ts: `Array<EntityRef<'SiteItem'>>`, required: false },
+      tags: { ts: 'Array<string> | null', required: false },
+    })
+    expect(docs.rows.SiteItem).toEqual({
+      id: { ts: 'string', required: true },
+      name: { ts: 'string', required: true },
+      onHand: { ts: 'number', required: true },
+    })
+  })
+
+  it('emits a row type per entity and maps them onto NuxtAirplaneStores', async () => {
+    const out = await generateTypes(NESTED, await nestedDocs())
+    expect(out).toContain(`import type { EntityRef } from '#nuxt-airplane'`)
+    expect(out).toContain(`export type SiteRow = { __typename: 'Site', id: string, name: string, archived?: boolean, items?: Array<EntityRef<'SiteItem'>>, tags?: Array<string> | null }`)
+    expect(out).toContain('"Site": SiteRow')
+    expect(out).toContain('"SiteItem": SiteItemRow')
+  })
+
+  it('finds nothing without a schema', async () => {
+    const dir = await tempDir()
+    await writeFile(join(dir, 'ops.gql'), 'query GetSites { sites { id name } }')
+    const docs = await loadDocuments(['*.gql'], dir, log())
+    expect(docs.entities).toEqual({})
+    expect(docs.operations.GetSites!.source).toContain('__typename')
   })
 })
 

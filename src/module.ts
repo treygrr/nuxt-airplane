@@ -10,6 +10,7 @@ import {
   updateTemplates,
   useLogger,
 } from '@nuxt/kit'
+import type { GraphQLSchema } from 'graphql'
 import { hash } from 'ohash'
 import { glob } from 'tinyglobby'
 import { generateTypes, loadDocuments, loadSchema, type LoadedDocuments } from './codegen'
@@ -57,6 +58,14 @@ export interface ModuleOptions {
    *   server from the manifest written to `.nuxt/nuxt-airplane/persisted-queries.json`.
    */
   persistedQueries: PersistedQueriesMode
+  /**
+   * Store every response object that has an `id` in a table named after its
+   * type (`db.Site`), and read queries back from those tables, so a mutation
+   * that updates a row updates every query showing it. Set to `false` to
+   * cache each response as one blob instead. Queries with a `store` / `read`
+   * handler are unaffected either way.
+   */
+  normalize: boolean
   /** Extra options passed to the `typescript` / `typescript-operations` codegen plugins. */
   codegen: Record<string, unknown>
 }
@@ -74,6 +83,7 @@ export default defineNuxtModule<ModuleOptions>({
     dbName: 'nuxt-airplane',
     stopOnFailure: true,
     persistedQueries: false,
+    normalize: true,
     codegen: {},
   },
   async setup(options, nuxt) {
@@ -90,6 +100,7 @@ export default defineNuxtModule<ModuleOptions>({
       stopOnFailure: options.stopOnFailure,
       // A string so Nuxt's runtime config typing does not pin it to boolean.
       persistedQueries: options.persistedQueries || '',
+      normalize: options.normalize,
     }
 
     nuxt.options.build.transpile.push(resolver.resolve('./runtime'))
@@ -104,9 +115,19 @@ export default defineNuxtModule<ModuleOptions>({
     /** Absolute endpoint for build-time introspection, if we have one. */
     let introspectionUrl = /^https?:\/\//.test(options.endpoint) ? options.endpoint : undefined
 
-    let docs: LoadedDocuments = { operations: {}, documentNodes: [], files: [] }
+    // A relative SDL path is relative to the app, not to wherever the build was started from.
+    const schemaSource = options.schema && !/^https?:\/\//.test(options.schema)
+      ? resolve(nuxt.options.rootDir, options.schema)
+      : options.schema
+    let schema: GraphQLSchema | null = null
+    async function reloadSchema() {
+      schema = await loadSchema({ schema: schemaSource, endpoint: introspectionUrl ?? '', cacheDir, headers: options.schemaHeaders }, logger)
+      if (!schema) logger.warn('No GraphQL schema available yet, operations are untyped')
+    }
+
+    let docs: LoadedDocuments = { operations: {}, documentNodes: [], files: [], entities: {}, rows: {} }
     async function reloadDocuments() {
-      docs = await loadDocuments(options.documents, srcDir, logger)
+      docs = await loadDocuments(options.documents, srcDir, logger, schema)
       return docs
     }
 
@@ -125,6 +146,7 @@ export default defineNuxtModule<ModuleOptions>({
       })
     }
 
+    await reloadSchema()
     await reloadDocuments()
     nuxt.options.watch.push(...docs.files)
 
@@ -139,6 +161,7 @@ export default defineNuxtModule<ModuleOptions>({
         `export const documents = ${JSON.stringify(docs.operations, null, 2)}`,
         // Part of the cache key: any change to an operation invalidates cached responses.
         `export const documentsHash = ${JSON.stringify(hash(Object.values(docs.operations).map(op => op.source)))}`,
+        `export const entities = ${JSON.stringify(docs.entities)}`,
         '',
       ].join('\n'),
     })
@@ -184,18 +207,11 @@ export default defineNuxtModule<ModuleOptions>({
 
     addTypeTemplate({
       filename: 'types/nuxt-airplane.d.ts',
-      getContents: async () => {
-        // A relative SDL path is relative to the app, not to wherever the build was started from.
-        const schemaSource = options.schema && !/^https?:\/\//.test(options.schema)
-          ? resolve(nuxt.options.rootDir, options.schema)
-          : options.schema
-        const schema = await loadSchema({ schema: schemaSource, endpoint: introspectionUrl ?? '', cacheDir, headers: options.schemaHeaders }, logger)
-        if (!schema) logger.warn('No GraphQL schema available yet, operations are untyped')
-        return generateTypes(schema, docs, options.codegen)
-      },
+      getContents: () => generateTypes(schema, docs, options.codegen),
     })
 
     async function regenerate() {
+      await reloadSchema()
       await reloadDocuments()
       await updateTemplates({ filter: t => t.filename.includes('nuxt-airplane') })
     }

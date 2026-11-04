@@ -34,6 +34,21 @@ export type QueryVariables<N extends QueryName> = NuxtAirplaneQueries[N] extends
 export type MutationResult<N extends MutationName> = NuxtAirplaneMutations[N] extends { result: infer R } ? R : never
 export type MutationVariables<N extends MutationName> = NuxtAirplaneMutations[N] extends { variables: infer V } ? V : never
 
+/** What the runtime knows about a normalized type: the field its table is keyed on. */
+export interface EntityInfo {
+  key: string
+}
+
+/**
+ * How a stored row points at another entity. A response object with an `id`
+ * is written to its own table and replaced by this in whatever contained it;
+ * reading a query puts the row back.
+ */
+export interface EntityRef<T extends string = string> {
+  __typename: T
+  id: string
+}
+
 export interface OperationDocument {
   name: string
   kind: 'query' | 'mutation' | 'subscription'
@@ -273,6 +288,8 @@ export interface AirplaneRuntimeConfig {
   stopOnFailure?: boolean
   /** Send operations by hash instead of text; see the `persistedQueries` module option. `''` means off. */
   persistedQueries?: PersistedQueriesMode | ''
+  /** Store response objects that have an id in one table per type; see the `normalize` module option. Default `true`. */
+  normalize?: boolean
 }
 
 /**

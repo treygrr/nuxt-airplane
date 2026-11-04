@@ -4,6 +4,6 @@
 
 export default defineMutationHandler('ArchiveSite', {
   describe: async ({ db, variables }) => `Archive ${await siteName(db, variables.id)}`,
-  apply: ({ db, variables }) => db.sites.update(variables.id, { archived: 1 }),
+  apply: ({ db, variables }) => db.Site.update(variables.id, { archived: true }),
   refetch: ['GetSites'],
 })

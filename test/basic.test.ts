@@ -48,6 +48,15 @@ describe('module', async () => {
     expect(types).toContain('"ArchiveSite": { result: ArchiveSiteMutation, variables: ArchiveSiteMutationVariables }')
   })
 
+  it('infers an entity table per type selected with an id, with its row type', async () => {
+    const source = await built('nuxt-airplane/documents.mjs')
+    expect(source).toContain('__typename')
+    expect(source).toContain('export const entities = {"Site":{"key":"id"}}')
+    const types = await built('types/nuxt-airplane.d.ts')
+    expect(types).toContain(`export type SiteRow = { __typename: 'Site', id: string, name: string, archived: boolean }`)
+    expect(types).toContain('"Site": SiteRow')
+  })
+
   it('imports handler files, honoring index folders', async () => {
     const handlers = await built('nuxt-airplane/handlers.mjs')
     expect(handlers).toContain('airplane/stores.ts')
