@@ -10,7 +10,8 @@ export default defineQueryHandler('GetSites', {
   async read({ db, variables }) {
     const { archived, search } = variables ?? {}
     const q = search?.trim().toLowerCase()
-    const sites = (await db.Site.toArray())
+    // Sorted by the `name` index; `archived` is a boolean, so it is filtered here.
+    const sites = (await db.Site.orderBy('name').toArray())
       .filter(s => archived == null || s.archived === archived)
       .filter(s => !q || s.name.toLowerCase().includes(q))
     return { sites }
