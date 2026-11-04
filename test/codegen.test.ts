@@ -89,6 +89,7 @@ describe('entities', () => {
     type Site { id: ID!, name: String!, archived: Boolean!, items: [SiteItem!]!, tags: [String!], owner: User, contact: Contact! }
     type PageInfo { hasNextPage: Boolean! }
     type Query { sites: [Site!]!, site(id: ID!): Site, pageInfo: PageInfo! }
+    type Mutation { renameSite(id: ID!, name: String!): Site! }
   `)
 
   async function nestedDocs() {
@@ -97,7 +98,9 @@ describe('entities', () => {
       fragment SiteFields on Site { id name }
       query GetSites { sites { ...SiteFields archived items { id name onHand } owner { name } contact { ... on User { name } ... on Team { size } } } }
       query GetSite($id: ID!) { site(id: $id) { ...SiteFields tags owner { name email } } }
+      query GetSiteItems($id: ID!) { site(id: $id) { id items { id name onHand } } }
       query GetPage { pageInfo { hasNextPage } }
+      mutation RenameSite($id: ID!, $name: String!) { renameSite(id: $id, name: $name) { id } }
     `)
     return loadDocuments(['*.gql'], dir, log(), NESTED)
   }
@@ -108,30 +111,59 @@ describe('entities', () => {
     expect(docs.entities.Site).toEqual({ key: 'id' })
     // The documents are sent as written: nothing is injected.
     expect(docs.operations.GetSites!.source).not.toContain('__typename')
-    // Selected in every Site selection: required. Only in some: optional.
-    // A nested entity selected with its id: its row type. Any other object:
-    // the fields selected on it, merged the same way, never the schema type
-    // (User has a required email the documents do not always select).
+    // Selected in every node selection of Site (GetSites, GetSite): required.
+    // Only in some: optional. GetSiteItems and RenameSite only navigate to
+    // children or select the id, so they do not loosen the row; `items` is
+    // on it all the same. A nested entity selected with its id: its row
+    // type. Any other object: the fields selected on it, merged the same
+    // way, never the schema type (User has a required email the documents
+    // do not always select). A union: one object per member selected.
     expect(docs.rows.Site).toEqual({
       id: { ts: 'string', required: true },
       name: { ts: 'string', required: true },
       archived: { ts: 'boolean', required: false },
       items: { ts: 'Array<SiteItemRow>', required: false },
       owner: { ts: '{ name: string, email?: string } | null', required: true },
-      contact: { ts: '{ name?: string, size?: number }', required: false },
+      contact: { ts: '{ name: string } | { size: number }', required: false },
       tags: { ts: 'Array<string> | null', required: false },
     })
-    expect(docs.entities.User).toBeUndefined()
     expect(docs.rows.SiteItem).toEqual({
       id: { ts: 'string', required: true },
       name: { ts: 'string', required: true },
       onHand: { ts: 'number', required: true },
     })
+    expect(docs.entities.User).toBeUndefined()
+  })
+
+  it('types a partly covered union or interface as the result does, so rows go in and come back out', async () => {
+    const schema = buildSchema(`
+      type Product { id: ID!, title: String!, code: String }
+      type ProductNotFound { message: String! }
+      union ProductResult = Product | ProductNotFound
+      interface Node { id: ID! }
+      type Item implements Node { id: ID!, label: String!, product: ProductResult, node: Node, nodes: [Node!]! }
+      type Other implements Node { id: ID!, size: Int! }
+      type Query { item(id: ID!): Item }
+    `)
+    const dir = await tempDir()
+    await writeFile(join(dir, 'ops.gql'), `
+      query GetItem($id: ID!) { item(id: $id) { id label product { ... on Product { title code } } node { id ... on Other { size } } nodes { ... on Other { size } } } }
+    `)
+    const docs = await loadDocuments(['*.gql'], dir, log(), schema)
+    expect(docs.rows.Item).toEqual({
+      id: { ts: 'string', required: true },
+      label: { ts: 'string', required: true },
+      product: { ts: '{ title: string, code: string | null } | Record<PropertyKey, never> | null', required: true },
+      node: { ts: '{ id: string, size: number } | { id: string } | null', required: true },
+      nodes: { ts: 'Array<{ size: number } | Record<PropertyKey, never>>', required: true },
+    })
+    // An arm that does not select the id on its own (`... on Other { size }`) makes no table.
+    expect(Object.keys(docs.entities).sort()).toEqual(['Item'])
   })
 
   it('emits a row type per entity and maps them onto NuxtAirplaneStores', async () => {
     const out = await generateTypes(NESTED, await nestedDocs())
-    expect(out).toContain('export type SiteRow = { id: string, name: string, archived?: boolean, items?: Array<SiteItemRow>, owner: { name: string, email?: string } | null, contact?: { name?: string, size?: number }, tags?: Array<string> | null }')
+    expect(out).toContain('export type SiteRow = { id: string, name: string, archived?: boolean, items?: Array<SiteItemRow>, owner: { name: string, email?: string } | null, contact?: { name: string } | { size: number }, tags?: Array<string> | null }')
     expect(out).toContain('export type SiteItemRow = { id: string, name: string, onHand: number }')
     expect(out).toContain('"Site": SiteRow')
     expect(out).toContain('"SiteItem": SiteItemRow')
