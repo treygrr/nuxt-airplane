@@ -170,6 +170,17 @@ function withApq(support = true) {
   return sent
 }
 
+/** Fails every request for `op` with a network error until the returned function is called. */
+function cutNetworkFor(op: string) {
+  const impl = server.fetch.getMockImplementation()!
+  let down = true
+  server.fetch.mockImplementation(async (url, init) => {
+    if (down && (init!.body as string).includes(`mutation ${op}`)) throw new TypeError('Failed to fetch')
+    return impl(url, init)
+  })
+  return () => (down = false)
+}
+
 async function cachedSites(client: AirplaneClient) {
   const rows = await client.db.queries.where('document').equals('GetSites').toArray()
   return (rows[0]?.data as { sites: Site[] } | undefined)?.sites
@@ -351,6 +362,28 @@ describe('mutations', () => {
     await client.sync()
     expect(await client.db.mutations.count()).toBe(0)
     expect(server.sites[0]!.name).toBe('Later')
+  })
+
+  it('sends a mutation queued while a batch is being sent', async () => {
+    const client = createClient(server, { mutationHandlers: blobHandlers })
+    await client.fetchQuery('GetSites', undefined)
+
+    // Hold the first request so the second mutation is queued mid-batch.
+    let release!: () => void
+    const gate = new Promise<void>(r => (release = r))
+    const impl = server.fetch.getMockImplementation()!
+    server.fetch.mockImplementationOnce(async (...args) => {
+      await gate
+      return impl(...args)
+    })
+    await client.enqueue('RenameSite', { id: 's1', name: 'A' })
+    await until(() => client.state.syncing, 'batch to start')
+    await client.enqueue('ArchiveSite', { id: 's2' })
+    release()
+
+    // No other trigger: the loop itself must pick up the new row.
+    await until(async () => (await client.db.mutations.count()) === 0, 'outbox to drain')
+    expect(server.mutations().map(c => c.op)).toEqual(['RenameSite', 'ArchiveSite'])
   })
 
   it('drops the row if apply throws', async () => {
@@ -654,8 +687,7 @@ describe('temp ids', () => {
 
     // The rename hits a network error right after the create was accepted,
     // then a refetch lands: the rename must be re-applied on the real id.
-    server.fetch.mockImplementationOnce(server.fetch.getMockImplementation()!)
-      .mockImplementationOnce(() => Promise.reject(new TypeError('Failed to fetch')))
+    cutNetworkFor('RenameSite')
     client.goOnline()
     await until(() => client.state.lastError !== null, 'network error')
     expect(await client.db.mutations.count()).toBe(1)
@@ -676,11 +708,11 @@ describe('temp ids', () => {
 
     // Only the create gets through before the "tab" closes. Resolution happens
     // in reconcile, before the rewrite of the next row, so the map must be on disk.
-    server.fetch.mockImplementationOnce(server.fetch.getMockImplementation()!)
-      .mockImplementationOnce(() => Promise.reject(new TypeError('Failed to fetch')))
+    const restore = cutNetworkFor('RenameSite')
     client.goOnline()
     await until(() => client.state.lastError !== null, 'network error')
     client.db.close()
+    restore()
 
     const reopened = createClient(server, { dbName, mutationHandlers: createHandlers })
     await until(async () => (await reopened.db.mutations.count()) === 0, 'outbox to drain after reload')
