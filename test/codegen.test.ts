@@ -4,9 +4,9 @@ import { createHash } from 'node:crypto'
 import { mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { buildSchema, graphqlSync, getIntrospectionQuery, parse, print } from 'graphql'
+import { buildSchema, graphqlSync, getIntrospectionQuery } from 'graphql'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { addTypenames, generateTypes, loadDocuments, loadSchema } from '../src/codegen'
+import { generateTypes, loadDocuments, loadSchema } from '../src/codegen'
 
 const SDL = `
   type Site { id: ID!, name: String!, archived: Boolean! }
@@ -99,25 +99,18 @@ describe('entities', () => {
     return loadDocuments(['*.gql'], dir, log(), NESTED)
   }
 
-  it('adds __typename below the root, once', () => {
-    const doc = addTypenames(parse('query Q { sites { id items { id } } }'))
-    const printed = print(addTypenames(doc))
-    expect(printed.match(/__typename/g)).toHaveLength(2)
-    expect(printed).not.toMatch(/^query Q \{\s*__typename/m)
-    expect(printed).toMatch(/items \{\s*id\s*__typename\s*\}/)
-  })
-
   it('finds the types selected with an id and the union of their fields', async () => {
     const docs = await nestedDocs()
     expect(Object.keys(docs.entities).sort()).toEqual(['Site', 'SiteItem'])
     expect(docs.entities.Site).toEqual({ key: 'id' })
-    expect(docs.operations.GetSites!.source).toContain('__typename')
-    // Selected in every Site selection: required. Only in some: optional. Nested entity: a reference.
+    // The documents are sent as written: nothing is injected.
+    expect(docs.operations.GetSites!.source).not.toContain('__typename')
+    // Selected in every Site selection: required. Only in some: optional. Nested entity: its row type.
     expect(docs.rows.Site).toEqual({
       id: { ts: 'string', required: true },
       name: { ts: 'string', required: true },
       archived: { ts: 'boolean', required: false },
-      items: { ts: `Array<EntityRef<'SiteItem'>>`, required: false },
+      items: { ts: 'Array<SiteItemRow>', required: false },
       tags: { ts: 'Array<string> | null', required: false },
     })
     expect(docs.rows.SiteItem).toEqual({
@@ -129,8 +122,8 @@ describe('entities', () => {
 
   it('emits a row type per entity and maps them onto NuxtAirplaneStores', async () => {
     const out = await generateTypes(NESTED, await nestedDocs())
-    expect(out).toContain(`import type { EntityRef } from '#nuxt-airplane'`)
-    expect(out).toContain(`export type SiteRow = { __typename: 'Site', id: string, name: string, archived?: boolean, items?: Array<EntityRef<'SiteItem'>>, tags?: Array<string> | null }`)
+    expect(out).toContain('export type SiteRow = { id: string, name: string, archived?: boolean, items?: Array<SiteItemRow>, tags?: Array<string> | null }')
+    expect(out).toContain('export type SiteItemRow = { id: string, name: string, onHand: number }')
     expect(out).toContain('"Site": SiteRow')
     expect(out).toContain('"SiteItem": SiteItemRow')
   })
@@ -140,7 +133,6 @@ describe('entities', () => {
     await writeFile(join(dir, 'ops.gql'), 'query GetSites { sites { id name } }')
     const docs = await loadDocuments(['*.gql'], dir, log())
     expect(docs.entities).toEqual({})
-    expect(docs.operations.GetSites!.source).toContain('__typename')
   })
 })
 

@@ -9,9 +9,13 @@ export interface UseQueryOptions {
 }
 
 export interface UseQueryReturn<T> {
-  /** Live data from the local cache. Updates when mutations touch it. */
+  /**
+   * The query's result, built live from the tables by its `read` handler, so
+   * a mutation that touches them shows at once. A query without `read` gets
+   * what the last fetch returned, and nothing while offline.
+   */
   data: Ref<T | null>
-  /** `true` until the cache has been read and (if online) the first fetch is done. */
+  /** `true` until the tables have been read and (if online) the first fetch is done. */
   loading: Ref<boolean>
   /** `true` while a network request is in flight. */
   fetching: Ref<boolean>
@@ -40,12 +44,24 @@ export function useQuery<N extends QueryName>(
 
   const vars = computed(() => toValue(variables))
   const key = computed(() => queryKey(name, vars.value))
+  const readable = client.readable(name)
 
   async function refresh() {
-    if (options.fetch === false || !client!.state.online) return
+    if (options.fetch === false || !client!.state.online) {
+      // Nothing is coming from the network, and without `read` there is nothing else to show.
+      if (!readable) {
+        loading.value = false
+        if (!client!.state.online) error.value = new Error(`[nuxt-airplane] "${name}" has no query handler with \`read\`, so there is nothing to show offline`)
+      }
+      return
+    }
     fetching.value = true
     try {
-      await client!.fetchQuery(name, vars.value)
+      const result = await client!.fetchQuery<QueryResult<N>>(name, vars.value)
+      if (!readable) {
+        data.value = result
+        updatedAt.value = Date.now()
+      }
       error.value = null
     }
     catch (e) {
@@ -77,6 +93,7 @@ export function useQuery<N extends QueryName>(
     client.active.delete(prev)
     client.active.set(next, refresh)
     loading.value = true
+    if (!readable) data.value = null
     subscribe()
     void refresh()
   })

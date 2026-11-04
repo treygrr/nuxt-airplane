@@ -58,14 +58,6 @@ export interface ModuleOptions {
    *   server from the manifest written to `.nuxt/nuxt-airplane/persisted-queries.json`.
    */
   persistedQueries: PersistedQueriesMode
-  /**
-   * Store every response object that has an `id` in a table named after its
-   * type (`db.Site`), and read queries back from those tables, so a mutation
-   * that updates a row updates every query showing it. Set to `false` to
-   * cache each response as one blob instead. Queries with a `store` / `read`
-   * handler are unaffected either way.
-   */
-  normalize: boolean
   /** Extra options passed to the `typescript` / `typescript-operations` codegen plugins. */
   codegen: Record<string, unknown>
 }
@@ -83,7 +75,6 @@ export default defineNuxtModule<ModuleOptions>({
     dbName: 'nuxt-airplane',
     stopOnFailure: true,
     persistedQueries: false,
-    normalize: true,
     codegen: {},
   },
   async setup(options, nuxt) {
@@ -100,7 +91,6 @@ export default defineNuxtModule<ModuleOptions>({
       stopOnFailure: options.stopOnFailure,
       // A string so Nuxt's runtime config typing does not pin it to boolean.
       persistedQueries: options.persistedQueries || '',
-      normalize: options.normalize,
     }
 
     nuxt.options.build.transpile.push(resolver.resolve('./runtime'))

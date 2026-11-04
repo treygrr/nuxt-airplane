@@ -50,10 +50,10 @@ describe('module', async () => {
 
   it('infers an entity table per type selected with an id, with its row type', async () => {
     const source = await built('nuxt-airplane/documents.mjs')
-    expect(source).toContain('__typename')
+    expect(source).not.toContain('__typename')
     expect(source).toContain('export const entities = {"Site":{"key":"id"}}')
     const types = await built('types/nuxt-airplane.d.ts')
-    expect(types).toContain(`export type SiteRow = { __typename: 'Site', id: string, name: string, archived: boolean }`)
+    expect(types).toContain('export type SiteRow = { id: string, name: string, archived: boolean }')
     expect(types).toContain('"Site": SiteRow')
   })
 

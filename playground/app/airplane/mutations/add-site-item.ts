@@ -1,12 +1,12 @@
-// A site's items are references to `SiteItem` rows. Adding one means a row
-// for the item (named from the catalog) and a reference on the site.
+// A site's items are stored on the site row, as the response has them.
+// Adding one means an entry there, named from the catalog in `db.Item`.
 export default defineMutationHandler('AddSiteItem', {
   describe: async ({ db, variables }) => `Add ${await itemName(db, variables.itemId)} to ${await siteName(db, variables.siteId)}`,
   async apply({ db, variables }) {
     const { siteId, itemId, onHand } = variables
-    await db.SiteItem.put({ __typename: 'SiteItem', id: itemId, name: await itemName(db, itemId), onHand: onHand ?? 0 })
+    const name = await itemName(db, itemId)
     await db.Site.update(siteId, (site) => {
-      site.items = [...(site.items ?? []), { __typename: 'SiteItem', id: itemId }]
+      site.items = [...site.items, { id: itemId, name, onHand: onHand ?? 0 }]
     })
   },
   refetch: ['GetSites'],
