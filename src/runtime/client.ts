@@ -9,6 +9,7 @@ import {
   type MutationHandlers,
   type MutationHandler,
   type MutationRow,
+  type ReconcileContext,
   type AirplaneRequestContext,
   type AirplaneRequestOptions,
   type AirplaneRuntimeConfig,
@@ -55,6 +56,69 @@ export function humanize(name: string) {
 export function queryKey(name: string, variables: unknown) {
   const normalized = variables && typeof variables === 'object' && Object.keys(variables).length ? variables : null
   return `${name}:${hash(normalized)}`
+}
+
+// ---------------------------------------------------------------------------
+// Temp ids
+//
+// A row created offline has no server id yet. `apply` mints a placeholder
+// with `tempId()`; mutations queued after it carry that placeholder in their
+// variables. Once the server has answered the create, `reconcile` maps the
+// placeholder to the real id and the sync loop rewrites the queued variables
+// before sending them.
+// ---------------------------------------------------------------------------
+
+const TEMP_ID_PREFIX = 'tmp-'
+const TEMP_ID_RE = /^tmp-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
+
+/** A fresh placeholder id: `tmp-` plus a UUID. */
+export function newTempId() {
+  const uuid = typeof crypto === 'object' && typeof crypto.randomUUID === 'function'
+    ? crypto.randomUUID()
+    : 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+        const r = (Math.random() * 16) | 0
+        return (c === 'x' ? r : (r & 0x3) | 0x8).toString(16)
+      })
+  return `${TEMP_ID_PREFIX}${uuid}`
+}
+
+/** Whether a value is an id minted by `tempId()`. */
+export function isTempId(value: unknown): value is string {
+  return typeof value === 'string' && TEMP_ID_RE.test(value)
+}
+
+/**
+ * Replaces, anywhere in `value`, every string that is a key of `ids` with its
+ * mapped id. Reports whether anything changed and which minted temp ids are
+ * still in there with no mapping.
+ */
+export function substituteTempIds<T>(value: T, ids: Record<string, string>): { value: T, replaced: boolean, unresolved: string[] } {
+  let replaced = false
+  const unresolved = new Set<string>()
+  const walk = (v: unknown): unknown => {
+    if (typeof v === 'string') {
+      if (v in ids) {
+        replaced = true
+        return ids[v]
+      }
+      if (isTempId(v)) unresolved.add(v)
+      return v
+    }
+    if (Array.isArray(v)) return v.map(walk)
+    if (v && typeof v === 'object' && Object.getPrototypeOf(v) === Object.prototype) {
+      const out: Record<string, unknown> = {}
+      for (const [k, item] of Object.entries(v)) out[k] = walk(item)
+      return out
+    }
+    return v
+  }
+  const next = walk(value) as T
+  return { value: replaced ? next : value, replaced, unresolved: [...unresolved] }
+}
+
+/** A mutation about to be sent still carries a temp id the server never assigned. */
+export class UnresolvedTempIdError extends Error {
+  override name = 'UnresolvedTempIdError'
 }
 
 export type AirplaneClient = ReturnType<typeof createAirplaneClient>
@@ -372,10 +436,56 @@ export function createAirplaneClient(options: AirplaneClientOptions) {
     const h = mutationHandler(row.document)
     if (!h?.apply) return
     const invalidated = new Set<QueryName>()
+    // Ids minted on the first apply are handed out again on a rebase, in the
+    // same order, so a re-applied create keeps the id later mutations reference.
+    const tempIds = [...(row.tempIds ?? [])]
+    let minted = 0
+    const tempId = () => (tempIds[minted] ??= newTempId(), tempIds[minted++]!)
     const { undo } = await withUndoLog(db, () =>
-      h.apply!({ db, cache: createCacheApi(invalidated), variables: row.variables as never }))
-    await db.mutations.update(row.id, { undo })
+      h.apply!({ db, cache: createCacheApi(invalidated), variables: row.variables as never, tempId }))
+    await db.mutations.update(row.id, { undo, tempIds })
     if (!rebase && invalidated.size) await refetchActive(invalidated)
+  }
+
+  // --------------------------------------------------------------------------
+  // Temp id map (meta table), see `substituteTempIds`
+  // --------------------------------------------------------------------------
+
+  const TEMP_IDS_KEY = 'tempIds'
+  /**
+   * Resolved ids are kept after the outbox drains: a component may still hold
+   * a temp id it read before the create synced. The map is capped instead,
+   * oldest first, which is far more than one outbox would ever carry.
+   */
+  const TEMP_IDS_MAX = 1000
+
+  async function readTempIds(): Promise<Record<string, string>> {
+    const raw = (await db.meta.get(TEMP_IDS_KEY))?.value
+    return raw ? JSON.parse(raw) as Record<string, string> : {}
+  }
+
+  async function resolveTempId(tempId: string, id: string) {
+    const entries = Object.entries(await readTempIds()).filter(([key]) => key !== tempId)
+    entries.push([tempId, id])
+    await db.meta.put({ key: TEMP_IDS_KEY, value: JSON.stringify(Object.fromEntries(entries.slice(-TEMP_IDS_MAX))) })
+  }
+
+  /** The context `reconcile` runs with. */
+  function reconcileContext(variables: unknown, tempIds: string[] = []): ReconcileContext<never> {
+    return { db, cache: createCacheApi(), variables: variables as never, tempIds, resolve: resolveTempId }
+  }
+
+  /**
+   * The variables to send for a mutation: the queued ones with every resolved
+   * temp id replaced by its server id. Throws when a minted temp id is still
+   * unresolved, since the server would reject it anyway.
+   */
+  async function outboundVariables(name: string, variables: unknown) {
+    const { value, unresolved } = substituteTempIds(variables, await readTempIds())
+    if (unresolved.length) {
+      throw new UnresolvedTempIdError(`[nuxt-airplane] "${name}" references the temp id "${unresolved[0]}" which has no server id yet: the mutation that created it has not been accepted, or its reconcile handler did not call resolve().`)
+    }
+    return value
   }
 
   /**
@@ -505,16 +615,20 @@ export function createAirplaneClient(options: AirplaneClientOptions) {
       for (const row of queue) {
         await db.mutations.update(row.id, { status: 'syncing' })
         try {
-          const result = await request(row.document, row.variables)
+          // An earlier row of this batch may have resolved a temp id this one
+          // carries. Rewriting the row too keeps a later rebase on the real id.
+          const variables = await outboundVariables(row.document, row.variables)
+          if (variables !== row.variables) await db.mutations.update(row.id, { variables })
+          const result = await request(row.document, variables)
           const h = mutationHandler(row.document)
-          await h?.reconcile?.({ db, cache: createCacheApi(), variables: row.variables as never }, result as never)
+          await h?.reconcile?.(reconcileContext(variables, row.tempIds), result as never)
           if (h?.refetch) h.refetch.forEach(n => refetch.add(n))
           else refetchAll = true
           await db.mutations.delete(row.id)
           state.syncCount++
         }
         catch (error) {
-          if (error instanceof GraphQLRequestError) {
+          if (error instanceof GraphQLRequestError || error instanceof UnresolvedTempIdError) {
             // The server rejected it: park it so the user can retry or roll it back.
             await db.mutations.update(row.id, { status: 'failed', error: error.message })
             // The rest of the batch was queued after it, so it is held back too.
@@ -532,6 +646,29 @@ export function createAirplaneClient(options: AirplaneClientOptions) {
       state.syncing = false
     }
     if (state.syncCount) await refetchActive(refetchAll ? undefined : refetch)
+  }
+
+  /**
+   * Sends a mutation now, skipping the outbox and `apply`, and resolves with
+   * the server's data. For mutations that cannot be queued: a checkout, a
+   * form whose response the UI needs. The outbox is drained first so the
+   * server sees everything queued before it; `reconcile` and `refetch` then
+   * run as they would after a sync. Rejects while offline.
+   */
+  async function execute<T = unknown>(name: string, variables: unknown): Promise<T> {
+    if (document(name).kind !== 'mutation') throw new Error(`[nuxt-airplane] "${name}" is not a mutation`)
+    await ready
+    if (!state.online) throw new Error(`[nuxt-airplane] Cannot send "${name}" while offline`)
+    await sync()
+    // The sync just awaited may have started while offline, or before the last
+    // row was queued, and sent nothing: run a fresh one for what is still sendable.
+    if (state.online && (await sendable()).length) await sync()
+    const outbound = await outboundVariables(name, variables)
+    const result = await request<T>(name, outbound)
+    const h = mutationHandler(name)
+    await h?.reconcile?.(reconcileContext(outbound), result as never)
+    await refetchActive(h?.refetch)
+    return result
   }
 
   /** Empties every table, including the outbox. */
@@ -556,6 +693,7 @@ export function createAirplaneClient(options: AirplaneClientOptions) {
     watchQuery,
     refetchActive,
     enqueue,
+    execute,
     rollback,
     retry,
     sync,

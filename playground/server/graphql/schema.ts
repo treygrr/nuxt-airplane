@@ -1,7 +1,7 @@
 // The schema lives in ./schema.graphql (loaded by server/api/graphql.ts) so the
 // module can generate types from the same file without a running server.
 import { GraphQLError } from 'graphql'
-import { catalog, sites } from '../utils/db'
+import { catalog, nextSiteId, sites } from '../utils/db'
 import type { Site, SiteItem } from '../utils/db'
 
 function notFound(message: string): never {
@@ -93,6 +93,13 @@ export const resolvers = {
   },
 
   Mutation: {
+    createSite: (_: unknown, { name }: { name: string }) => {
+      const trimmed = name.trim()
+      if (!trimmed) badInput('name must not be empty')
+      const site: Site = { id: nextSiteId(), name: trimmed, archived: false, items: [] }
+      sites.push(site)
+      return site
+    },
     archiveSite: (_: unknown, { id }: { id: string }) => {
       const site = findSite(id)
       site.archived = true

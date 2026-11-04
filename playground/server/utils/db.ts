@@ -70,3 +70,7 @@ export const sites: Site[] = SITE_NAMES.map((name, i) => ({
     .slice(0, randomInt(3, 8))
     .map(item => ({ itemId: item.id, onHand: randomInt(0, 100) })),
 }))
+
+let siteCounter = sites.length
+/** Server-assigned ids, like a database sequence. */
+export const nextSiteId = () => `site-${++siteCounter}`

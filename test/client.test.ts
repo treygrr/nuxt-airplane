@@ -3,7 +3,7 @@
 // caching, the outbox, rollback, rebase, prefetch and cache keys is exercised here.
 import 'fake-indexeddb/auto'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { createAirplaneClient, type AirplaneClient, type AirplaneClientOptions } from '../src/runtime/client'
+import { createAirplaneClient, isTempId, newTempId, substituteTempIds, type AirplaneClient, type AirplaneClientOptions } from '../src/runtime/client'
 import type { AirplaneRequestContext, AirplaneRequestOptions, MutationHandlers, OperationDocument, QueryHandlers } from '../src/runtime/types'
 
 // ---------------------------------------------------------------------------
@@ -17,6 +17,7 @@ const documents: Record<string, OperationDocument> = {
   GetSite: { name: 'GetSite', kind: 'query', source: 'query GetSite($id: ID!) { site(id: $id) { id name archived } }' },
   RenameSite: { name: 'RenameSite', kind: 'mutation', source: 'mutation RenameSite($id: ID!, $name: String!) { renameSite(id: $id, name: $name) { id name } }' },
   ArchiveSite: { name: 'ArchiveSite', kind: 'mutation', source: 'mutation ArchiveSite($id: ID!) { archiveSite(id: $id) { id archived } }' },
+  CreateSite: { name: 'CreateSite', kind: 'mutation', source: 'mutation CreateSite($name: String!) { createSite(name: $name) { id name archived } }' },
   SearchItems: { name: 'SearchItems', kind: 'query', source: 'query SearchItems($after: String) { searchItems(after: $after) { edges { node { id } } pageInfo { hasNextPage endCursor } } }' },
 }
 
@@ -39,7 +40,8 @@ function createServer() {
       case 'GetSite': return reply({ site: sites.find(s => s.id === v.id) ?? null })
       case 'RenameSite': {
         if (v.name === 'bad') return Response.json({ errors: [{ message: 'name rejected' }] })
-        const site = sites.find(s => s.id === v.id)!
+        const site = sites.find(s => s.id === v.id)
+        if (!site) return Response.json({ errors: [{ message: `no site ${v.id}` }] })
         site.name = v.name!
         return reply({ renameSite: { id: site.id, name: site.name } })
       }
@@ -47,6 +49,11 @@ function createServer() {
         const site = sites.find(s => s.id === v.id)!
         site.archived = true
         return reply({ archiveSite: { id: site.id, archived: true } })
+      }
+      case 'CreateSite': {
+        const site = { id: `s${sites.length + 1}`, name: v.name!, archived: false }
+        sites.push(site)
+        return reply({ createSite: { ...site } })
       }
       case 'SearchItems': {
         const start = v.after ? Number(v.after) : 0
@@ -100,6 +107,27 @@ const blobHandlers = {
           const site = data.sites.find(s => s.id === (variables as { id: string }).id)
           if (site) site.archived = true
         }),
+  },
+} as unknown as MutationHandlers
+
+type SitesUpdate = (n: string, u: (d: { sites: Site[] }) => void) => Promise<void>
+
+/** Create with a placeholder id, then swap in the server's id and resolve it. */
+const createHandlers = {
+  ...blobHandlers,
+  CreateSite: {
+    apply: ({ cache, variables, tempId }: never) =>
+      (cache as never as { update: SitesUpdate }).update('GetSites', (data) => {
+        data.sites.push({ id: (tempId as () => string)(), name: (variables as { name: string }).name, archived: false })
+      }),
+    reconcile: async ({ cache, tempIds, resolve }: never, result: { createSite: Site }) => {
+      const [tmp] = tempIds as string[]
+      await (cache as never as { update: SitesUpdate }).update('GetSites', (data) => {
+        const site = data.sites.find(s => s.id === tmp)
+        if (site) site.id = result.createSite.id
+      })
+      await (resolve as (t: string, id: string) => Promise<void>)(tmp!, result.createSite.id)
+    },
   },
 } as unknown as MutationHandlers
 
@@ -455,6 +483,187 @@ describe('rollback', () => {
     // A refetch lands with the server's (older) state.
     await client.fetchQuery('GetSites', undefined)
     expect((await cachedSites(client))![0]!.name).toBe('Local')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Temp ids: create offline, edit before sync
+// ---------------------------------------------------------------------------
+
+describe('temp ids', () => {
+  it('mints a tmp- uuid and finds it anywhere in the variables', () => {
+    const id = newTempId()
+    expect(isTempId(id)).toBe(true)
+    expect(isTempId('tmp-1700000000000')).toBe(false)
+    const { value, replaced, unresolved } = substituteTempIds({ id, nested: { ids: [id, 'x'] }, other: newTempId() }, { [id]: 's9' })
+    expect(replaced).toBe(true)
+    expect(value).toMatchObject({ id: 's9', nested: { ids: ['s9', 'x'] } })
+    expect(unresolved).toHaveLength(1)
+  })
+
+  it('sends a queued edit of a row created offline with the server id', async () => {
+    const client = createClient(server, { mutationHandlers: createHandlers })
+    await client.fetchQuery('GetSites', undefined)
+    client.goOffline()
+
+    await client.enqueue('CreateSite', { name: 'West' })
+    const tmp = (await cachedSites(client))!.find(s => s.name === 'West')!.id
+    expect(isTempId(tmp)).toBe(true)
+    await client.enqueue('RenameSite', { id: tmp, name: 'West 2' })
+    expect((await cachedSites(client))!.find(s => s.id === tmp)!.name).toBe('West 2')
+
+    client.goOnline()
+    await until(async () => (await client.db.mutations.count()) === 0, 'outbox to drain')
+    expect(server.mutations().map(c => [c.op, c.variables])).toEqual([
+      ['CreateSite', { name: 'West' }],
+      ['RenameSite', { id: 's3', name: 'West 2' }],
+    ])
+    expect(server.sites[2]).toMatchObject({ id: 's3', name: 'West 2' })
+    expect((await cachedSites(client))!.find(s => s.id === 's3')!.name).toBe('West 2')
+
+    // The mapping outlives the outbox: a component may still hold the temp id.
+    await client.enqueue('ArchiveSite', { id: tmp })
+    await until(async () => (await client.db.mutations.count()) === 0, 'outbox to drain again')
+    expect(server.mutations().at(-1)).toMatchObject({ op: 'ArchiveSite', variables: { id: 's3' } })
+  })
+
+  it('caps the map at the newest 1000 resolutions', async () => {
+    const handlers = { ArchiveSite: { reconcile: ({ resolve }: never) => (resolve as (t: string, i: string) => Promise<void>)('tmp-new', 'sX') } } as unknown as MutationHandlers
+    const client = createClient(server, { mutationHandlers: handlers })
+    await client.ready
+    const full = Object.fromEntries(Array.from({ length: 1001 }, (_, i) => [`tmp-${i}`, `s${i}`]))
+    await client.db.meta.put({ key: 'tempIds', value: JSON.stringify(full) })
+
+    await client.enqueue('ArchiveSite', { id: 's1' })
+    await until(async () => (await client.db.mutations.count()) === 0, 'outbox to drain')
+    const ids = JSON.parse((await client.db.meta.get('tempIds'))!.value) as Record<string, string>
+    expect(Object.keys(ids)).toHaveLength(1000)
+    expect(ids['tmp-0']).toBeUndefined()
+    expect(ids['tmp-1']).toBeUndefined()
+    expect(ids['tmp-2']).toBe('s2')
+    expect(ids['tmp-new']).toBe('sX')
+  })
+
+  it('keeps the same temp id when apply is re-run on fresh server data', async () => {
+    const client = createClient(server, { mutationHandlers: createHandlers })
+    await client.fetchQuery('GetSites', undefined)
+    client.goOffline()
+    const row = await client.enqueue('CreateSite', { name: 'West' })
+    const tmp = (await cachedSites(client))!.find(s => s.name === 'West')!.id
+
+    await client.fetchQuery('GetSites', undefined) // rebase
+    const sites = (await cachedSites(client))!.filter(s => s.name === 'West')
+    expect(sites.map(s => s.id)).toEqual([tmp])
+    expect((await client.db.mutations.get(row.id))?.tempIds).toEqual([tmp])
+  })
+
+  it('keeps the edit visible after the create is reconciled and the query refetched', async () => {
+    const client = createClient(server, { mutationHandlers: createHandlers })
+    await client.fetchQuery('GetSites', undefined)
+    client.goOffline()
+    await client.enqueue('CreateSite', { name: 'West' })
+    const tmp = (await cachedSites(client))!.find(s => s.name === 'West')!.id
+    await client.enqueue('RenameSite', { id: tmp, name: 'West 2' })
+
+    // The rename hits a network error right after the create was accepted,
+    // then a refetch lands: the rename must be re-applied on the real id.
+    server.fetch.mockImplementationOnce(server.fetch.getMockImplementation()!)
+      .mockImplementationOnce(() => Promise.reject(new TypeError('Failed to fetch')))
+    client.goOnline()
+    await until(() => client.state.lastError !== null, 'network error')
+    expect(await client.db.mutations.count()).toBe(1)
+    expect((await client.db.mutations.toArray())[0]!.variables).toEqual({ id: 's3', name: 'West 2' })
+
+    await client.fetchQuery('GetSites', undefined)
+    expect((await cachedSites(client))!.find(s => s.id === 's3')!.name).toBe('West 2')
+  })
+
+  it('remembers resolved ids across a reload', async () => {
+    const dbName = `test-reload-${++n}`
+    const client = createClient(server, { dbName, mutationHandlers: createHandlers })
+    await client.fetchQuery('GetSites', undefined)
+    client.goOffline()
+    await client.enqueue('CreateSite', { name: 'West' })
+    const tmp = (await cachedSites(client))!.find(s => s.name === 'West')!.id
+    await client.enqueue('RenameSite', { id: tmp, name: 'West 2' })
+
+    // Only the create gets through before the "tab" closes. Resolution happens
+    // in reconcile, before the rewrite of the next row, so the map must be on disk.
+    server.fetch.mockImplementationOnce(server.fetch.getMockImplementation()!)
+      .mockImplementationOnce(() => Promise.reject(new TypeError('Failed to fetch')))
+    client.goOnline()
+    await until(() => client.state.lastError !== null, 'network error')
+    client.db.close()
+
+    const reopened = createClient(server, { dbName, mutationHandlers: createHandlers })
+    await until(async () => (await reopened.db.mutations.count()) === 0, 'outbox to drain after reload')
+    expect(server.mutations().at(-1)).toMatchObject({ op: 'RenameSite', variables: { id: 's3', name: 'West 2' } })
+  })
+
+  it('fails a mutation that still carries an unresolved temp id instead of sending it', async () => {
+    const noResolve = {
+      ...createHandlers,
+      CreateSite: { apply: (createHandlers as never as Record<string, { apply: unknown }>).CreateSite!.apply },
+    } as unknown as MutationHandlers
+    const client = createClient(server, { mutationHandlers: noResolve })
+    await client.fetchQuery('GetSites', undefined)
+    client.goOffline()
+    await client.enqueue('CreateSite', { name: 'West' })
+    const tmp = (await cachedSites(client))!.find(s => s.name === 'West')!.id
+    const rename = await client.enqueue('RenameSite', { id: tmp, name: 'West 2' })
+
+    client.goOnline()
+    await until(async () => (await client.db.mutations.get(rename.id))?.status === 'failed', 'failed status')
+    expect((await client.db.mutations.get(rename.id))?.error).toMatch(/temp id .* did not call resolve/)
+    expect(server.mutations().map(c => c.op)).toEqual(['CreateSite'])
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Direct mutations
+// ---------------------------------------------------------------------------
+
+describe('execute', () => {
+  it('sends now, returns the server data, reconciles and refetches', async () => {
+    const reconcile = vi.fn()
+    const client = createClient(server, {
+      mutationHandlers: { RenameSite: { reconcile, refetch: ['GetSites'] } } as unknown as MutationHandlers,
+    })
+    await client.fetchQuery('GetSites', undefined)
+    const refresh = vi.fn(async () => {})
+    client.active.set('GetSites:x', refresh)
+
+    const result = await client.execute<{ renameSite: Site }>('RenameSite', { id: 's1', name: 'Direct' })
+    expect(result.renameSite).toMatchObject({ id: 's1', name: 'Direct' })
+    expect(reconcile).toHaveBeenCalledWith(expect.objectContaining({ variables: { id: 's1', name: 'Direct' } }), result)
+    expect(refresh).toHaveBeenCalledTimes(1)
+    expect(await client.db.mutations.count()).toBe(0)
+  })
+
+  it('rejects while offline and on server errors, and refuses queries', async () => {
+    const client = createClient(server)
+    client.goOffline()
+    await expect(client.execute('RenameSite', { id: 's1', name: 'x' })).rejects.toThrow(/offline/)
+    client.goOnline()
+    await expect(client.execute('RenameSite', { id: 's1', name: 'bad' })).rejects.toThrow('name rejected')
+    await expect(client.execute('GetSites', undefined)).rejects.toThrow(/not a mutation/)
+  })
+
+  it('drains the outbox first and rewrites temp ids', async () => {
+    const client = createClient(server, { mutationHandlers: createHandlers })
+    await client.fetchQuery('GetSites', undefined)
+    client.goOffline()
+    await client.enqueue('CreateSite', { name: 'West' })
+    const tmp = (await cachedSites(client))!.find(s => s.name === 'West')!.id
+
+    // Back online without kicking the loop: execute must send the create itself.
+    client.state.forcedOffline = false
+    const result = await client.execute<{ renameSite: Site }>('RenameSite', { id: tmp, name: 'West 2' })
+    expect(result.renameSite).toMatchObject({ id: 's3', name: 'West 2' })
+    expect(server.mutations().map(c => [c.op, c.variables])).toEqual([
+      ['CreateSite', { name: 'West' }],
+      ['RenameSite', { id: 's3', name: 'West 2' }],
+    ])
   })
 })
 

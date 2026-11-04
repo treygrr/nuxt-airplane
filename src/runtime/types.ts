@@ -74,6 +74,11 @@ export interface MutationRow {
   error?: string
   /** Writes made by `apply`, oldest first, used to roll the mutation back. */
   undo?: UndoEntry[]
+  /**
+   * Ids handed out by `tempId()` while `apply` ran, in call order. A re-apply
+   * (rebase) hands out the same ones so the local rows keep their ids.
+   */
+  tempIds?: string[]
 }
 
 /** Module bookkeeping, e.g. the cache key the data was written under. */
@@ -112,6 +117,30 @@ export interface HandlerContext<V = unknown> {
   variables: V
 }
 
+/** What `apply` receives: the handler context plus a way to mint placeholder ids. */
+export interface ApplyContext<V = unknown> extends HandlerContext<V> {
+  /**
+   * A placeholder id for a row the server will assign an id to. Mutations
+   * queued later that reference it are rewritten with the real id before they
+   * are sent, once `reconcile` has called `resolve`. The same ids come back,
+   * in the same order, when `apply` is re-run on fresh server data.
+   */
+  tempId: () => string
+}
+
+/** What `reconcile` receives: the handler context plus `resolve`. */
+export interface ReconcileContext<V = unknown> extends HandlerContext<V> {
+  /** The ids `apply` minted with `tempId()`, in call order; empty for a mutation sent with `execute`. */
+  tempIds: string[]
+  /**
+   * Records that the placeholder `tempId` stands for the server-assigned `id`.
+   * Every queued mutation whose variables mention `tempId` is sent with `id`
+   * instead, also one queued after the outbox drained with an id a component
+   * still held. The last 1000 mappings are kept.
+   */
+  resolve: (tempId: string, id: string) => Promise<void>
+}
+
 export interface MutationHandler<N extends MutationName = MutationName> {
   /**
    * A human-readable summary for the pending list, e.g. "Archive North Warehouse".
@@ -123,9 +152,13 @@ export interface MutationHandler<N extends MutationName = MutationName> {
    * Runs as soon as the mutation is queued, so the UI reflects it immediately.
    * It runs inside a Dexie transaction and every write is recorded for rollback.
    */
-  apply?: (ctx: HandlerContext<MutationVariables<N>>) => unknown
-  /** Runs with the server's response once the mutation has been sent. */
-  reconcile?: (ctx: HandlerContext<MutationVariables<N>>, result: MutationResult<N>) => unknown
+  apply?: (ctx: ApplyContext<MutationVariables<N>>) => unknown
+  /**
+   * Runs with the server's response once the mutation has been sent. Merge
+   * server-assigned values into the local data here and call `resolve` for
+   * every id minted with `tempId()`.
+   */
+  reconcile?: (ctx: ReconcileContext<MutationVariables<N>>, result: MutationResult<N>) => unknown
   /**
    * Runs when a queued mutation is rolled back. When omitted the writes made
    * by `apply` are undone from the recorded log instead.
