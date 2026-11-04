@@ -4,7 +4,6 @@ import { reactive, computed, shallowRef, readonly } from 'vue'
 import { BOOKKEEPING_TABLES, applyUndo, createDb, withUndoLog } from './db'
 import {
   GraphQLRequestError,
-  type CacheApi,
   type EntityInfo,
   type GraphQLResponse,
   type MutationHandlers,
@@ -19,14 +18,13 @@ import {
   type QueryHandler,
   type QueryHandlers,
   type QueryName,
-  type Updater,
 } from './types'
 
 export interface AirplaneClientOptions extends AirplaneRuntimeConfig {
   documents: Record<string, OperationDocument>
   /** Hash of the compiled documents, mixed into the cache key. */
   documentsHash: string
-  /** Types found with an id in the documents; each gets a table. */
+  /** Types the documents select with an id; each gets a table keyed on it. */
   entities?: Record<string, EntityInfo>
   mutationHandlers: MutationHandlers
   queryHandlers: QueryHandlers
@@ -36,11 +34,11 @@ export interface AirplaneClientOptions extends AirplaneRuntimeConfig {
   runWithContext?: <T>(fn: () => T) => T | Promise<Awaited<T>>
 }
 
-/** What `useQuery` observes: the live data plus the cache row's metadata. */
+/** What `useQuery` observes: the live result of `read` plus the fetch record. */
 export interface QuerySnapshot {
   data: unknown
   updatedAt: number | null
-  /** A response for this query has been stored at some point. */
+  /** A response for this query (any variables) has been stored at some point. */
   cached: boolean
 }
 
@@ -156,7 +154,6 @@ export function mergeStores(entities: Record<string, EntityInfo>, user: Record<s
 
 export function createAirplaneClient(options: AirplaneClientOptions) {
   const entities = options.entities ?? {}
-  const normalizeAll = options.normalize ?? true
   const db = createDb(options.dbName, mergeStores(entities, options.stores.stores), options.stores.version)
   const { documents, mutationHandlers, queryHandlers } = options
   /** A failed mutation holds back the ones queued after it (ordered delivery). */
@@ -179,7 +176,7 @@ export function createAirplaneClient(options: AirplaneClientOptions) {
   /** Deploy key from config plus the documents hash: either changing busts the cache. */
   const cacheKey = `${options.cacheKey ?? ''}:${options.documentsHash}`
 
-  /** Empties cached data (query rows and your stores) but keeps the outbox. */
+  /** Empties the tables and the fetch records but keeps the outbox. */
   async function clearCache() {
     const tables = db.tables.filter(t => !BOOKKEEPING_TABLES.has(t.name))
     await db.transaction('rw', tables, async () => {
@@ -333,120 +330,40 @@ export function createAirplaneClient(options: AirplaneClientOptions) {
   }
 
   // --------------------------------------------------------------------------
-  // Normalization
+  // Queries
   //
-  // A response object whose type has a table (`__typename` in `entities`)
-  // and whose id is present is written to that table and replaced, in the
-  // structure that held it, by `{ __typename, id }`. The structure with the
-  // references is the skeleton stored under the query's key. Reading a query
-  // hydrates the skeleton from the tables, inside a live query, so a mutation
-  // that updates a row updates every query showing it.
+  // The tables are the only store. A response goes through the query's
+  // `store` handler, and its result comes from `read`, live, online or not. A
+  // query with no `read` is served from the network and nothing is kept.
   // --------------------------------------------------------------------------
 
   function queryHandler(name: string): QueryHandler | undefined {
     return (queryHandlers as Record<string, QueryHandler | undefined>)[name]
   }
 
-  /**
-   * Whether a query's responses go through the entity tables. A `store`
-   * handler takes that over; a `read` handler alone still gets the rows
-   * written, so it can build the result from them.
-   */
-  function normalized(name: string) {
-    return normalizeAll && !queryHandler(name)?.store
+  /** Whether a query can be served from the tables: it has a `read` handler. */
+  function readable(name: string) {
+    return !!queryHandler(name)?.read
   }
 
-  function entityOf(value: unknown): { table: string, id: string } | undefined {
-    if (!value || typeof value !== 'object' || Array.isArray(value)) return
-    const { __typename } = value as { __typename?: string }
-    const entity = __typename && entities[__typename]
-    if (!entity) return
-    const id = (value as Record<string, unknown>)[entity.key]
-    return id == null ? undefined : { table: __typename, id: String(id) }
-  }
-
-  const isPlain = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && Object.getPrototypeOf(v) === Object.prototype
-
-  /** Splits `value` into a skeleton of references and the rows it contained, innermost first. */
-  function normalize(value: unknown, rows = new Map<string, Map<string, Record<string, unknown>>>()): { skeleton: unknown, rows: typeof rows } {
-    const walk = (v: unknown): unknown => {
-      if (Array.isArray(v)) return v.map(walk)
-      if (!isPlain(v)) return v
-      const out: Record<string, unknown> = {}
-      for (const [k, item] of Object.entries(v)) out[k] = walk(item)
-      const entity = entityOf(out)
-      if (!entity) return out
-      const table = rows.get(entity.table) ?? new Map()
-      // The same entity can appear several times in one response: merge the selections.
-      table.set(entity.id, { ...table.get(entity.id), ...out })
-      rows.set(entity.table, table)
-      return { __typename: entity.table, [entities[entity.table]!.key]: out[entities[entity.table]!.key] }
-    }
-    return { skeleton: walk(value), rows }
-  }
-
-  /** Upserts rows, merging into what the table already holds so fields fetched by another query survive. */
-  async function writeRows(rows: Map<string, Map<string, Record<string, unknown>>>) {
-    for (const [table, byId] of rows) {
-      const t = db.table(table)
-      const ids = [...byId.keys()]
-      const existing = await t.bulkGet(ids)
-      await t.bulkPut(ids.map((id, i) => ({ ...(existing[i] as object | undefined), ...byId.get(id)! })))
-    }
-  }
-
-  /**
-   * Puts rows back into a skeleton. A reference whose row is gone is dropped
-   * from lists and becomes `null` elsewhere, which is how a deleted row
-   * leaves every query. A reference back to an ancestor stays a reference.
-   */
-  async function hydrate(value: unknown, ancestors: string[] = []): Promise<unknown> {
-    if (Array.isArray(value)) {
-      const items = await Promise.all(value.map(v => hydrate(v, ancestors)))
-      return items.filter((v, i) => v !== null || value[i] === null)
-    }
-    if (!isPlain(value)) return value
-    const entity = entityOf(value)
-    let source: Record<string, unknown> = value
-    let scope = ancestors
-    if (entity) {
-      const key = `${entity.table}:${entity.id}`
-      if (ancestors.includes(key)) return { ...value }
-      const row = await db.table(entity.table).get(entity.id) as Record<string, unknown> | undefined
-      if (!row) return null
-      source = { ...row, ...value, ...row }
-      scope = [...ancestors, key]
-    }
-    const out: Record<string, unknown> = {}
-    for (const [k, item] of Object.entries(source)) out[k] = await hydrate(item, scope)
-    return out
-  }
-
-  /** Writes a structure's entities and returns the skeleton to store in its place. */
-  async function storeNormalized(data: unknown) {
-    const { skeleton, rows } = normalize(data)
-    await writeRows(rows)
-    return skeleton
+  if (import.meta.dev) {
+    const unhandled = Object.values(documents).filter(d => d.kind === 'query' && !readable(d.name)).map(d => `"${d.name}"`)
+    if (unhandled.length) console.warn(`[nuxt-airplane] No query handler with \`read\` for ${unhandled.join(', ')}: served from the network only, nothing to show offline.`)
   }
 
   /** Refresh callbacks of the queries currently mounted somewhere. */
   const active = new Map<string, () => Promise<void>>()
 
   /**
-   * Fetches a query and stores the response: through the `store` handler when
-   * there is one, as a cached blob otherwise. Pending mutations are then
-   * re-applied so the fresh server state does not wipe local changes.
+   * Writes a response through the `store` handler and records the fetch.
+   * A query with neither `store` nor `read` leaves nothing behind.
    */
-  /** Writes one response through the `store` handler (or as a blob) plus its metadata row. */
   async function storeResponse(name: string, variables: unknown, data: unknown) {
     const h = queryHandler(name)
-    const row = { key: queryKey(name, variables), document: name, variables, updatedAt: Date.now() }
+    if (!h?.store && !h?.read) return
     await db.transaction('rw', db.tables, async () => {
-      await h?.store?.({ db, variables: variables as never }, data as never)
-      // Normalized queries keep the skeleton, blob queries the whole response,
-      // and with a `read` handler the row only carries metadata.
-      const skeleton = normalized(name) ? await storeNormalized(data) : data
-      await db.queries.put({ ...row, data: h?.read ? null : skeleton })
+      await h.store?.({ db, variables: variables as never }, data as never)
+      await db.queries.put({ key: queryKey(name, variables), document: name, variables, updatedAt: Date.now() })
     })
   }
 
@@ -494,20 +411,22 @@ export function createAirplaneClient(options: AirplaneClientOptions) {
     if (pages) await rebasePending()
   }
 
+  /**
+   * Observes a query's result: `read` re-run whenever a table it touched
+   * changes. A query without `read` has nothing to observe and the snapshot
+   * stays empty; `useQuery` shows it what the network returns.
+   */
   function watchQuery(name: string, variables: unknown) {
     const snapshot = shallowRef<QuerySnapshot>({ data: null, updatedAt: null, cached: false })
-    const h = queryHandler(name)
+    const read = queryHandler(name)?.read
+    if (!read) return { snapshot: readonly(snapshot), unsubscribe: () => {} }
     const key = queryKey(name, variables)
     const subscription = liveQuery(async (): Promise<QuerySnapshot> => {
       const row = await db.queries.get(key)
-      const data = h?.read
-        ? await h.read({ db, variables: variables as never })
-        : normalized(name) ? await hydrate(row?.data) : row?.data
-      // With `read`, the tables hold data as soon as any variant of this
-      // document has been fetched, so a new filter is not "loading" offline.
-      const cached = h?.read
-        ? !!row || (await db.queries.where('document').equals(name).count()) > 0
-        : !!row
+      const data = await read({ db, variables: variables as never })
+      // The tables hold data as soon as any variant of this document has been
+      // fetched, so a new filter is not "loading" offline.
+      const cached = !!row || (await db.queries.where('document').equals(name).count()) > 0
       return { data: data ?? null, updatedAt: row?.updatedAt ?? null, cached }
     }).subscribe({ next: s => (snapshot.value = s) })
     return { snapshot: readonly(snapshot), unsubscribe: () => subscription.unsubscribe() }
@@ -523,58 +442,6 @@ export function createAirplaneClient(options: AirplaneClientOptions) {
   }
 
   // --------------------------------------------------------------------------
-  // Cache API handed to mutation handlers
-  // --------------------------------------------------------------------------
-
-  /**
-   * Helpers over the blob cache. Writes are recorded by the undo log like any
-   * other, so nothing needs tracking here. `invalidate` only collects names:
-   * refetching from inside the transaction would commit it early.
-   */
-  function createCacheApi(invalidated?: Set<QueryName>): CacheApi {
-    async function updateRows(name: string, filter: (key: string) => boolean, updater: Updater<unknown>) {
-      const rows = (await db.queries.where('document').equals(name).toArray()).filter(r => filter(r.key))
-      const viaTables = normalized(name)
-      const next = []
-      for (const row of rows) {
-        if (row.data === null || row.data === undefined) continue
-        // Handlers see the data as a query sees it; what they write is split back into the tables.
-        const data = viaTables ? await hydrate(row.data) : structuredClone(row.data)
-        const returned = updater(data, row.variables)
-        const result = returned === undefined ? data : returned
-        next.push({ ...row, data: viaTables ? await storeNormalized(result) : result })
-      }
-      await db.queries.bulkPut(next)
-    }
-
-    return {
-      async update(name: string, variablesOrUpdater: unknown, maybeUpdater?: Updater<unknown>) {
-        if (typeof variablesOrUpdater === 'function') {
-          await updateRows(name, () => true, variablesOrUpdater as Updater<unknown>)
-        }
-        else {
-          const key = queryKey(name, variablesOrUpdater)
-          await updateRows(name, k => k === key, maybeUpdater!)
-        }
-      },
-      async get(name: string, variables?: unknown) {
-        const h = queryHandler(name)
-        if (h?.read) return (await h.read({ db, variables: variables as never })) ?? undefined
-        const data = (await db.queries.get(queryKey(name, variables)))?.data
-        return (normalized(name) ? await hydrate(data) : data) as never
-      },
-      async set(name: string, variables: unknown, data: unknown) {
-        const stored = normalized(name) ? await storeNormalized(data) : data
-        await db.queries.put({ key: queryKey(name, variables), document: name, variables, data: stored, updatedAt: Date.now() })
-      },
-      async invalidate(name: string) {
-        await db.queries.where('document').equals(name).delete()
-        invalidated?.add(name as QueryName)
-      },
-    } as CacheApi
-  }
-
-  // --------------------------------------------------------------------------
   // Mutations / outbox
   // --------------------------------------------------------------------------
 
@@ -584,22 +451,19 @@ export function createAirplaneClient(options: AirplaneClientOptions) {
 
   /**
    * Runs `apply` for a queued mutation inside an undo-logged transaction and
-   * stores the log on the row. `rebase` skips the refetches `invalidate`
-   * asked for, since a rebase is itself the result of a fetch.
+   * stores the log on the row.
    */
-  async function applyMutation(row: MutationRow, { rebase = false } = {}) {
+  async function applyMutation(row: MutationRow) {
     const h = mutationHandler(row.document)
     if (!h?.apply) return
-    const invalidated = new Set<QueryName>()
     // Ids minted on the first apply are handed out again on a rebase, in the
     // same order, so a re-applied create keeps the id later mutations reference.
     const tempIds = [...(row.tempIds ?? [])]
     let minted = 0
     const tempId = () => (tempIds[minted] ??= newTempId(), tempIds[minted++]!)
     const { undo } = await withUndoLog(db, () =>
-      h.apply!({ db, cache: createCacheApi(invalidated), variables: row.variables as never, tempId }))
+      h.apply!({ db, variables: row.variables as never, tempId }))
     await db.mutations.update(row.id, { undo, tempIds })
-    if (!rebase && invalidated.size) await refetchActive(invalidated)
   }
 
   // --------------------------------------------------------------------------
@@ -620,21 +484,21 @@ export function createAirplaneClient(options: AirplaneClientOptions) {
   }
 
   async function resolveTempId(tempId: string, id: string) {
-    await moveEntity(tempId, id)
+    await moveRow(tempId, id)
     const entries = Object.entries(await readTempIds()).filter(([key]) => key !== tempId)
     entries.push([tempId, id])
     await db.meta.put({ key: TEMP_IDS_KEY, value: JSON.stringify(Object.fromEntries(entries.slice(-TEMP_IDS_MAX))) })
   }
 
   /**
-   * Re-keys a normalized row created under a placeholder and repoints the
-   * references to it in every stored skeleton, so the row stays in the
-   * queries listing it once the server has named it.
+   * Re-keys the row created under a placeholder, in whichever inferred table
+   * holds it, so the row stays put once the server has named it. A copy of it
+   * nested in another row is left to the next refetch.
    */
-  async function moveEntity(tempId: string, id: string) {
+  async function moveRow(tempId: string, id: string) {
     const tables = Object.keys(entities)
     if (!tables.length) return
-    await db.transaction('rw', db.tables, async () => {
+    await db.transaction('rw', tables, async () => {
       for (const table of tables) {
         const t = db.table(table)
         const row = await t.get(tempId) as Record<string, unknown> | undefined
@@ -642,23 +506,12 @@ export function createAirplaneClient(options: AirplaneClientOptions) {
         await t.delete(tempId)
         await t.put({ ...row, [entities[table]!.key]: id })
       }
-      const rename = (v: unknown): unknown => {
-        if (Array.isArray(v)) return v.map(rename)
-        if (!isPlain(v)) return v
-        const out: Record<string, unknown> = {}
-        for (const [k, item] of Object.entries(v)) out[k] = rename(item)
-        const entity = entityOf(out)
-        if (entity && entity.id === tempId) out[entities[entity.table]!.key] = id
-        return out
-      }
-      const rows = await db.queries.toArray()
-      await db.queries.bulkPut(rows.map(r => ({ ...r, data: rename(r.data) })))
     })
   }
 
   /** The context `reconcile` runs with. */
   function reconcileContext(variables: unknown, tempIds: string[] = []): ReconcileContext<never> {
-    return { db, cache: createCacheApi(), variables: variables as never, tempIds, resolve: resolveTempId }
+    return { db, variables: variables as never, tempIds, resolve: resolveTempId }
   }
 
   /**
@@ -682,13 +535,13 @@ export function createAirplaneClient(options: AirplaneClientOptions) {
    */
   async function rebasePending() {
     const queue = await db.mutations.orderBy('createdAt').toArray()
-    for (const row of queue) await applyMutation(row, { rebase: true })
+    for (const row of queue) await applyMutation(row)
   }
 
   async function describeMutation(name: string, variables: unknown) {
     const { describe } = mutationHandler(name) ?? {}
     if (typeof describe === 'string') return describe
-    if (describe) return describe({ db, cache: createCacheApi(), variables: variables as never })
+    if (describe) return describe({ db, variables: variables as never })
     return humanize(name)
   }
 
@@ -716,7 +569,7 @@ export function createAirplaneClient(options: AirplaneClientOptions) {
     const h = mutationHandler(row.document)
 
     if (h?.revert) {
-      await h.revert({ db, cache: createCacheApi(), variables: row.variables as never })
+      await h.revert({ db, variables: row.variables as never })
       await db.mutations.delete(id)
     }
     else {
@@ -727,7 +580,7 @@ export function createAirplaneClient(options: AirplaneClientOptions) {
         .filter(m => m.status !== 'syncing')
       if (row.undo) await applyUndo(db, row.undo)
       await db.mutations.delete(id)
-      for (const m of later) await applyMutation(m, { rebase: true })
+      for (const m of later) await applyMutation(m)
     }
     // Dropping a failed mutation releases the ones held back behind it.
     void sync()
@@ -891,6 +744,7 @@ export function createAirplaneClient(options: AirplaneClientOptions) {
     fetchQuery,
     prefetch,
     watchQuery,
+    readable,
     refetchActive,
     enqueue,
     execute,

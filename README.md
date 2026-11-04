@@ -63,47 +63,60 @@ await rename.mutate({ id: 'site-1', name: 'New name' })
 Both are fully typed from the schema: the document name is checked, variables
 and `data` get the generated operation types.
 
-`useQuery` returns **live data from the local cache**, not the network response.
-A cached result renders immediately and a refetch runs in the background when
-online; any mutation handler that touches the cache updates `data` right away.
+`useQuery` returns **live data from local tables**, not the network response.
+Stored data renders immediately and a refetch runs in the background when
+online; any mutation handler that touches a row updates `data` right away.
 
 `useMutation().mutate()` resolves as soon as the change is applied locally and
 queued. Sending it to the server happens in the sync loop.
 
+## Query handlers
+
+The tables are the only store. Every type your documents select with an `id`
+gets a Dexie table keyed on it, typed from the schema (`db.Site` here). A
+query handler writes a response into the tables and reads the query back out;
+`read` is what `useQuery` returns, online or offline. Put files under
+`app/airplane/` and they are picked up automatically.
+
+```ts
+// app/airplane/queries.ts
+export default defineQueryHandlers({
+  GetSites: {
+    store: ({ db }, data) => db.Site.bulkPut(data.sites),
+    read: async ({ db }) => ({ sites: await db.Site.toArray() }),
+  },
+})
+```
+
+A query without a handler is served from the network and has nothing to show
+offline.
+
 ## Mutation handlers
 
-Handlers describe how a queued mutation shows up in the local cache. Put files
-under `app/airplane/` and they are picked up automatically.
+Handlers describe how a queued mutation changes the tables.
 
 ```ts
 // app/airplane/sites.ts
 export default defineMutationHandlers({
   RenameSite: {
     // Runs when the mutation is queued, so the UI reflects it immediately.
-    apply: ({ cache, variables }) =>
-      cache.update('GetSites', (data) => {
-        const site = data.sites.find(s => s.id === variables.id)
-        if (site) site.name = variables.name
-      }),
+    apply: ({ db, variables }) => db.Site.update(variables.id, { name: variables.name }),
     // Optional: summary for the pending list, computed before `apply`.
     describe: ({ variables }) => `Rename site to ${variables.name}`,
     // Optional: merge the server's response once it has been sent.
-    reconcile: ({ cache, variables }, result) => { /* ... */ },
+    reconcile: ({ db, variables }, result) => { /* ... */ },
     // Optional: undo `apply`. When omitted, the rows `apply` touched are
     // snapshotted and restored on rollback.
-    revert: ({ cache, variables }) => { /* ... */ },
+    revert: ({ db, variables }) => { /* ... */ },
     // Queries to refetch after the server accepted it. Defaults to every active query.
     refetch: ['GetSites'],
   },
 })
 ```
 
-The handler context gives you:
-
-- `cache.update(name, updater)` / `cache.update(name, variables, updater)`: edit cached responses in place or return a replacement.
-- `cache.get(name, variables?)`, `cache.set(name, variables, data)`, `cache.invalidate(name)`.
-- `db`: the Dexie instance (`queries` and `mutations` tables) if you need to go lower.
-- `variables`: the mutation's input, typed.
+The handler context gives you `db`, the typed Dexie instance, and `variables`,
+the mutation's input, typed. `apply` also gets `tempId()` for rows created
+offline, and `reconcile` gets `resolve()` to map them to the server's ids.
 
 ## Auth and headers
 

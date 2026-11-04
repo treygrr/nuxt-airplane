@@ -1,6 +1,6 @@
 ---
 title: nuxt-airplane
-description: Airplane mode for your GraphQL app. Typed composables from your .gql files, an IndexedDB cache and a mutation queue that syncs when you are back online.
+description: Airplane mode for your GraphQL app. Typed composables from your .gql files, IndexedDB tables inferred from them and a mutation queue that syncs when you are back online.
 ---
 
 ::u-page-hero{class="dark:bg-gradient-to-b from-neutral-900 to-neutral-950"}
@@ -48,7 +48,7 @@ Give it an endpoint and your `.gql` files. Every operation becomes a typed `useQ
     const { data, loading } = useQuery('GetSites')
     const rename = useMutation('RenameSite')
 
-    // Applied to the local cache right away,
+    // Applied to the local tables right away,
     // sent to the server when online.
     await rename.mutate({ id: 'site-1', name: 'Depot' })
   filename: pages/sites.vue
@@ -58,7 +58,7 @@ Give it an endpoint and your `.gql` files. Every operation becomes a typed `useQ
   const { data, loading } = useQuery('GetSites')
   const rename = useMutation('RenameSite')
 
-  // Applied to the local cache right away,
+  // Applied to the local tables right away,
   // sent to the server when online.
   await rename.mutate({ id: 'site-1', name: 'Depot' })
   ```
@@ -86,10 +86,10 @@ Everything from your GraphQL documents
   icon: i-lucide-database
   ---
   #title
-  Live data from the cache
+  Live data from local tables
 
   #description
-  Responses are stored in IndexedDB with Dexie. Components read the cache, not the network, so changes show up everywhere instantly.
+  Every type your documents select with an id gets a typed Dexie table. Query handlers write responses in and read results out, so components read the tables, not the network, and changes show up everywhere instantly.
   :::
 
   :::u-page-feature
@@ -122,7 +122,7 @@ Everything from your GraphQL documents
   Mutation handlers
 
   #description
-  `defineMutationHandlers` exposes `apply`, `reconcile` and `revert` so you decide how each mutation touches the cache.
+  `defineMutationHandlers` exposes `apply`, `reconcile` and `revert` so you decide how each mutation touches the tables.
   :::
 
   :::u-page-feature

@@ -1,8 +1,8 @@
-// A Relay-style connection, paginated locally. The server's cursors are a
-// base64 of `name\u0000id`, so `read` can apply the same keyset pagination to
-// the `Item` table: pages that were fetched come back identical, and offline
-// you can keep paging through whatever is cached. The nodes land in the table
-// on their own; the handler only has to read.
+// A Relay-style connection, paginated locally. `store` puts the nodes of each
+// page in the `Item` table. The server's cursors are a base64 of
+// `name\u0000id`, so `read` can apply the same keyset pagination to the
+// table: pages that were fetched come back identical, and offline you can
+// keep paging through whatever was stored.
 
 type Sortable = { id: string, name: string }
 
@@ -14,6 +14,8 @@ const decodeCursor = (cursor: string) => {
 const compareItems = (a: Sortable, b: Sortable) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id)
 
 export default defineQueryHandler('SearchItems', {
+  store: ({ db }, data) => db.Item.bulkPut(data.searchItems.edges.map(edge => edge.node)),
+
   // Once any page is fetched, keep following `endCursor` in the background so
   // the whole result set is cached for offline use.
   prefetch: {

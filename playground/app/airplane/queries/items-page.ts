@@ -1,9 +1,12 @@
-// Classic numbered pages over the same catalog. `read` slices the `Item`
-// table at the same offset as the server, so a page that was fetched comes
-// back identical; offline, a page that was never fetched shows what the local
-// data has at that offset, and `totalPages` reflects local data.
+// Classic numbered pages over the same catalog. Every page lands in the
+// `Item` table, and `read` slices it at the same offset as the server, so a
+// page that was fetched comes back identical; offline, a page that was never
+// fetched shows what the local data has at that offset, and `totalPages`
+// reflects local data.
 
 export default defineQueryHandler('ItemsPage', {
+  store: ({ db }, data) => db.Item.bulkPut(data.itemsPage.items),
+
   // Numbered pages prefetch the same way: page + 1 until the last one.
   prefetch: {
     next: (data, variables) => data.itemsPage.page < data.itemsPage.totalPages

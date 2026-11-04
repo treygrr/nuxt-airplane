@@ -13,12 +13,14 @@ declare global {
   interface NuxtAirplaneMutations {}
 
   /**
-   * Row types of the tables declared with `defineAirplaneStores`. Augment it
-   * yourself so `db.<table>` is typed inside handlers:
+   * Row types of the tables, so `db.<table>` is typed inside handlers. The
+   * generated `types/nuxt-airplane.d.ts` fills it with one entry per type the
+   * documents select with an `id`. Augment it yourself for a table you
+   * declared with `defineAirplaneStores`:
    *
    * ```ts
    * declare global {
-   *   interface NuxtAirplaneStores { sites: { id: string, name: string } }
+   *   interface NuxtAirplaneStores { drafts: { id: string, body: string } }
    * }
    * ```
    */
@@ -34,19 +36,9 @@ export type QueryVariables<N extends QueryName> = NuxtAirplaneQueries[N] extends
 export type MutationResult<N extends MutationName> = NuxtAirplaneMutations[N] extends { result: infer R } ? R : never
 export type MutationVariables<N extends MutationName> = NuxtAirplaneMutations[N] extends { variables: infer V } ? V : never
 
-/** What the runtime knows about a normalized type: the field its table is keyed on. */
+/** What the runtime knows about an inferred table: the field it is keyed on. */
 export interface EntityInfo {
   key: string
-}
-
-/**
- * How a stored row points at another entity. A response object with an `id`
- * is written to its own table and replaced by this in whatever contained it;
- * reading a query puts the row back.
- */
-export interface EntityRef<T extends string = string> {
-  __typename: T
-  id: string
 }
 
 export interface OperationDocument {
@@ -58,14 +50,14 @@ export interface OperationDocument {
 }
 
 /**
- * A cached query response, keyed by document name + variables. For queries
- * with a `read` handler only the metadata is kept and `data` is `null`.
+ * A record of a fetch, keyed by document name + variables: when this variant
+ * of the query last came from the server. The data itself lives in the
+ * tables the query's `store` handler wrote it to.
  */
 export interface QueryRow {
   key: string
   document: string
   variables: unknown
-  data: unknown
   updatedAt: number
 }
 
@@ -112,25 +104,8 @@ export type AirplaneDexie = Dexie & {
   [K in keyof NuxtAirplaneStores]: Table<NuxtAirplaneStores[K], IndexableType>
 }
 
-/** Mutate `data` in place, or return a replacement. */
-// eslint-disable-next-line @typescript-eslint/no-invalid-void-type
-export type Updater<T> = (data: T, variables: unknown) => T | undefined | void
-
-/** Read and write the cached query responses from inside a mutation handler. */
-export interface CacheApi {
-  /** Update every cached response of a query document. */
-  update<N extends QueryName>(name: N, updater: Updater<QueryResult<N>>): Promise<void>
-  /** Update the cached response for one exact set of variables. */
-  update<N extends QueryName>(name: N, variables: QueryVariables<N>, updater: Updater<QueryResult<N>>): Promise<void>
-  get<N extends QueryName>(name: N, variables?: QueryVariables<N>): Promise<QueryResult<N> | undefined>
-  set<N extends QueryName>(name: N, variables: QueryVariables<N>, data: QueryResult<N>): Promise<void>
-  /** Drop the cached responses of a query document and refetch it once `apply` is done. */
-  invalidate(name: QueryName): Promise<void>
-}
-
 export interface HandlerContext<V = unknown> {
   db: AirplaneDexie
-  cache: CacheApi
   variables: V
 }
 
@@ -153,7 +128,9 @@ export interface ReconcileContext<V = unknown> extends HandlerContext<V> {
    * Records that the placeholder `tempId` stands for the server-assigned `id`.
    * Every queued mutation whose variables mention `tempId` is sent with `id`
    * instead, also one queued after the outbox drained with an id a component
-   * still held. The last 1000 mappings are kept.
+   * still held. The last 1000 mappings are kept. The row keyed `tempId` in an
+   * inferred table is re-keyed to `id`; rows in your own tables are yours to
+   * update here.
    */
   resolve: (tempId: string, id: string) => Promise<void>
 }
@@ -208,11 +185,13 @@ export interface QueryPrefetch<N extends QueryName = QueryName> {
 export interface QueryHandler<N extends QueryName = QueryName> {
   /** Fetch every following page in the background once a page of this query is fetched. */
   prefetch?: QueryPrefetch<N>
-  /** Writes a fresh response into your own tables. Runs inside a Dexie transaction. */
+  /** Writes a fresh response into the tables. Runs inside a Dexie transaction. */
   store?: (ctx: QueryHandlerContext<QueryVariables<N>>, data: QueryResult<N>) => unknown
   /**
-   * Builds the query's result from your tables. Runs inside Dexie's
-   * `liveQuery`, so whatever it reads is observed and `data` stays live.
+   * Builds the query's result from the tables; what `useQuery` returns, online
+   * or offline. Runs inside Dexie's `liveQuery`, so whatever it reads is
+   * observed and `data` stays live. Without it the query is served from the
+   * network only.
    */
   read?: (ctx: QueryHandlerContext<QueryVariables<N>>) =>
     QueryResult<N> | null | undefined | Promise<QueryResult<N> | null | undefined>
@@ -288,8 +267,6 @@ export interface AirplaneRuntimeConfig {
   stopOnFailure?: boolean
   /** Send operations by hash instead of text; see the `persistedQueries` module option. `''` means off. */
   persistedQueries?: PersistedQueriesMode | ''
-  /** Store response objects that have an id in one table per type; see the `normalize` module option. Default `true`. */
-  normalize?: boolean
 }
 
 /**
