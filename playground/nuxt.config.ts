@@ -4,6 +4,11 @@ export default defineNuxtConfig({
   modules: ['@treygrr/nuxt-airplane'],
   devtools: { enabled: true },
   compatibilityDate: 'latest',
+  vite: {
+    // The devtools client is only discovered once the page loads; pre-bundling
+    // it avoids a reload of the dev server's first page.
+    optimizeDeps: { include: ['@vue/devtools-core'] },
+  },
   nitro: {
     // Lets server/api/graphql.ts read the SDL at runtime.
     serverAssets: [{ baseName: 'graphql', dir: './graphql' }],
