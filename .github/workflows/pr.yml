@@ -138,7 +138,7 @@ jobs:
             const bad = p.files.map(f => f.path).filter(f => !/^(dist\/|README\.md$|LICENSE$|package\.json$)/.test(f))
             if (bad.length) { console.error("Unexpected files in the package:", bad); process.exit(1) }
           '
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: npm-package
           path: '*.tgz'
@@ -186,7 +186,7 @@ jobs:
         env:
           NUXT_APP_BASE_URL: /nuxt-airplane/
           NUXT_SITE_URL: https://treygrr.github.io
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: docs-site
           path: docs/.output/public
