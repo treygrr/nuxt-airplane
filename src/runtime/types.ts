@@ -88,6 +88,12 @@ export interface MutationRow {
    * (rebase) hands out the same ones so the local rows keep their ids.
    */
   tempIds?: string[]
+  /**
+   * Outbox ids of the mutations this one depends on: the ones that minted a
+   * placeholder its variables carry. While one of them is failed this row
+   * waits, and rolling one back drops this row with it.
+   */
+  dependsOn?: number[]
 }
 
 /** Module bookkeeping, e.g. the cache key the data was written under. */
@@ -263,8 +269,6 @@ export interface AirplaneRuntimeConfig {
   headers?: Record<string, string>
   /** Deploy-specific part of the cache key; see the `cacheKey` module option. */
   cacheKey?: string
-  /** A failed mutation holds back the ones queued after it; see the `stopOnFailure` module option. Default `true`. */
-  stopOnFailure?: boolean
   /** Send operations by hash instead of text; see the `persistedQueries` module option. `''` means off. */
   persistedQueries?: PersistedQueriesMode | ''
 }

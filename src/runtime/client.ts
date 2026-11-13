@@ -67,6 +67,12 @@ export function queryKey(name: string, variables: unknown) {
 // variables. Once the server has answered the create, `reconcile` maps the
 // placeholder to the real id and the sync loop rewrites the queued variables
 // before sending them.
+//
+// A placeholder is also a dependency: a mutation that carries one cannot
+// succeed before the one that minted it has. The outbox row records that
+// (`dependsOn`) and the chain is the unit of failure: a rejected mutation
+// holds back the rows below it and nothing else, and rolling one back drops
+// them with it.
 // ---------------------------------------------------------------------------
 
 const TEMP_ID_PREFIX = 'tmp-'
@@ -131,6 +137,24 @@ export class UnresolvedTempIdError extends Error {
   override name = 'UnresolvedTempIdError'
 }
 
+/**
+ * `ids` plus every outbox row that depends on one of them, directly or
+ * through another row. A dependency is always older, so one pass in id
+ * order finds the whole closure.
+ */
+export function withDependents(rows: MutationRow[], ids: Iterable<number>): Set<number> {
+  const set = new Set(ids)
+  for (const row of [...rows].sort((a, b) => a.id - b.id)) {
+    if (row.dependsOn?.some(id => set.has(id))) set.add(row.id)
+  }
+  return set
+}
+
+/** The failed rows and every row that depends on one: what a sync leaves queued. */
+export function heldBack(rows: MutationRow[]): Set<number> {
+  return withDependents(rows, rows.filter(row => row.status === 'failed').map(row => row.id))
+}
+
 export type AirplaneClient = ReturnType<typeof createAirplaneClient>
 
 /**
@@ -156,8 +180,6 @@ export function createAirplaneClient(options: AirplaneClientOptions) {
   const entities = options.entities ?? {}
   const db = createDb(options.dbName, mergeStores(entities, options.stores.stores), options.stores.version)
   const { documents, mutationHandlers, queryHandlers } = options
-  /** A failed mutation holds back the ones queued after it (ordered delivery). */
-  const stopOnFailure = options.stopOnFailure ?? true
 
   // A schema that no longer matches what is on disk (lowered version, changed
   // primary key) cannot be opened. This is a cache, so start over rather than
@@ -220,11 +242,10 @@ export function createAirplaneClient(options: AirplaneClientOptions) {
     syncing: false,
     /** Mutations still waiting to be sent, oldest first. */
     pending: [] as MutationRow[],
-    /** Pending mutations held back because an older one failed; `0` with `stopOnFailure: false`. */
+    /** Pending mutations held back because one they depend on failed. */
     get blocked(): number {
-      if (!stopOnFailure) return 0
-      const failed = this.pending.findIndex(m => m.status === 'failed')
-      return failed < 0 ? 0 : this.pending.slice(failed + 1).filter(m => m.status === 'pending').length
+      const held = heldBack(this.pending)
+      return this.pending.filter(m => m.status === 'pending' && held.has(m.id)).length
     },
     /** Size of the batch the current (or last) sync started with. */
     syncTotal: 0,
@@ -515,6 +536,18 @@ export function createAirplaneClient(options: AirplaneClientOptions) {
   }
 
   /**
+   * The outbox rows `variables` depend on: those that minted a placeholder it
+   * carries which has no server id yet. A placeholder already resolved is a
+   * real id by the time the mutation is sent, so it links nothing.
+   */
+  async function dependenciesOf(variables: unknown): Promise<number[]> {
+    const { unresolved } = substituteTempIds(variables, await readTempIds())
+    if (!unresolved.length) return []
+    const rows = await db.mutations.toArray()
+    return rows.filter(row => row.tempIds?.some(id => unresolved.includes(id))).map(row => row.id)
+  }
+
+  /**
    * The variables to send for a mutation: the queued ones with every resolved
    * temp id replaced by its server id. Throws when a minted temp id is still
    * unresolved, since the server would reject it anyway.
@@ -549,7 +582,8 @@ export function createAirplaneClient(options: AirplaneClientOptions) {
     if (document(name).kind !== 'mutation') throw new Error(`[nuxt-airplane] "${name}" is not a mutation`)
     await ready
     const description = await describeMutation(name, variables)
-    const id = await db.mutations.add({ document: name, variables, description, status: 'pending', createdAt: Date.now() } as MutationRow)
+    const dependsOn = await dependenciesOf(variables)
+    const id = await db.mutations.add({ document: name, variables, description, status: 'pending', createdAt: Date.now(), dependsOn } as MutationRow)
     const row = (await db.mutations.get(id))!
     try {
       await applyMutation(row)
@@ -562,28 +596,37 @@ export function createAirplaneClient(options: AirplaneClientOptions) {
     return row
   }
 
-  /** Undo a queued mutation and drop it from the outbox. */
+  /**
+   * Undo a queued mutation and drop it from the outbox, with every mutation
+   * that depends on it: they carry a placeholder it minted, which would never
+   * resolve. The writes made since it are unwound newest first, from the undo
+   * logs, then the surviving later mutations are re-applied on the restored
+   * data, so their effect and their own undo logs stay consistent.
+   */
   async function rollback(id: number) {
-    const row = await db.mutations.get(id)
+    const rows = await db.mutations.orderBy('createdAt').toArray()
+    const row = rows.find(m => m.id === id)
     if (!row || row.status === 'syncing') return
-    const h = mutationHandler(row.document)
-
-    if (h?.revert) {
-      await h.revert({ db, variables: row.variables as never })
-      await db.mutations.delete(id)
-    }
-    else {
-      // Undo this mutation's writes, then replay the mutations queued after it
-      // so their changes land on the restored data. "After" is by id: two
-      // mutations queued in the same millisecond share a createdAt.
-      const later = (await db.mutations.where('id').above(row.id).toArray())
-        .filter(m => m.status !== 'syncing')
-      if (row.undo) await applyUndo(db, row.undo)
-      await db.mutations.delete(id)
-      for (const m of later) await applyMutation(m)
-    }
+    const dropped = withDependents(rows, [id])
+    // "Later" is by id: two mutations queued in the same millisecond share a
+    // createdAt. A row being sent right now is left alone: its effect must
+    // stay until the server confirms it and the next refetch lands.
+    const later = rows.filter(m => m.id > id && m.status !== 'syncing')
+    for (const m of [row, ...later].reverse()) await undoMutation(m, dropped.has(m.id))
+    await db.mutations.bulkDelete([...dropped])
+    for (const m of later) if (!dropped.has(m.id)) await applyMutation(m)
     // Dropping a failed mutation releases the ones held back behind it.
     void sync()
+  }
+
+  /**
+   * Takes a mutation's effect back: through its `revert` hook when it is the
+   * one being rolled back and has one, else from its undo log.
+   */
+  async function undoMutation(row: MutationRow, rolledBack: boolean) {
+    const h = mutationHandler(row.document)
+    if (rolledBack && h?.revert) await h.revert({ db, variables: row.variables as never })
+    else if (row.undo) await applyUndo(db, row.undo)
   }
 
   async function retry(id: number) {
@@ -617,18 +660,15 @@ export function createAirplaneClient(options: AirplaneClientOptions) {
   }
 
   /**
-   * The pending rows to send now, oldest first. With `stopOnFailure` the
-   * queue ends at the oldest failed row: what was queued after it may depend
-   * on it, so it waits until that row is retried or rolled back.
+   * The pending rows to send now, oldest first: every pending row that does
+   * not depend, directly or through another row, on a failed one. The chain
+   * below a failure waits until that row is retried or rolled back; the rest
+   * of the queue is not held up by it.
    */
   async function sendable() {
     const rows = await db.mutations.orderBy('createdAt').toArray()
-    const queue: MutationRow[] = []
-    for (const row of rows) {
-      if (row.status === 'failed' && stopOnFailure) break
-      if (row.status === 'pending') queue.push(row)
-    }
-    return queue
+    const held = heldBack(rows)
+    return rows.filter(row => row.status === 'pending' && !held.has(row.id))
   }
 
   /**
@@ -666,8 +706,14 @@ export function createAirplaneClient(options: AirplaneClientOptions) {
     const refetch = new Set<QueryName>()
     let refetchAll = false
 
+    /** Rows this batch failed to send, and the rows below them: they stay queued. */
+    const held = new Set<number>()
     try {
       for (const row of queue) {
+        if (row.dependsOn?.some(id => held.has(id))) {
+          held.add(row.id)
+          continue
+        }
         await db.mutations.update(row.id, { status: 'syncing' })
         try {
           // An earlier row of this batch may have resolved a temp id this one
@@ -684,10 +730,10 @@ export function createAirplaneClient(options: AirplaneClientOptions) {
         }
         catch (error) {
           if (error instanceof GraphQLRequestError || error instanceof UnresolvedTempIdError) {
-            // The server rejected it: park it so the user can retry or roll it back.
+            // The server rejected it: park it so the user can retry or roll it
+            // back. Only the rows that depend on it wait; the batch goes on.
             await db.mutations.update(row.id, { status: 'failed', error: error.message })
-            // The rest of the batch was queued after it, so it is held back too.
-            if (stopOnFailure) break
+            held.add(row.id)
             continue
           }
           // Network trouble: leave the rest queued for the next attempt.
