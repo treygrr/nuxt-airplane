@@ -15,7 +15,7 @@ export interface UseSyncReturn {
   synced: ComputedRef<boolean>
   /** Mutations still waiting to reach the server, oldest first. */
   pending: Ref<MutationRow[]>
-  /** Pending mutations held back because an older one failed (see the `stopOnFailure` option). */
+  /** Pending mutations held back because one they depend on failed. */
   blocked: Ref<number>
   /** Size of the batch the current (or last) sync started with. */
   syncTotal: Ref<number>

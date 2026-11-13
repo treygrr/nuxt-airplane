@@ -10,6 +10,21 @@ const { data: sitesData, loading, fetching, error, updatedAt, refresh } = useQue
 const { data: itemsData } = useQuery('GetItems')
 const sync = useSync()
 
+// A pending row below a failed mutation in its chain is waiting on it. The
+// list shows that, and indents each row under the one it depends on.
+const held = computed(() => {
+  const ids = new Set(sync.pending.value.filter(m => m.status === 'failed').map(m => m.id))
+  for (const m of sync.pending.value) if (m.dependsOn?.some(id => ids.has(id))) ids.add(m.id)
+  return ids
+})
+function waiting(m: { id: number, status: string }) {
+  return m.status === 'pending' && held.value.has(m.id)
+}
+function depth(m: { dependsOn?: number[] }): number {
+  const parents = sync.pending.value.filter(p => m.dependsOn?.includes(p.id))
+  return parents.length ? 1 + Math.max(...parents.map(depth)) : 0
+}
+
 const create = useMutation('CreateSite')
 const archive = useMutation('ArchiveSite')
 const unarchive = useMutation('UnarchiveSite')
@@ -119,11 +134,12 @@ function summarize(m: { document: string, variables: unknown }) {
         <li
           v-for="m in sync.pending.value"
           :key="m.id"
-          :class="m.status"
+          :class="[m.status, { waiting: waiting(m) }]"
+          :style="{ paddingLeft: `${depth(m) * 1.5}em` }"
         >
           <span class="description">{{ m.description }}</span>
           <code :title="summarize(m)">{{ m.document }}</code>
-          <em>{{ m.status }}</em>
+          <em>{{ waiting(m) ? 'waiting' : m.status }}</em>
           <span
             v-if="m.error"
             class="error"
@@ -353,6 +369,7 @@ td input { width: 70px; }
 .pending li .description { flex: 1; }
 .pending li code { font-size: .8em; color: #777; }
 .pending li.failed { color: #a33; }
+.pending li.waiting { color: #999; }
 .error { color: #a33; }
 .meta { color: #777; font-size: .9em; }
 .items { columns: 2; list-style: none; padding: 0; margin: 8px 0; }

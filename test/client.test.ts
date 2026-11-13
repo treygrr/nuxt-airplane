@@ -4,7 +4,7 @@
 import 'fake-indexeddb/auto'
 import { createHash } from 'node:crypto'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { createAirplaneClient, isTempId, mergeStores, newTempId, substituteTempIds, type AirplaneClient, type AirplaneClientOptions } from '../src/runtime/client'
+import { createAirplaneClient, isTempId, mergeStores, newTempId, substituteTempIds, withDependents, type AirplaneClient, type AirplaneClientOptions } from '../src/runtime/client'
 import type { AirplaneDexie, AirplaneRequestContext, AirplaneRequestOptions, MutationHandlers, OperationDocument, QueryHandlers } from '../src/runtime/types'
 
 // ---------------------------------------------------------------------------
@@ -12,6 +12,7 @@ import type { AirplaneDexie, AirplaneRequestContext, AirplaneRequestOptions, Mut
 // ---------------------------------------------------------------------------
 
 interface Site { id: string, name: string, archived: boolean }
+interface SiteItem { id: string, siteId: string, name: string, qty: number }
 
 const documents: Record<string, OperationDocument> = {
   GetSites: { name: 'GetSites', kind: 'query', source: 'query GetSites { sites { id name archived } }' },
@@ -19,6 +20,8 @@ const documents: Record<string, OperationDocument> = {
   RenameSite: { name: 'RenameSite', kind: 'mutation', source: 'mutation RenameSite($id: ID!, $name: String!) { renameSite(id: $id, name: $name) { id name } }' },
   ArchiveSite: { name: 'ArchiveSite', kind: 'mutation', source: 'mutation ArchiveSite($id: ID!) { archiveSite(id: $id) { id archived } }' },
   CreateSite: { name: 'CreateSite', kind: 'mutation', source: 'mutation CreateSite($name: String!) { createSite(name: $name) { id name archived } }' },
+  AddSiteItem: { name: 'AddSiteItem', kind: 'mutation', source: 'mutation AddSiteItem($siteId: ID!, $name: String!) { addSiteItem(siteId: $siteId, name: $name) { id } }' },
+  SetItemQty: { name: 'SetItemQty', kind: 'mutation', source: 'mutation SetItemQty($itemId: ID!, $qty: Int!) { setItemQty(itemId: $itemId, qty: $qty) { id qty } }' },
   SearchItems: { name: 'SearchItems', kind: 'query', source: 'query SearchItems($after: String) { searchItems(after: $after) { edges { node { id } } pageInfo { hasNextPage endCursor } } }' },
 }
 
@@ -32,6 +35,7 @@ function createServer() {
     { id: 's2', name: 'South', archived: false },
   ]
   const items = Array.from({ length: 5 }, (_, i) => ({ id: `i${i + 1}` }))
+  const siteItems: SiteItem[] = []
   const calls: { op: string, variables: unknown, headers: Headers }[] = []
 
   const fetch = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
@@ -56,9 +60,22 @@ function createServer() {
         return reply({ archiveSite: { id: site.id, archived: true } })
       }
       case 'CreateSite': {
+        if (v.name === 'bad') return Response.json({ errors: [{ message: 'name rejected' }] })
         const site = { id: `s${sites.length + 1}`, name: v.name!, archived: false }
         sites.push(site)
         return reply({ createSite: { ...site } })
+      }
+      case 'AddSiteItem': {
+        if (!sites.some(s => s.id === v.siteId)) return Response.json({ errors: [{ message: `no site ${v.siteId}` }] })
+        const item = { id: `i${siteItems.length + 1}`, siteId: v.siteId!, name: v.name!, qty: 0 }
+        siteItems.push(item)
+        return reply({ addSiteItem: { id: item.id } })
+      }
+      case 'SetItemQty': {
+        const item = siteItems.find(i => i.id === v.itemId)
+        if (!item) return Response.json({ errors: [{ message: `no item ${v.itemId}` }] })
+        item.qty = Number(v.qty)
+        return reply({ setItemQty: { id: item.id, qty: item.qty } })
       }
       case 'SearchItems': {
         const start = v.after ? Number(v.after) : 0
@@ -70,7 +87,7 @@ function createServer() {
     throw new Error(`unknown op ${op}`)
   })
 
-  return { sites, calls, fetch, mutations: () => calls.filter(c => documents[c.op]!.kind === 'mutation') }
+  return { sites, siteItems, calls, fetch, mutations: () => calls.filter(c => documents[c.op]!.kind === 'mutation') }
 }
 
 // ---------------------------------------------------------------------------
@@ -134,6 +151,39 @@ const createHandlers = {
       resolve(tempIds[0]!, result.createSite.id),
   },
 } as unknown as MutationHandlers
+
+/**
+ * A site, an item in it and the item's quantity, each queued offline against
+ * the placeholder the previous one minted: a chain of three. `SiteItem` is a
+ * second inferred table so the item is re-keyed on resolve too.
+ */
+const CHAIN_ENTITIES = { Site: { key: 'id' }, SiteItem: { key: 'id' } }
+const siteItems = (db: AirplaneDexie) => db.table<SiteItem, string>('SiteItem')
+const chainHandlers = {
+  ...createHandlers,
+  AddSiteItem: {
+    apply: ({ db, variables, tempId }: Ctx<{ siteId: string, name: string }> & { tempId: () => string }) =>
+      siteItems(db).put({ id: tempId(), siteId: variables.siteId, name: variables.name, qty: 0 }),
+    reconcile: ({ tempIds, resolve }: { tempIds: string[], resolve: (t: string, id: string) => Promise<void> }, result: { addSiteItem: { id: string } }) =>
+      resolve(tempIds[0]!, result.addSiteItem.id),
+  },
+  SetItemQty: {
+    apply: ({ db, variables }: Ctx<{ itemId: string, qty: number }>) => siteItems(db).update(variables.itemId, { qty: variables.qty }),
+  },
+} as unknown as MutationHandlers
+
+/** Offline: the three-link chain above, then an unrelated archive of an existing site. */
+async function queueChain(client: AirplaneClient, name = 'West') {
+  await client.fetchQuery('GetSites', undefined)
+  client.goOffline()
+  const site = await client.enqueue('CreateSite', { name })
+  const tmpSite = (await cachedSites(client)).find(s => s.name === name)!.id
+  const item = await client.enqueue('AddSiteItem', { siteId: tmpSite, name: 'Bolt' })
+  const tmpItem = (await siteItems(client.db).toArray())[0]!.id
+  const qty = await client.enqueue('SetItemQty', { itemId: tmpItem, qty: 3 })
+  const other = await client.enqueue('ArchiveSite', { id: 's2' })
+  return { site, item, qty, other, tmpSite, tmpItem }
+}
 
 async function until(check: () => boolean | Promise<boolean>, what = 'condition', timeout = 3000) {
   const start = Date.now()
@@ -431,51 +481,127 @@ describe('mutations', () => {
 })
 
 // ---------------------------------------------------------------------------
-// Ordered delivery
+// Failure chains
 // ---------------------------------------------------------------------------
 
-describe('ordered delivery', () => {
-  async function failFirst(client: AirplaneClient) {
+describe('failure chains', () => {
+  const chainClient = () => createClient(server, { entities: CHAIN_ENTITIES, mutationHandlers: chainHandlers })
+
+  it('links a mutation to the queued ones that minted the placeholders it carries', async () => {
+    const client = chainClient()
+    const { site, item, qty, other } = await queueChain(client)
+    const row = (id: number) => client.db.mutations.get(id)
+    expect((await row(site.id))?.dependsOn).toEqual([])
+    expect((await row(item.id))?.dependsOn).toEqual([site.id])
+    expect((await row(qty.id))?.dependsOn).toEqual([item.id])
+    expect((await row(other.id))?.dependsOn).toEqual([])
+    expect([...withDependents(await client.db.mutations.toArray(), [site.id])]).toEqual([site.id, item.id, qty.id])
+    expect([...withDependents(await client.db.mutations.toArray(), [item.id])]).toEqual([item.id, qty.id])
+  })
+
+  it('does not link a placeholder that already has a server id', async () => {
+    const client = createClient(server, { mutationHandlers: createHandlers })
+    await client.fetchQuery('GetSites', undefined)
+    await client.enqueue('CreateSite', { name: 'West' })
+    await until(async () => (await client.db.mutations.count()) === 0, 'create to sync')
+    const tmp = Object.keys(JSON.parse((await client.db.meta.get('tempIds'))!.value) as Record<string, string>)[0]!
+    client.goOffline()
+    const rename = await client.enqueue('RenameSite', { id: tmp, name: 'West 2' })
+    expect((await client.db.mutations.get(rename.id))?.dependsOn).toEqual([])
+  })
+
+  it('sends unrelated mutations past a failed one', async () => {
+    const client = createClient(server, { mutationHandlers: siteHandlers })
     await client.fetchQuery('GetSites', undefined)
     client.goOffline()
     const a = await client.enqueue('RenameSite', { id: 's1', name: 'bad' })
     const b = await client.enqueue('ArchiveSite', { id: 's2' })
     client.goOnline()
-    await until(async () => (await client.db.mutations.get(a.id))?.status === 'failed', 'first mutation to fail')
-    return { a, b }
-  }
-
-  it('holds back the mutations queued after a failed one until it is rolled back', async () => {
-    const client = createClient(server, { mutationHandlers: siteHandlers })
-    const { a, b } = await failFirst(client)
-    await new Promise(r => setTimeout(r, 50))
-    expect(server.mutations().map(c => c.op)).toEqual(['RenameSite'])
-    expect((await client.db.mutations.get(b.id))?.status).toBe('pending')
-    await until(() => client.state.blocked === 1, 'blocked count')
-
-    await client.rollback(a.id)
-    await until(async () => (await client.db.mutations.count()) === 0, 'outbox to drain')
-    expect(server.sites[1]!.archived).toBe(true)
-    expect(client.state.blocked).toBe(0)
-  })
-
-  it('retry sends the failed mutation and the ones behind it, in order', async () => {
-    const client = createClient(server, { mutationHandlers: siteHandlers })
-    const { a } = await failFirst(client)
-    await client.db.mutations.update(a.id, { variables: { id: 's1', name: 'good' } })
-    await client.retry(a.id)
-    await until(async () => (await client.db.mutations.count()) === 0, 'outbox to drain')
-    expect(server.mutations().map(c => c.op)).toEqual(['RenameSite', 'RenameSite', 'ArchiveSite'])
-    expect(server.sites).toMatchObject([{ name: 'good' }, { archived: true }])
-  })
-
-  it('keeps sending past a failed mutation with stopOnFailure: false', async () => {
-    const client = createClient(server, { mutationHandlers: siteHandlers, stopOnFailure: false })
-    const { a, b } = await failFirst(client)
     await until(async () => (await client.db.mutations.get(b.id)) === undefined, 'second mutation to sync')
     expect((await client.db.mutations.get(a.id))?.status).toBe('failed')
     expect(server.sites[1]!.archived).toBe(true)
     expect(client.state.blocked).toBe(0)
+  })
+
+  it('holds back the chain below a failed create, and nothing else', async () => {
+    const client = chainClient()
+    const { site, item, qty, other } = await queueChain(client, 'bad')
+    client.goOnline()
+    await until(async () => (await client.db.mutations.get(other.id)) === undefined, 'unrelated mutation to sync')
+    await new Promise(r => setTimeout(r, 50))
+    expect(server.mutations().map(c => c.op)).toEqual(['CreateSite', 'ArchiveSite'])
+    expect(await client.db.mutations.get(site.id)).toMatchObject({ status: 'failed', error: 'name rejected' })
+    // Never attempted: they wait, with no error of their own.
+    for (const id of [item.id, qty.id]) {
+      const row = (await client.db.mutations.get(id))!
+      expect(row.status).toBe('pending')
+      expect(row.error).toBeUndefined()
+    }
+    await until(() => client.state.blocked === 2, 'blocked count')
+  })
+
+  it('a retried create releases its chain, in order, with the ids it resolved', async () => {
+    const client = chainClient()
+    const { site, tmpSite, tmpItem } = await queueChain(client, 'bad')
+    client.goOnline()
+    await until(async () => (await client.db.mutations.get(site.id))?.status === 'failed', 'create to fail')
+    await client.db.mutations.update(site.id, { variables: { name: 'West' } })
+    await client.retry(site.id)
+    await until(async () => (await client.db.mutations.count()) === 0, 'outbox to drain')
+    expect(server.mutations().map(c => [c.op, c.variables])).toEqual([
+      ['CreateSite', { name: 'bad' }],
+      ['ArchiveSite', { id: 's2' }],
+      ['CreateSite', { name: 'West' }],
+      ['AddSiteItem', { siteId: 's3', name: 'Bolt' }],
+      ['SetItemQty', { itemId: 'i1', qty: 3 }],
+    ])
+    expect(server.siteItems).toEqual([{ id: 'i1', siteId: 's3', name: 'Bolt', qty: 3 }])
+    // Each row was re-keyed as its own create resolved.
+    expect(await sites(client.db).get(tmpSite)).toBeUndefined()
+    expect(await siteItems(client.db).get(tmpItem)).toBeUndefined()
+    expect(await siteItems(client.db).get('i1')).toMatchObject({ name: 'Bolt', qty: 3 })
+    expect(client.state.blocked).toBe(0)
+  })
+
+  it('rolls a mutation back with the chain below it, and nothing else', async () => {
+    const client = chainClient()
+    const { site, other, tmpSite, tmpItem } = await queueChain(client)
+    await client.rollback(site.id)
+    expect((await client.db.mutations.toArray()).map(m => m.id)).toEqual([other.id])
+    expect(await sites(client.db).get(tmpSite)).toBeUndefined()
+    expect(await siteItems(client.db).get(tmpItem)).toBeUndefined()
+    expect(await sites(client.db).get('s2')).toMatchObject({ archived: true })
+  })
+
+  it('rolls back the middle of a chain, keeping what is above it', async () => {
+    const client = chainClient()
+    const { site, item, other, tmpSite, tmpItem } = await queueChain(client)
+    await client.rollback(item.id)
+    expect((await client.db.mutations.toArray()).map(m => m.id)).toEqual([site.id, other.id])
+    expect(await sites(client.db).get(tmpSite)).toMatchObject({ name: 'West' })
+    expect(await siteItems(client.db).get(tmpItem)).toBeUndefined()
+  })
+
+  it('rolls back a chain cleanly after a rebase', async () => {
+    const client = chainClient()
+    const { site, other, tmpSite, tmpItem } = await queueChain(client)
+    await client.fetchQuery('GetSites', undefined) // rebase
+    expect(await siteItems(client.db).get(tmpItem)).toMatchObject({ qty: 3 })
+    await client.rollback(site.id)
+    expect(await sites(client.db).get(tmpSite)).toBeUndefined()
+    expect(await siteItems(client.db).get(tmpItem)).toBeUndefined()
+    expect((await client.db.mutations.toArray()).map(m => m.id)).toEqual([other.id])
+  })
+
+  it('a failed chain does not stop a direct send, which drains the rest first', async () => {
+    const client = chainClient()
+    const { site, other } = await queueChain(client, 'bad')
+    client.goOnline()
+    await until(async () => (await client.db.mutations.get(site.id))?.status === 'failed', 'create to fail')
+    await client.execute('RenameSite', { id: 's1', name: 'Direct' })
+    expect(server.mutations().map(c => c.op)).toEqual(['CreateSite', 'ArchiveSite', 'RenameSite'])
+    expect(await client.db.mutations.get(other.id)).toBeUndefined()
+    expect(await client.db.mutations.count()).toBe(3)
   })
 })
 
@@ -552,6 +678,56 @@ describe('rollback', () => {
     await client.rollback(rename.id)
     expect((await cachedSites(client))[0]).toMatchObject({ name: 'North', archived: true })
     expect(await client.db.mutations.count()).toBe(1)
+  })
+
+  it('removes the row a rolled-back create made, after a rebase too', async () => {
+    const client = createClient(server, { mutationHandlers: createHandlers })
+    await client.fetchQuery('GetSites', undefined)
+    client.goOffline()
+    const create = await client.enqueue('CreateSite', { name: 'West' })
+    const tmp = (await cachedSites(client)).find(s => s.name === 'West')!.id
+    await client.fetchQuery('GetSites', undefined) // rebase; the row is not in the response
+    expect(await sites(client.db).get(tmp)).toMatchObject({ name: 'West' })
+    await client.rollback(create.id)
+    expect(await sites(client.db).get(tmp)).toBeUndefined()
+  })
+
+  it('keeps a pending edit undoable after a response that does not carry its row', async () => {
+    const client = createClient(server, { mutationHandlers: siteHandlers })
+    await client.fetchQuery('GetSites', undefined)
+    client.goOffline()
+    const rename = await client.enqueue('RenameSite', { id: 's1', name: 'Renamed' })
+    await client.fetchQuery('GetSite', { id: 's2' }) // rebase around a response without s1
+    expect((await cachedSites(client))[0]!.name).toBe('Renamed')
+    await client.rollback(rename.id)
+    expect((await cachedSites(client))[0]!.name).toBe('North')
+  })
+
+  it('rebases a pending edit onto the server value and restores that value on rollback', async () => {
+    const client = createClient(server, { mutationHandlers: siteHandlers })
+    await client.fetchQuery('GetSites', undefined)
+    client.goOffline()
+    const rename = await client.enqueue('RenameSite', { id: 's1', name: 'Renamed' })
+    server.sites[0]!.name = 'North v2'
+    await client.fetchQuery('GetSites', undefined)
+    expect((await cachedSites(client))[0]!.name).toBe('Renamed')
+    await client.rollback(rename.id)
+    expect((await cachedSites(client))[0]!.name).toBe('North v2')
+  })
+
+  it('keeps the later mutations undoable after one before them is rolled back', async () => {
+    const client = createClient(server, { mutationHandlers: siteHandlers })
+    await client.fetchQuery('GetSites', undefined)
+    client.goOffline()
+    const rename = await client.enqueue('RenameSite', { id: 's1', name: 'Renamed' })
+    const archive = await client.enqueue('ArchiveSite', { id: 's2' })
+
+    // Replaying the archive on top of the restored data must not record its
+    // own effect as the state to restore.
+    await client.rollback(rename.id)
+    await client.rollback(archive.id)
+    expect(await cachedSites(client)).toMatchObject([{ name: 'North', archived: false }, { name: 'South', archived: false }])
+    expect(await client.db.mutations.count()).toBe(0)
   })
 
   it('uses the revert hook when provided', async () => {
@@ -707,9 +883,45 @@ describe('temp ids', () => {
     expect((await cachedSites(client)).find(s => s.id === 's3')!.name).toBe('West 2')
 
     // The mapping outlives the outbox: a component may still hold the temp id.
-    await client.enqueue('ArchiveSite', { id: tmp })
+    // The edit is queued under the real id, so it lands on the real row at once.
+    const archive = await client.enqueue('ArchiveSite', { id: tmp })
+    expect(archive.variables).toEqual({ id: 's3' })
+    expect((await sites(client.db).get('s3'))!.archived).toBe(true)
     await until(async () => (await client.db.mutations.count()) === 0, 'outbox to drain again')
     expect(server.mutations().at(-1)).toMatchObject({ op: 'ArchiveSite', variables: { id: 's3' } })
+  })
+
+  it('rewrites the queue, variables and undo logs, when a placeholder resolves', async () => {
+    const client = createClient(server, { mutationHandlers: createHandlers })
+    await client.fetchQuery('GetSites', undefined)
+    client.goOffline()
+    await client.enqueue('CreateSite', { name: 'West' })
+    const tmp = (await cachedSites(client)).find(s => s.name === 'West')!.id
+    const rename = await client.enqueue('RenameSite', { id: tmp, name: 'West 2' })
+    const archive = await client.enqueue('ArchiveSite', { id: tmp })
+
+    // The create is accepted, the rename hits a network error, the archive is never attempted.
+    const restore = cutNetworkFor('RenameSite')
+    client.goOnline()
+    await until(() => client.state.lastError !== null, 'network error')
+    expect((await client.db.mutations.get(archive.id))!.variables).toEqual({ id: 's3' })
+    const log = (await client.db.mutations.get(rename.id))!.undo!
+    expect(log).toHaveLength(1)
+    expect(log[0]).toEqual({ table: 'Site', key: 's3', before: { id: 's3', name: 'West', archived: false } })
+
+    // A refetch rebases both edits onto the real row, with nothing left under the placeholder.
+    await client.fetchQuery('GetSites', undefined)
+    expect(await sites(client.db).get('s3')).toMatchObject({ name: 'West 2', archived: true })
+    expect(await sites(client.db).get(tmp)).toBeUndefined()
+
+    // So does rolling the rename back: the archive stays, on the real row.
+    await client.rollback(rename.id)
+    expect(await sites(client.db).get('s3')).toMatchObject({ name: 'West', archived: true })
+    expect(await sites(client.db).get(tmp)).toBeUndefined()
+
+    restore()
+    await client.sync()
+    expect(server.sites[2]).toMatchObject({ id: 's3', name: 'West', archived: true })
   })
 
   it('caps the map at the newest 1000 resolutions', async () => {

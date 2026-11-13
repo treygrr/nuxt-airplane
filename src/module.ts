@@ -43,13 +43,6 @@ export interface ModuleOptions {
    */
   cacheKey?: string
   /**
-   * When a mutation is rejected by the server, hold back the mutations queued
-   * after it until it is retried or rolled back, so the outbox keeps its
-   * order (an item added to a site that was never created would fail too).
-   * Set to `false` to skip failed mutations and keep sending the rest.
-   */
-  stopOnFailure: boolean
-  /**
    * Send operations by their SHA-256 hash instead of their text.
    * - `'automatic'`: Apollo-style automatic persisted queries. The hash is
    *   sent first; the text follows only when the server answers
@@ -73,7 +66,6 @@ export default defineNuxtModule<ModuleOptions>({
     documents: ['**/*.gql', '**/*.graphql'],
     handlersDir: 'airplane',
     dbName: 'nuxt-airplane',
-    stopOnFailure: true,
     persistedQueries: false,
     codegen: {},
   },
@@ -88,7 +80,6 @@ export default defineNuxtModule<ModuleOptions>({
       dbName: options.dbName,
       cacheKey: options.cacheKey ?? '',
       headers: options.headers ?? {},
-      stopOnFailure: options.stopOnFailure,
       // A string so Nuxt's runtime config typing does not pin it to boolean.
       persistedQueries: options.persistedQueries || '',
     }
