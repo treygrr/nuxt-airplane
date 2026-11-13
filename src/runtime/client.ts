@@ -65,8 +65,8 @@ export function queryKey(name: string, variables: unknown) {
 // A row created offline has no server id yet. `apply` mints a placeholder
 // with `tempId()`; mutations queued after it carry that placeholder in their
 // variables. Once the server has answered the create, `reconcile` maps the
-// placeholder to the real id and the sync loop rewrites the queued variables
-// before sending them.
+// placeholder to the real id and every queued mutation that carries it is
+// rewritten, in its variables and its undo log, to point at the real row.
 //
 // A placeholder is also a dependency: a mutation that carries one cannot
 // succeed before the one that minted it has. The outbox row records that
@@ -376,15 +376,21 @@ export function createAirplaneClient(options: AirplaneClientOptions) {
   const active = new Map<string, () => Promise<void>>()
 
   /**
-   * Writes a response through the `store` handler and records the fetch.
-   * A query with neither `store` nor `read` leaves nothing behind.
+   * Writes a response through the `store` handler, under the queued
+   * mutations, and records the fetch. A query with neither `store` nor
+   * `read` leaves nothing behind.
    */
   async function storeResponse(name: string, variables: unknown, data: unknown) {
     const h = queryHandler(name)
     if (!h?.store && !h?.read) return
-    await db.transaction('rw', db.tables, async () => {
-      await h.store?.({ db, variables: variables as never }, data as never)
-      await db.queries.put({ key: queryKey(name, variables), document: name, variables, updatedAt: Date.now() })
+    const record = () => db.queries.put({ key: queryKey(name, variables), document: name, variables, updatedAt: Date.now() })
+    if (!h.store) {
+      await record()
+      return
+    }
+    await rebase(async () => {
+      await h.store!({ db, variables: variables as never }, data as never)
+      await record()
     })
   }
 
@@ -392,7 +398,6 @@ export function createAirplaneClient(options: AirplaneClientOptions) {
     await ready
     const data = await request<T>(name, variables)
     await storeResponse(name, variables, data)
-    await rebasePending()
     if (queryHandler(name)?.prefetch) void prefetch(name, variables, data)
     return data
   }
@@ -429,7 +434,6 @@ export function createAirplaneClient(options: AirplaneClientOptions) {
       prefetching.delete(name)
       state.prefetching--
     }
-    if (pages) await rebasePending()
   }
 
   /**
@@ -505,10 +509,36 @@ export function createAirplaneClient(options: AirplaneClientOptions) {
   }
 
   async function resolveTempId(tempId: string, id: string) {
-    await moveRow(tempId, id)
-    const entries = Object.entries(await readTempIds()).filter(([key]) => key !== tempId)
-    entries.push([tempId, id])
-    await db.meta.put({ key: TEMP_IDS_KEY, value: JSON.stringify(Object.fromEntries(entries.slice(-TEMP_IDS_MAX))) })
+    await db.transaction('rw', db.tables, async () => {
+      await moveRow(tempId, id)
+      await rewriteQueue(tempId, id)
+      const entries = Object.entries(await readTempIds()).filter(([key]) => key !== tempId)
+      entries.push([tempId, id])
+      await db.meta.put({ key: TEMP_IDS_KEY, value: JSON.stringify(Object.fromEntries(entries.slice(-TEMP_IDS_MAX))) })
+    })
+  }
+
+  /**
+   * Points the queued mutations that carry a placeholder at the server's id
+   * instead: in their variables, so a re-apply targets the row where
+   * `moveRow` put it; in their undo logs, so an unwind restores that row and
+   * not one under the placeholder; and in the minted ids of the mutation
+   * that created it, so a re-apply of the create writes the same row.
+   */
+  async function rewriteQueue(tempId: string, id: string) {
+    const ids = { [tempId]: id }
+    await db.mutations.toCollection().modify((row: MutationRow) => {
+      const { value, replaced } = substituteTempIds(row.variables, ids)
+      if (replaced) row.variables = value
+      if (row.tempIds?.includes(tempId)) row.tempIds = row.tempIds.map(t => (t === tempId ? id : t))
+      for (const entry of row.undo ?? []) {
+        const key = entities[entry.table]?.key
+        if (!key || entry.key !== tempId) continue
+        entry.key = id
+        const before = entry.before as Record<string, unknown> | undefined
+        if (before && before[key] === tempId) entry.before = { ...before, [key]: id }
+      }
+    })
   }
 
   /**
@@ -561,14 +591,23 @@ export function createAirplaneClient(options: AirplaneClientOptions) {
   }
 
   /**
-   * Re-applies every queued mutation on top of freshly stored server data.
-   * In-flight (`syncing`) ones are included: the response being stored may
-   * predate them, and their effect must stay visible until the server
-   * confirms and the next refetch lands.
+   * Runs `write` (a response going into the tables) under the queued
+   * mutations: their effects are unwound, newest first, the data is written,
+   * and each is applied again, oldest first. Their effect ends up on top of
+   * the new data and their undo logs describe that data, not their own
+   * earlier effect, so a rollback afterwards restores what the server last
+   * said. In-flight (`syncing`) ones are included: the response may predate
+   * them, and their effect must stay visible until the server confirms and
+   * the next refetch lands. One transaction, so nothing observes the tables
+   * with the queue unwound.
    */
-  async function rebasePending() {
-    const queue = await db.mutations.orderBy('createdAt').toArray()
-    for (const row of queue) await applyMutation(row)
+  async function rebase(write: () => Promise<unknown>) {
+    await db.transaction('rw', db.tables, async () => {
+      const queue = await db.mutations.orderBy('createdAt').toArray()
+      for (const row of [...queue].reverse()) if (row.undo) await applyUndo(db, row.undo)
+      await write()
+      for (const row of queue) await applyMutation(row)
+    })
   }
 
   async function describeMutation(name: string, variables: unknown) {
@@ -578,9 +617,11 @@ export function createAirplaneClient(options: AirplaneClientOptions) {
     return humanize(name)
   }
 
-  async function enqueue(name: string, variables: unknown) {
+  async function enqueue(name: string, input: unknown) {
     if (document(name).kind !== 'mutation') throw new Error(`[nuxt-airplane] "${name}" is not a mutation`)
     await ready
+    // A placeholder the server has already named is its real id from the start.
+    const variables = substituteTempIds(input, await readTempIds()).value
     const description = await describeMutation(name, variables)
     const dependsOn = await dependenciesOf(variables)
     const id = await db.mutations.add({ document: name, variables, description, status: 'pending', createdAt: Date.now(), dependsOn } as MutationRow)
@@ -608,13 +649,19 @@ export function createAirplaneClient(options: AirplaneClientOptions) {
     const row = rows.find(m => m.id === id)
     if (!row || row.status === 'syncing') return
     const dropped = withDependents(rows, [id])
-    // "Later" is by id: two mutations queued in the same millisecond share a
-    // createdAt. A row being sent right now is left alone: its effect must
-    // stay until the server confirms it and the next refetch lands.
-    const later = rows.filter(m => m.id > id && m.status !== 'syncing')
-    for (const m of [row, ...later].reverse()) await undoMutation(m, dropped.has(m.id))
-    await db.mutations.bulkDelete([...dropped])
-    for (const m of later) if (!dropped.has(m.id)) await applyMutation(m)
+    // A row being sent right now is left alone: its effect must stay until
+    // the server confirms it and the next refetch lands.
+    const later = rows.slice(rows.indexOf(row) + 1).filter(m => m.status !== 'syncing')
+    const run = async () => {
+      for (const m of [row, ...later].reverse()) await undoMutation(m, dropped.has(m.id))
+      await db.mutations.bulkDelete([...dropped])
+      for (const m of later) if (!dropped.has(m.id)) await applyMutation(m)
+    }
+    // One transaction, unless a `revert` hook runs: it may reach outside the
+    // database, which a transaction cannot wait for.
+    const reverts = [...dropped].some(d => mutationHandler(rows.find(m => m.id === d)!.document)?.revert)
+    if (reverts) await run()
+    else await db.transaction('rw', db.tables, run)
     // Dropping a failed mutation releases the ones held back behind it.
     void sync()
   }

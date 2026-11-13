@@ -85,7 +85,8 @@ export interface MutationRow {
   undo?: UndoEntry[]
   /**
    * Ids handed out by `tempId()` while `apply` ran, in call order. A re-apply
-   * (rebase) hands out the same ones so the local rows keep their ids.
+   * (rebase) hands out the same ones so the local rows keep their ids. Each
+   * is replaced by the server's id once `resolve` has named it.
    */
   tempIds?: string[]
   /**

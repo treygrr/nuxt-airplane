@@ -582,6 +582,17 @@ describe('failure chains', () => {
     expect(await siteItems(client.db).get(tmpItem)).toBeUndefined()
   })
 
+  it('rolls back a chain cleanly after a rebase', async () => {
+    const client = chainClient()
+    const { site, other, tmpSite, tmpItem } = await queueChain(client)
+    await client.fetchQuery('GetSites', undefined) // rebase
+    expect(await siteItems(client.db).get(tmpItem)).toMatchObject({ qty: 3 })
+    await client.rollback(site.id)
+    expect(await sites(client.db).get(tmpSite)).toBeUndefined()
+    expect(await siteItems(client.db).get(tmpItem)).toBeUndefined()
+    expect((await client.db.mutations.toArray()).map(m => m.id)).toEqual([other.id])
+  })
+
   it('a failed chain does not stop a direct send, which drains the rest first', async () => {
     const client = chainClient()
     const { site, other } = await queueChain(client, 'bad')
@@ -667,6 +678,41 @@ describe('rollback', () => {
     await client.rollback(rename.id)
     expect((await cachedSites(client))[0]).toMatchObject({ name: 'North', archived: true })
     expect(await client.db.mutations.count()).toBe(1)
+  })
+
+  it('removes the row a rolled-back create made, after a rebase too', async () => {
+    const client = createClient(server, { mutationHandlers: createHandlers })
+    await client.fetchQuery('GetSites', undefined)
+    client.goOffline()
+    const create = await client.enqueue('CreateSite', { name: 'West' })
+    const tmp = (await cachedSites(client)).find(s => s.name === 'West')!.id
+    await client.fetchQuery('GetSites', undefined) // rebase; the row is not in the response
+    expect(await sites(client.db).get(tmp)).toMatchObject({ name: 'West' })
+    await client.rollback(create.id)
+    expect(await sites(client.db).get(tmp)).toBeUndefined()
+  })
+
+  it('keeps a pending edit undoable after a response that does not carry its row', async () => {
+    const client = createClient(server, { mutationHandlers: siteHandlers })
+    await client.fetchQuery('GetSites', undefined)
+    client.goOffline()
+    const rename = await client.enqueue('RenameSite', { id: 's1', name: 'Renamed' })
+    await client.fetchQuery('GetSite', { id: 's2' }) // rebase around a response without s1
+    expect((await cachedSites(client))[0]!.name).toBe('Renamed')
+    await client.rollback(rename.id)
+    expect((await cachedSites(client))[0]!.name).toBe('North')
+  })
+
+  it('rebases a pending edit onto the server value and restores that value on rollback', async () => {
+    const client = createClient(server, { mutationHandlers: siteHandlers })
+    await client.fetchQuery('GetSites', undefined)
+    client.goOffline()
+    const rename = await client.enqueue('RenameSite', { id: 's1', name: 'Renamed' })
+    server.sites[0]!.name = 'North v2'
+    await client.fetchQuery('GetSites', undefined)
+    expect((await cachedSites(client))[0]!.name).toBe('Renamed')
+    await client.rollback(rename.id)
+    expect((await cachedSites(client))[0]!.name).toBe('North v2')
   })
 
   it('keeps the later mutations undoable after one before them is rolled back', async () => {
@@ -837,9 +883,45 @@ describe('temp ids', () => {
     expect((await cachedSites(client)).find(s => s.id === 's3')!.name).toBe('West 2')
 
     // The mapping outlives the outbox: a component may still hold the temp id.
-    await client.enqueue('ArchiveSite', { id: tmp })
+    // The edit is queued under the real id, so it lands on the real row at once.
+    const archive = await client.enqueue('ArchiveSite', { id: tmp })
+    expect(archive.variables).toEqual({ id: 's3' })
+    expect((await sites(client.db).get('s3'))!.archived).toBe(true)
     await until(async () => (await client.db.mutations.count()) === 0, 'outbox to drain again')
     expect(server.mutations().at(-1)).toMatchObject({ op: 'ArchiveSite', variables: { id: 's3' } })
+  })
+
+  it('rewrites the queue, variables and undo logs, when a placeholder resolves', async () => {
+    const client = createClient(server, { mutationHandlers: createHandlers })
+    await client.fetchQuery('GetSites', undefined)
+    client.goOffline()
+    await client.enqueue('CreateSite', { name: 'West' })
+    const tmp = (await cachedSites(client)).find(s => s.name === 'West')!.id
+    const rename = await client.enqueue('RenameSite', { id: tmp, name: 'West 2' })
+    const archive = await client.enqueue('ArchiveSite', { id: tmp })
+
+    // The create is accepted, the rename hits a network error, the archive is never attempted.
+    const restore = cutNetworkFor('RenameSite')
+    client.goOnline()
+    await until(() => client.state.lastError !== null, 'network error')
+    expect((await client.db.mutations.get(archive.id))!.variables).toEqual({ id: 's3' })
+    const log = (await client.db.mutations.get(rename.id))!.undo!
+    expect(log).toHaveLength(1)
+    expect(log[0]).toEqual({ table: 'Site', key: 's3', before: { id: 's3', name: 'West', archived: false } })
+
+    // A refetch rebases both edits onto the real row, with nothing left under the placeholder.
+    await client.fetchQuery('GetSites', undefined)
+    expect(await sites(client.db).get('s3')).toMatchObject({ name: 'West 2', archived: true })
+    expect(await sites(client.db).get(tmp)).toBeUndefined()
+
+    // So does rolling the rename back: the archive stays, on the real row.
+    await client.rollback(rename.id)
+    expect(await sites(client.db).get('s3')).toMatchObject({ name: 'West', archived: true })
+    expect(await sites(client.db).get(tmp)).toBeUndefined()
+
+    restore()
+    await client.sync()
+    expect(server.sites[2]).toMatchObject({ id: 's3', name: 'West', archived: true })
   })
 
   it('caps the map at the newest 1000 resolutions', async () => {
