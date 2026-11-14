@@ -167,7 +167,7 @@ const { online, syncing, synced, pending, syncTotal, syncCount, lastError, sync,
 ```
 
 - `pending` lists the queued mutations oldest first, each with a human-readable `description` (from the handler's `describe` hook, or the humanized document name), its variables and status.
-- `rollback(id)` undoes a queued mutation locally and drops it from the queue, together with the mutations that depend on it (the ones carrying a placeholder id it minted). It resolves with what it dropped, and `dependents(id)` lists them beforehand. Mutations queued after it are re-applied on top of the restored data.
+- `rollback(id)` undoes a queued mutation locally and drops it from the queue, together with the mutations that depend on it (the ones that carry a placeholder it minted or touch something it created). It resolves with what it dropped, and `dependents(id)` lists them beforehand. Mutations queued after it are re-applied on top of the restored data.
 - A mutation the server rejects is marked `failed` and left in the queue. Only the mutations that depend on it wait (`blocked` counts them) until you `retry(id)` or `rollback(id)` it; the rest of the queue keeps syncing.
 - A network failure stops the batch and keeps everything queued; the next `online` event (or `sync()`) resumes it.
 - Tabs share the database; a Web Lock makes sure only one of them sends the queue at a time.

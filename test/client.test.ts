@@ -5,13 +5,14 @@ import 'fake-indexeddb/auto'
 import { createHash } from 'node:crypto'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createAirplaneClient, isTempId, mergeStores, newTempId, substituteTempIds, withDependents, type AirplaneClient, type AirplaneClientOptions } from '../src/runtime/client'
+import { thingsChanged } from '../src/runtime/db'
 import type { AirplaneDexie, AirplaneRequestContext, AirplaneRequestOptions, MutationHandlers, OperationDocument, QueryHandlers } from '../src/runtime/types'
 
 // ---------------------------------------------------------------------------
 // A tiny in-memory GraphQL "server" behind fetch
 // ---------------------------------------------------------------------------
 
-interface Site { id: string, name: string, archived: boolean }
+interface Site { id: string, name: string, archived: boolean, items?: { id: string, qty: number }[] }
 interface SiteItem { id: string, siteId: string, name: string, qty: number }
 
 const documents: Record<string, OperationDocument> = {
@@ -66,6 +67,7 @@ function createServer() {
         return reply({ createSite: { ...site } })
       }
       case 'AddSiteItem': {
+        if (v.name === 'bad') return Response.json({ errors: [{ message: 'item rejected' }] })
         if (!sites.some(s => s.id === v.siteId)) return Response.json({ errors: [{ message: `no site ${v.siteId}` }] })
         const item = { id: `i${siteItems.length + 1}`, siteId: v.siteId!, name: v.name!, qty: 0 }
         siteItems.push(item)
@@ -169,6 +171,27 @@ const chainHandlers = {
   },
   SetItemQty: {
     apply: ({ db, variables }: Ctx<{ itemId: string, qty: number }>) => siteItems(db).update(variables.itemId, { qty: variables.qty }),
+  },
+} as unknown as MutationHandlers
+
+/**
+ * The playground's shape: an item is a catalog entry with a real id, kept on
+ * the site row. Nothing is minted, so what links the quantity update to the
+ * add is the item the add created on the site.
+ */
+const nestedHandlers = {
+  ...createHandlers,
+  AddSiteItem: {
+    apply: ({ db, variables }: Ctx<{ siteId: string, name: string }>) =>
+      sites(db).update(variables.siteId, (site) => {
+        site.items = [...(site.items ?? []), { id: variables.name, qty: 0 }]
+      }),
+  },
+  SetItemQty: {
+    apply: ({ db, variables }: Ctx<{ itemId: string, qty: number }>) =>
+      sites(db).filter(site => !!site.items?.some(i => i.id === variables.itemId)).modify((site) => {
+        site.items = site.items!.map(i => (i.id === variables.itemId ? { ...i, qty: variables.qty } : i))
+      }),
   },
 } as unknown as MutationHandlers
 
@@ -603,6 +626,101 @@ describe('failure chains', () => {
     expect((await client.db.mutations.toArray()).map(m => m.id)).toEqual([other.id])
   })
 
+  it('links a mutation to the one that created what its apply touches, with no placeholder involved', async () => {
+    const client = createClient(server, { mutationHandlers: nestedHandlers })
+    await client.fetchQuery('GetSites', undefined)
+    client.goOffline()
+    const site = await client.enqueue('CreateSite', { name: 'West' })
+    const tmp = (await cachedSites(client)).find(s => s.name === 'West')!.id
+    const add = await client.enqueue('AddSiteItem', { siteId: tmp, name: 'Bolt' })
+    const qty = await client.enqueue('SetItemQty', { itemId: 'Bolt', qty: 3 })
+    const addToS1 = await client.enqueue('AddSiteItem', { siteId: 's1', name: 'Nut' })
+    const qtyOnS1 = await client.enqueue('SetItemQty', { itemId: 'Nut', qty: 2 })
+    const rename = await client.enqueue('RenameSite', { id: 's1', name: 'Renamed' })
+    const row = (id: number) => client.db.mutations.get(id)
+    expect((await row(site.id))?.creates).toEqual([`Site/${tmp}`])
+    expect((await row(add.id))?.creates).toEqual([`Site/${tmp}/items/Bolt`])
+    expect((await row(add.id))?.dependsOn).toEqual([site.id])
+    // The site and the item on it are both still local: the quantity update needs both.
+    expect((await row(qty.id))?.dependsOn).toEqual([site.id, add.id])
+    // On an existing site only the add is a dependency, and a rename of that site links to nothing.
+    expect((await row(addToS1.id))?.dependsOn).toEqual([])
+    expect((await row(qtyOnS1.id))?.dependsOn).toEqual([addToS1.id])
+    expect((await row(rename.id))?.dependsOn).toEqual([])
+  })
+
+  it('holds back and drops the quantity update with the add it depends on', async () => {
+    const client = createClient(server, { mutationHandlers: nestedHandlers })
+    await client.fetchQuery('GetSites', undefined)
+    client.goOffline()
+    const add = await client.enqueue('AddSiteItem', { siteId: 's1', name: 'bad' })
+    const qty = await client.enqueue('SetItemQty', { itemId: 'bad', qty: 2 })
+    const other = await client.enqueue('ArchiveSite', { id: 's2' })
+    client.goOnline()
+    await until(async () => (await client.db.mutations.get(other.id)) === undefined, 'unrelated mutation to sync')
+    expect(await client.db.mutations.get(add.id)).toMatchObject({ status: 'failed', error: 'item rejected' })
+    expect((await client.db.mutations.get(qty.id))?.status).toBe('pending')
+    expect(server.mutations().map(c => c.op)).toEqual(['AddSiteItem', 'ArchiveSite'])
+    await client.rollback(add.id)
+    expect(await client.db.mutations.count()).toBe(0)
+    expect((await sites(client.db).get('s1'))!.items ?? []).toEqual([])
+  })
+
+  it('deleting a row does not depend on what was added inside it, unless the row itself is new', async () => {
+    const deleting = {
+      ...(nestedHandlers as never as Record<string, object>),
+      ArchiveSite: { apply: ({ db, variables }: Ctx<{ id: string }>) => sites(db).delete(variables.id) },
+    } as unknown as MutationHandlers
+    const client = createClient(server, { mutationHandlers: deleting })
+    await client.fetchQuery('GetSites', undefined)
+    client.goOffline()
+    const add = await client.enqueue('AddSiteItem', { siteId: 's1', name: 'bad' })
+    const remove = await client.enqueue('ArchiveSite', { id: 's1' })
+    const create = await client.enqueue('CreateSite', { name: 'West' })
+    const tmp = (await cachedSites(client)).find(s => s.name === 'West')!.id
+    const removeNew = await client.enqueue('ArchiveSite', { id: tmp })
+    expect(remove.dependsOn).toEqual([])
+    expect(removeNew.dependsOn).toEqual([create.id])
+
+    // The add is rejected; the delete of the site it was on still goes out.
+    await client.rollback(create.id)
+    client.goOnline()
+    await until(async () => (await client.db.mutations.get(remove.id)) === undefined, 'delete to sync')
+    expect(await client.db.mutations.get(add.id)).toMatchObject({ status: 'failed', error: 'item rejected' })
+    expect(server.mutations().map(c => c.op)).toEqual(['AddSiteItem', 'ArchiveSite'])
+  })
+
+  it('assigning a reference twice is not a chain', async () => {
+    const owners = {
+      RenameSite: { apply: ({ db, variables }: Ctx<{ id: string, name: string }>) => sites(db).update(variables.id, { owner: { id: variables.name, name: variables.name } } as never) },
+    } as unknown as MutationHandlers
+    const client = createClient(server, { mutationHandlers: owners })
+    await client.fetchQuery('GetSites', undefined)
+    client.goOffline()
+    const first = await client.enqueue('RenameSite', { id: 's1', name: 'bad' })
+    const second = await client.enqueue('RenameSite', { id: 's1', name: 'ann' })
+    expect(first.creates).toEqual([])
+    expect(second.dependsOn).toEqual([])
+    client.goOnline()
+    await until(async () => (await client.db.mutations.get(second.id)) === undefined, 'second assignment to sync')
+    expect((await client.db.mutations.get(first.id))?.status).toBe('failed')
+  })
+
+  it('links through a table of your own, by the row the add created', async () => {
+    const joinHandlers = {
+      ...siteHandlers,
+      AddSiteItem: { apply: ({ db, variables }: Ctx<{ siteId: string, name: string }>) => db.table('siteItems').put({ siteId: variables.siteId, itemId: variables.name, qty: 0 }) },
+      SetItemQty: { apply: ({ db, variables }: Ctx<{ itemId: string, qty: number }>) => db.table('siteItems').where('itemId').equals(variables.itemId).modify({ qty: variables.qty }) },
+    } as unknown as MutationHandlers
+    const client = createClient(server, { mutationHandlers: joinHandlers, stores: { stores: { siteItems: '[siteId+itemId], itemId' } } })
+    await client.ready
+    client.goOffline()
+    const add = await client.enqueue('AddSiteItem', { siteId: 's1', name: 'Bolt' })
+    const qty = await client.enqueue('SetItemQty', { itemId: 'Bolt', qty: 5 })
+    expect((await client.db.mutations.get(add.id))?.creates).toEqual(['siteItems/["s1","Bolt"]'])
+    expect((await client.db.mutations.get(qty.id))?.dependsOn).toEqual([add.id])
+  })
+
   it('a failed chain does not stop a direct send, which drains the rest first', async () => {
     const client = chainClient()
     const { site, other } = await queueChain(client, 'bad')
@@ -786,6 +904,7 @@ describe('queue consistency', () => {
     client.goOffline()
     const row = await client.enqueue('ArchiveSite', { id: 's1' })
     expect(row.undo).toEqual([{ table: 'drafts', key: 1 }, { table: 'notes', key: 1 }])
+    expect(row.creates).toEqual(['drafts/1', 'notes/1'])
 
     // A response is stored under the queue, which unwinds and re-applies the inserts.
     await client.fetchQuery('GetSites', undefined)
@@ -1436,5 +1555,50 @@ describe('startup', () => {
     const b = createClient(server, { dbName })
     await until(async () => (await b.db.mutations.count()) === 0, 'stuck row to sync')
     expect(server.sites[1]!.archived).toBe(true)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Things
+// ---------------------------------------------------------------------------
+
+describe('things', () => {
+  it('names what a write created and touched, at every level', () => {
+    const changes = (before: unknown, after: unknown) => thingsChanged([{ table: 'Site', key: 's1', before, after }])
+    const site = { id: 's1', name: 'North', items: [{ id: 'i1', qty: 1 }] }
+    expect(changes(undefined, site)).toEqual({ created: new Set(['Site/s1', 'Site/s1/items/i1']), touched: new Set(['Site/s1', 'Site/s1/items/i1']) })
+    expect(changes(site, { ...site, items: [...site.items, { id: 'i2', qty: 0 }] })).toEqual({ created: new Set(['Site/s1/items/i2']), touched: new Set(['Site/s1', 'Site/s1/items/i2']) })
+    expect(changes(site, { ...site, items: [{ id: 'i1', qty: 4 }] })).toEqual({ created: new Set(), touched: new Set(['Site/s1', 'Site/s1/items/i1']) })
+    expect(changes(site, { ...site, name: 'South' })).toEqual({ created: new Set(), touched: new Set(['Site/s1']) })
+    expect(changes(site, { ...site, items: [] })).toEqual({ created: new Set(), touched: new Set(['Site/s1', 'Site/s1/items/i1']) })
+    expect(changes(site, { ...site })).toEqual({ created: new Set(), touched: new Set() })
+    expect(thingsChanged([{ table: 'siteItems', key: ['s1', 'a/b'], before: undefined, after: { qty: 0 } }]).created).toEqual(new Set(['siteItems/["s1","a%2Fb"]']))
+  })
+
+  it('removing a thing touches it, not what it held', () => {
+    const changes = (before: unknown, after: unknown) => thingsChanged([{ table: 'Site', key: 's1', before, after }])
+    const site = { id: 's1', items: [{ id: 'i1', parts: [{ id: 'p1' }] }] }
+    expect(changes(site, undefined)).toEqual({ created: new Set(), touched: new Set(['Site/s1']) })
+    expect(changes(site, { ...site, items: [] })).toEqual({ created: new Set(), touched: new Set(['Site/s1', 'Site/s1/items/i1']) })
+  })
+
+  it('counts list elements only: a single nested object with an id is a reference', () => {
+    const changes = (before: unknown, after: unknown) => thingsChanged([{ table: 'Site', key: 's1', before, after }])
+    const site = { id: 's1', owner: { id: 'u1', name: 'Ann' }, tags: ['a'] }
+    expect(changes(site, { ...site, owner: { id: 'u2', name: 'Bob' } })).toEqual({ created: new Set(), touched: new Set(['Site/s1']) })
+    expect(changes(site, { ...site, tags: ['a', 'b'] })).toEqual({ created: new Set(), touched: new Set(['Site/s1']) })
+  })
+
+  it('finds lists through the objects on the way, as in a connection', () => {
+    const changes = (before: unknown, after: unknown) => thingsChanged([{ table: 'Site', key: 's1', before, after }])
+    const site = { id: 's1', items: { totalCount: 1, nodes: [{ id: 'i1', qty: 1 }] } }
+    expect(changes(site, { ...site, items: { totalCount: 2, nodes: [...site.items.nodes, { id: 'i2', qty: 0 }] } }))
+      .toEqual({ created: new Set(['Site/s1/items/nodes/i2']), touched: new Set(['Site/s1', 'Site/s1/items/nodes/i2']) })
+  })
+
+  it('treats what it cannot compare field by field as changed', () => {
+    const changes = (before: unknown, after: unknown) => thingsChanged([{ table: 'Site', key: 's1', before, after }])
+    expect(changes({ id: 's1', seen: new Map([['a', 1]]) }, { id: 's1', seen: new Map([['a', 1]]) }).touched).toEqual(new Set(['Site/s1']))
+    expect(changes({ id: 's1', at: new Date(5) }, { id: 's1', at: new Date(5) }).touched).toEqual(new Set())
   })
 })

@@ -1,7 +1,7 @@
 import { Dexie, liveQuery } from 'dexie'
 import { hash } from 'ohash'
 import { reactive, computed, shallowRef, readonly } from 'vue'
-import { BOOKKEEPING_TABLES, MODULE_STORES, applyUndo, createDb, whenCommitted, withUndoLog } from './db'
+import { BOOKKEEPING_TABLES, MODULE_STORES, applyUndo, createDb, thingPath, thingsChanged, whenCommitted, withUndoLog } from './db'
 import {
   GraphQLRequestError,
   type EntityInfo,
@@ -69,10 +69,12 @@ export function queryKey(name: string, variables: unknown) {
 // rewritten, in its variables and its undo log, to point at the real row.
 //
 // A placeholder is also a dependency: a mutation that carries one cannot
-// succeed before the one that minted it has. The outbox row records that
-// (`dependsOn`) and the chain is the unit of failure: a rejected mutation
-// holds back the rows below it and nothing else, and rolling one back drops
-// them with it.
+// succeed before the one that minted it has. So is anything a queued
+// mutation created locally, a row or an element of a list inside one: a
+// mutation whose `apply` touches it cannot succeed before it exists on the
+// server. The outbox row records both (`dependsOn`) and the chain is the
+// unit of failure: a rejected mutation holds back the rows below it and
+// nothing else, and rolling one back drops them with it.
 // ---------------------------------------------------------------------------
 
 const TEMP_ID_PREFIX = 'tmp-'
@@ -205,7 +207,7 @@ export function createAirplaneClient(options: AirplaneClientOptions) {
       for (const table of tables) await table.clear()
       // What the queue wrote went with the tables, so its undo logs have
       // nothing left to take back: unwinding them would put cleared rows back.
-      await db.mutations.toCollection().modify({ undo: [] })
+      await db.mutations.toCollection().modify({ undo: [], creates: [] })
     })
   }
 
@@ -484,25 +486,27 @@ export function createAirplaneClient(options: AirplaneClientOptions) {
 
   /**
    * Runs `apply` for a queued mutation inside an undo-logged transaction and
-   * stores the log on the row.
+   * stores the log and what it created on the row. Returns what it touched.
    */
-  async function applyMutation(row: MutationRow, { tolerant = false } = {}) {
+  async function applyMutation(row: MutationRow, { tolerant = false } = {}): Promise<Set<string>> {
     const h = mutationHandler(row.document)
-    if (!h?.apply) return
+    if (!h?.apply) return new Set()
     // Ids minted on the first apply are handed out again on a rebase, in the
     // same order, so a re-applied create keeps the id later mutations reference.
     const tempIds = [...(row.tempIds ?? [])]
     let minted = 0
     const tempId = () => (tempIds[minted] ??= newTempId(), tempIds[minted++]!)
-    const { undo, error } = await withUndoLog(db, () =>
+    const { undo, changes, error } = await withUndoLog(db, () =>
       h.apply!({ db, variables: row.variables as never, tempId }), { tolerant })
+    const { created, touched } = thingsChanged(changes)
     // Said once per mutation, not on every response stored while it is queued.
     if (!error) skipped.delete(row.id)
     else if (!skipped.has(row.id)) {
       skipped.add(row.id)
       console.warn(`[nuxt-airplane] "${row.document}" could not be applied again on the current data, so its change is not shown locally until it syncs:`, error)
     }
-    await db.mutations.update(row.id, { undo, tempIds })
+    await db.mutations.update(row.id, { undo, tempIds, creates: [...created] })
+    return touched
   }
 
   /** Queued mutations whose last re-apply threw. */
@@ -550,9 +554,9 @@ export function createAirplaneClient(options: AirplaneClientOptions) {
    * Points the queued mutations that carry a placeholder at the server's id
    * instead: in their variables, so a re-apply targets the row where
    * `moveRow` put it; in their undo logs, whatever the table, so an unwind
-   * restores that row and not one under the placeholder; and in the minted
-   * ids of the mutation that created it, so a re-apply of the create writes
-   * the same row.
+   * restores that row and not one under the placeholder; in the minted ids
+   * of the mutation that created it, so a re-apply of the create writes the
+   * same row; and in the things they created, which moved with the row.
    */
   async function rewriteQueue(tempId: string, id: string) {
     const ids = { [tempId]: id }
@@ -560,6 +564,7 @@ export function createAirplaneClient(options: AirplaneClientOptions) {
       const { value, replaced } = substituteTempIds(row.variables, ids)
       if (replaced) row.variables = value
       if (row.tempIds?.includes(tempId)) row.tempIds = row.tempIds.map(t => (t === tempId ? id : t))
+      if (row.creates) row.creates = row.creates.map(path => rekeyThing(path, tempId, id))
       for (const entry of row.undo ?? []) {
         if (entry.key !== tempId) continue
         entry.key = id
@@ -567,6 +572,15 @@ export function createAirplaneClient(options: AirplaneClientOptions) {
         if (typeof keyPath === 'string' && entry.before && Dexie.getByKeyPath(entry.before, keyPath) === tempId) entry.before = rekeyed(entry.before as object, keyPath, id)
       }
     })
+  }
+
+  /** A thing's path, moved with the row `moveRow` re-keyed. */
+  function rekeyThing(path: string, tempId: string, id: string) {
+    for (const table of db.tables) {
+      const from = thingPath([table.name, tempId])
+      if (path === from || path.startsWith(`${from}/`)) return thingPath([table.name, id]) + path.slice(from.length)
+    }
+    return path
   }
 
   /** A copy of `row` with its primary key, kept at `keyPath`, set to `id`. */
@@ -601,15 +615,17 @@ export function createAirplaneClient(options: AirplaneClientOptions) {
   }
 
   /**
-   * The outbox rows `variables` depend on: those that minted a placeholder it
-   * carries which has no server id yet. A placeholder already resolved is a
-   * real id by the time the mutation is sent, so it links nothing.
+   * The queued mutations a new one depends on: those that minted a
+   * placeholder its variables carry, and those that created something its
+   * `apply` touched (a row, or an element of a list inside one), neither of
+   * which the server has seen. A placeholder already resolved is a real id
+   * by the time the mutation is sent, so it links nothing.
    */
-  async function dependenciesOf(variables: unknown): Promise<number[]> {
+  async function dependenciesOf(id: number, variables: unknown, touched: Set<string>): Promise<number[]> {
     const { unresolved } = substituteTempIds(variables, await readTempIds())
-    if (!unresolved.length) return []
-    const rows = await queued()
-    return rows.filter(row => row.tempIds?.some(id => unresolved.includes(id))).map(row => row.id)
+    return (await queued())
+      .filter(row => row.id !== id && (row.tempIds?.some(t => unresolved.includes(t)) || row.creates?.some(c => touched.has(c))))
+      .map(row => row.id)
   }
 
   /**
@@ -704,15 +720,16 @@ export function createAirplaneClient(options: AirplaneClientOptions) {
     // A placeholder the server has already named is its real id from the start.
     const named = substituteTempIds(input, await readTempIds()).value
     const description = await describeMutation(name, named)
-    // One transaction: the mutation is queued with its effect applied, or not
-    // at all if `apply` throws, and no rebase can find it half-queued.
+    // One transaction: the mutation is queued with its effect applied and its
+    // dependencies known, or not at all if `apply` throws, and no rebase can
+    // find it half-queued.
     const row = await db.transaction('rw', db.tables, async () => {
       const variables = substituteTempIds(named, await readTempIds()).value
-      const dependsOn = await dependenciesOf(variables)
       // The queue is ordered by this, so it must not step back with the clock.
       const createdAt = Math.max(Date.now(), (await db.mutations.orderBy('createdAt').last())?.createdAt ?? 0)
-      const id = await db.mutations.add({ document: name, variables, description, status: 'pending', createdAt, dependsOn } as MutationRow)
-      await applyMutation((await db.mutations.get(id))!)
+      const id = await db.mutations.add({ document: name, variables, description, status: 'pending', createdAt } as MutationRow)
+      const touched = await applyMutation((await db.mutations.get(id))!)
+      await db.mutations.update(id, { dependsOn: await dependenciesOf(id, variables, touched) })
       return (await db.mutations.get(id))!
     })
     void sync()

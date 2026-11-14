@@ -91,10 +91,17 @@ export interface MutationRow {
   tempIds?: string[]
   /**
    * Outbox ids of the mutations this one depends on: the ones that minted a
-   * placeholder its variables carry. While one of them is failed this row
-   * waits, and rolling one back drops this row with it.
+   * placeholder its variables carry, or created something its `apply`
+   * touched. While one of them is failed this row waits, and rolling one
+   * back drops this row with it.
    */
   dependsOn?: number[]
+  /**
+   * What `apply` created, by path: a row (`Site/s1`) or an element with an
+   * `id` in a list inside one (`Site/s1/items/i1`). A later mutation whose
+   * `apply` touches one of them depends on this one.
+   */
+  creates?: string[]
 }
 
 /** Module bookkeeping, e.g. the cache key the data was written under. */
