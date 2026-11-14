@@ -81,7 +81,9 @@ async function recordBefore(table: DBCoreTable, req: DBCoreMutateRequest): Promi
 
   if (req.type === 'deleteRange') {
     const values = (await table.query({ trans, query: { index: pk, range: req.range }, values: true })).result as unknown[]
-    const keys = keysOf(pk, values) ?? (await table.query({ trans, query: { index: pk, range: req.range }, values: false })).result
+    // Keys kept beside the rows cannot be read off them: ask the store.
+    const inRows = pk.keyPath == null ? undefined : keysOf(pk, values)
+    const keys = inRows ?? (await table.query({ trans, query: { index: pk, range: req.range }, values: false })).result
     return { entries: values.map((before, i) => ({ table: name, key: keys[i], before })) }
   }
 
