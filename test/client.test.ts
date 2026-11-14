@@ -969,6 +969,8 @@ describe('queue consistency', () => {
     await one.fetchQuery('GetSites', undefined)
     one.goOffline()
     await one.enqueue('RenameSite', { id: 's1', name: 'Local' })
+    // Let the live pending list catch up, so nothing is mid-query when the "tab" closes.
+    await until(() => one.state.pending.length === 1, 'pending list')
     one.db.close()
 
     cutNetworkFor('RenameSite') // keep the rename queued in the next session
