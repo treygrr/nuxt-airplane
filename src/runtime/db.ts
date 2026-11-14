@@ -99,7 +99,9 @@ async function recordBefore(table: DBCoreTable, req: DBCoreMutateRequest): Promi
 
   if (req.type === 'deleteRange') {
     const values = (await table.query({ trans, query: { index: pk, range: req.range }, values: true })).result as unknown[]
-    const keys = keysOf(pk, values) ?? (await table.query({ trans, query: { index: pk, range: req.range }, values: false })).result
+    // Keys kept beside the rows cannot be read off them: ask the store.
+    const inRows = pk.keyPath == null ? undefined : keysOf(pk, values)
+    const keys = inRows ?? (await table.query({ trans, query: { index: pk, range: req.range }, values: false })).result
     return { entries: values.map((before, i) => ({ table: name, key: keys[i], before })) }
   }
 
@@ -149,7 +151,7 @@ function installUndoLog(db: Dexie, warnOnBooleanIndex = false) {
               if (entry.key == null) continue
               log.undo.push(entry)
               // Per row: the first state seen and the last one written.
-              const id = `${entry.table}\0${keyLabel(entry.key)}`
+              const id = `${entry.table}\0${JSON.stringify(entry.key)}`
               const seen = log.changes.get(id)
               log.changes.set(id, { table: entry.table, key: entry.key, before: seen ? seen.before : entry.before, after })
             }

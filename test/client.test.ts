@@ -1098,6 +1098,76 @@ describe('queue consistency', () => {
     expect((await cachedSites(client))[0]!.name).toBe('North')
   })
 
+  it('takes back a clear() of a table whose keys live beside the rows', async () => {
+    const clearing = { ArchiveSite: { apply: ({ db }: Ctx<{ id: string }>) => db.table('kv').clear() } } as unknown as MutationHandlers
+    const client = createClient(server, { mutationHandlers: clearing, stores: { stores: { kv: '' } } })
+    await client.ready
+    await client.db.table('kv').bulkPut([{ v: 1 }, { v: 2 }], ['a', 'b'])
+    client.goOffline()
+    const row = await client.enqueue('ArchiveSite', { id: 's1' })
+    expect(await client.db.table('kv').count()).toBe(0)
+    await client.rollback(row.id)
+    expect(await client.db.table('kv').toArray()).toEqual([{ v: 1 }, { v: 2 }])
+  })
+
+  it('does not send a mutation rolled back while the batch was in flight', async () => {
+    const client = createClient(server, { mutationHandlers: createHandlers })
+    await client.fetchQuery('GetSites', undefined)
+    client.goOffline()
+    await client.enqueue('ArchiveSite', { id: 's2' })
+    const create = await client.enqueue('CreateSite', { name: 'West' })
+    const impl = server.fetch.getMockImplementation()!
+    server.fetch.mockImplementation(async (url, init) => {
+      if ((init!.body as string).includes('mutation ArchiveSite')) await client.rollback(create.id)
+      return impl(url, init)
+    })
+    client.goOnline()
+    await until(async () => (await client.db.mutations.count()) === 0, 'outbox to drain')
+    expect(server.mutations().map(c => c.op)).toEqual(['ArchiveSite'])
+  })
+
+  it('does not send a mutation again because its reconcile threw', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const throwing = { ArchiveSite: { reconcile: () => Promise.reject(new Error('handler bug')) } } as unknown as MutationHandlers
+    const client = createClient(server, { mutationHandlers: throwing })
+    await client.enqueue('ArchiveSite', { id: 's1' })
+    await until(async () => (await client.db.mutations.count()) === 0, 'outbox to drain')
+    await client.sync()
+    expect(server.mutations().map(c => c.op)).toEqual(['ArchiveSite'])
+    expect(client.state.lastError).toBe('handler bug')
+  })
+
+  it('does not redirect a server id when a create reaches the server twice', async () => {
+    const client = createClient(server, { mutationHandlers: createHandlers })
+    await client.fetchQuery('GetSites', undefined)
+    client.goOffline()
+    const create = await client.enqueue('CreateSite', { name: 'West' })
+    const tmp = create.tempIds![0]!
+    // The first send resolved the placeholder, then the tab closed before the row was removed.
+    await client.db.meta.put({ key: 'tempIds', value: JSON.stringify({ [tmp]: 's3' }) })
+    await client.db.mutations.update(create.id, { tempIds: ['s3'] })
+    client.goOnline()
+    await until(async () => (await client.db.mutations.count()) === 0, 'outbox to drain')
+    expect(JSON.parse((await client.db.meta.get('tempIds'))!.value)).toEqual({ [tmp]: 's3' })
+  })
+
+  it('queues a variable named like an object member, and drops a mutation whose apply left the transaction', async () => {
+    const leaving = {
+      ...(siteHandlers as never as Handlers),
+      ArchiveSite: { apply: async ({ db, variables }: Ctx<{ id: string }>) => {
+        await sites(db).update(variables.id, { archived: true })
+        await new Promise(r => setTimeout(r, 5))
+        await sites(db).update(variables.id, { name: 'late' })
+      } },
+    } as unknown as MutationHandlers
+    const client = createClient(server, { mutationHandlers: leaving })
+    await client.fetchQuery('GetSites', undefined)
+    client.goOffline()
+    expect((await client.enqueue('RenameSite', { id: 's1', name: 'constructor' })).variables).toEqual({ id: 's1', name: 'constructor' })
+    await expect(client.enqueue('ArchiveSite', { id: 's2' })).rejects.toThrow()
+    expect((await client.db.mutations.toArray()).map(m => m.document)).toEqual(['RenameSite'])
+  })
+
   it('keeps the queue in creation order when the clock steps back', async () => {
     const client = createClient(server, { mutationHandlers: siteHandlers })
     await client.fetchQuery('GetSites', undefined)
