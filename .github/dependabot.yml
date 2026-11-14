@@ -32,6 +32,11 @@ updates:
           - 'fake-indexeddb'
       production:
         dependency-type: production
+    ignore:
+      # Pinned to the latest 6: typescript-eslint and @nuxt/module-builder do
+      # not run on TypeScript 7 yet. Lift this once both support it.
+      - dependency-name: typescript
+        update-types: ['version-update:semver-major']
 
   - package-ecosystem: github-actions
     directory: /
