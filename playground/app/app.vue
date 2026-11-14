@@ -154,7 +154,9 @@ function summarize(m: { document: string, variables: unknown }) {
             :disabled="m.status === 'syncing'"
             @click="sync.rollback(m.id)"
           >
-            Roll back
+            Roll back<template v-if="sync.dependents(m.id).length">
+              +{{ sync.dependents(m.id).length }}
+            </template>
           </button>
         </li>
       </ul>
