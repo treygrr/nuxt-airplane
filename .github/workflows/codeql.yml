@@ -23,6 +23,8 @@ jobs:
   analyze:
     name: Analyze
     runs-on: ubuntu-latest
+    # Code scanning is not available on a private repository without Advanced Security.
+    if: ${{ !github.event.repository.private }}
     permissions:
       contents: read
       security-events: write

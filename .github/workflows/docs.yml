@@ -54,6 +54,8 @@ jobs:
   deploy:
     needs: build
     runs-on: ubuntu-latest
+    # GitHub Pages is not available while the repository is private; the build above still runs.
+    if: ${{ !github.event.repository.private }}
 
     environment:
       name: github-pages
