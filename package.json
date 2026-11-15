@@ -58,9 +58,9 @@
     "docs:build": "nuxt build docs"
   },
   "dependencies": {
-    "@graphql-codegen/core": "^6.2.2",
-    "@graphql-codegen/typescript": "^6.1.2",
-    "@graphql-codegen/typescript-operations": "^6.2.0",
+    "@graphql-codegen/core": "^7.0.0",
+    "@graphql-codegen/typescript": "^7.0.1",
+    "@graphql-codegen/typescript-operations": "^7.0.1",
     "@nuxt/kit": "^4.6.3",
     "dexie": "^4.4.7",
     "ohash": "^2.0.12",
