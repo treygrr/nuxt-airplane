@@ -107,7 +107,7 @@ export default defineMutationHandlers({
     // Optional: runs on rollback, for side effects outside the database.
     // The rows `apply` changed go back to the server's version by themselves.
     revert: ({ db, variables }) => { /* ... */ },
-    // Queries to refetch after the server accepted it. Defaults to every active query.
+    // Queries to refetch after the server accepted it. Defaults to the mounted queries that fill a table it changed.
     refetch: ['GetSites'],
   },
 })
@@ -158,7 +158,7 @@ changes, in any table, the server's version is kept and put back.
 
 One file per operation also works: `defineMutationHandler('RenameSite', { … })` and `defineQueryHandler('GetSites', { … })` declare a single operation, and a folder with an `index.ts` is imported through its index only, so you can compose there.
 
-When storage runs low, the least recently fetched rows are dropped, never one a queued mutation has changed. `worker: true` in the module options runs the handlers that write (`store`, `apply`, …) in a web worker, so a large catalog does not hold up the page.
+When storage runs low, the least recently fetched rows are dropped, never one a queued mutation has changed. The handlers that write (`store`, `apply`, …) run in a web worker, so a large catalog does not hold up the page; they get `db` and `variables` but no Nuxt composables. `worker: false` in the module options keeps them on the page.
 
 Paginated queries can opt into fetching every page in the background so the whole set is available offline: `prefetch: { next: (data, vars) => data.pageInfo.hasNextPage ? { ...vars, after: data.pageInfo.endCursor } : null, when: () => settings.cacheCatalog }`. `useSync().prefetching` counts the runs in progress.
 

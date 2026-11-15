@@ -57,7 +57,8 @@ export interface ModuleOptions {
    * `merge`, `reconcile`, `revert`) in a web worker, so a large response or a
    * long queue does not hold up the page. They cannot use Nuxt composables or
    * the DOM there. `read`, `prefetch` and `defineAirplaneRequest` stay on the
-   * page. Needs the Vite builder. Default `false`.
+   * page. Default `true`; set it to `false` to keep every handler on the
+   * page. Needs the Vite builder, and stays off without it.
    */
   worker: boolean
   /** Extra options passed to the `typescript` / `typescript-operations` codegen plugins. */
@@ -76,7 +77,7 @@ export default defineNuxtModule<ModuleOptions>({
     handlersDir: 'airplane',
     dbName: 'nuxt-airplane',
     persistedQueries: false,
-    worker: false,
+    worker: true,
     codegen: {},
   },
   async setup(options, nuxt) {
@@ -223,7 +224,7 @@ export default defineNuxtModule<ModuleOptions>({
 
     let useWorker = options.worker
     if (useWorker && nuxt.options.builder !== '@nuxt/vite-builder') {
-      logger.warn('`worker: true` needs the Vite builder; the handlers stay on the page.')
+      logger.info('The worker needs the Vite builder; the handlers stay on the page.')
       useWorker = false
     }
 

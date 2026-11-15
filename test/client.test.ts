@@ -1800,7 +1800,7 @@ describe('engine in a worker', () => {
         const data = structuredClone(message)
         setTimeout(() => ends[1 - mine]!.forEach(listener => listener({ data })), 0)
       },
-      addEventListener: (_type, listener) => void ends[mine]!.add(listener),
+      addEventListener: (type, listener) => void (type === 'message' && ends[mine]!.add(listener as (event: { data: unknown }) => void)),
     })
     return { page: end(0), worker: end(1) }
   }
@@ -1857,6 +1857,16 @@ describe('engine in a worker', () => {
     const row = await client.enqueue('RenameSite', reactive({ id: 's1', name: 'Reactive' }))
     expect(row.variables).toEqual({ id: 's1', name: 'Reactive' })
     expect((await sites(client.db).get('s1'))?.name).toBe('Reactive')
+  })
+
+  it('fails the calls, waiting and later, when the worker itself fails', async () => {
+    const listeners: Record<string, (event: { data?: unknown, message?: string }) => void> = {}
+    const dead: Port = { postMessage: () => {}, addEventListener: (type, listener) => void (listeners[type] = listener) }
+    const engine = remoteEngine(dead, { endpoint: '', dbName: 'x' })
+    const waiting = engine.enqueue('RenameSite', {})
+    listeners.error!({ message: 'script failed to load' })
+    await expect(waiting).rejects.toThrow('The worker failed: script failed to load')
+    await expect(engine.ready()).rejects.toThrow('worker: false')
   })
 
   it('brings an error from a handler back to the caller', async () => {

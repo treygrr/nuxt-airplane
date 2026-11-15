@@ -18,7 +18,7 @@ export type WorkerInit = AirplaneRuntimeConfig & Partial<Pick<AirplaneClientOpti
 /** The two ends of a message channel: a `Worker` seen from the page, or the worker's own scope. */
 export interface Port {
   postMessage: (message: unknown) => void
-  addEventListener: (type: 'message', listener: (event: { data: unknown }) => void) => void
+  addEventListener: (type: 'message' | 'error', listener: (event: { data?: unknown, message?: string }) => void) => void
 }
 
 interface Call { id: number, method: keyof AirplaneEngine, args: unknown[] }
@@ -31,6 +31,13 @@ const METHODS: (keyof AirplaneEngine)[] = ['ready', 'storeResponse', 'enqueue', 
 export function remoteEngine(port: Port, config: WorkerInit): AirplaneEngine {
   let next = 0
   const waiting = new Map<number, { resolve: (value: unknown) => void, reject: (error: Error) => void }>()
+  // A worker that could not load, or threw outside a call, will answer nothing: say so instead of waiting for ever.
+  let broken: Error | undefined
+  port.addEventListener('error', (event) => {
+    broken = new Error(`[nuxt-airplane] The worker failed${event.message ? `: ${event.message}` : ''}. Set \`worker: false\` in the module options to run the handlers on the page.`)
+    for (const call of waiting.values()) call.reject(broken)
+    waiting.clear()
+  })
   port.addEventListener('message', ({ data }) => {
     const { id, result, error } = data as Reply
     const call = waiting.get(id)
@@ -58,6 +65,7 @@ export function remoteEngine(port: Port, config: WorkerInit): AirplaneEngine {
   }
   post({ init: config })
   const call = (method: keyof AirplaneEngine) => (...args: unknown[]) => new Promise((resolve, reject) => {
+    if (broken) return reject(broken)
     const id = next++
     waiting.set(id, { resolve, reject })
     try {

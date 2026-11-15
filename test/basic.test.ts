@@ -54,7 +54,14 @@ describe('module', async () => {
     // The fixture keeps its sites in a table of its own and never reaches `db.Site`.
     expect(source).toContain('export const entities = {}')
     expect(source).toContain('export const unusedEntities = ["Site"]')
-    expect(await built('nuxt-airplane/worker.mjs')).toContain('export const createWorker = undefined')
+  })
+
+  it('builds a worker with the handler files that write, by default', async () => {
+    expect(await built('nuxt-airplane/worker.mjs')).toContain('nuxt-airplane-worker/entry.mjs?worker')
+    const entry = await built('nuxt-airplane-worker/entry.mjs')
+    expect(entry).toContain('airplane/mutations/archive-site.ts')
+    expect(entry).toContain('airplane/queries/index.ts')
+    expect(entry).toContain('startWorker([')
     const types = await built('types/nuxt-airplane.d.ts')
     expect(types).toContain('export type SiteRow = { id: string, name: string, archived: boolean }')
     expect(types).toContain('"Site": SiteRow')
