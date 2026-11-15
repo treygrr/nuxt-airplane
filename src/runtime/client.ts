@@ -1,46 +1,37 @@
-import { Dexie, liveQuery } from 'dexie'
-import { hash } from 'ohash'
+// The client: the network, the sync loop and what the components observe.
+//
+// It reads the tables and decides what to send and when. Every write to the
+// tables is the engine's (`engine.ts`), called directly or, when the engine
+// runs in a web worker, with a message.
+
+import { liveQuery } from 'dexie'
 import { reactive, computed, shallowRef, readonly } from 'vue'
-import { BOOKKEEPING_TABLES, MODULE_STORES, createDb, describeChanges, isQuotaError, putRow, quietly, record, rowKey, thingPath, track, type RowChange } from './db'
-import type { IndexableType } from 'dexie'
+import { isQuotaError } from './db'
+import { cacheKeyOf, createEngine, openDatabase, type AirplaneEngineOptions } from './engine'
+import { UnresolvedTempIdError, heldBack, queryKey, queuedRows, readQueryTableMap, readTempIdMap, requeueStuckRows, sameRow, substituteTempIds, uuid, withDependents } from './helpers'
 import {
   GraphQLRequestError,
   type AirplaneEngine,
-  type EntityInfo,
   type GraphQLResponse,
-  type MutationHandlers,
   type MutationHandler,
   type MutationRow,
-  type ReconcileContext,
   type AirplaneRequestContext,
   type AirplaneRequestOptions,
   type AirplaneRuntimeConfig,
-  type AirplaneStores,
-  type OperationDocument,
   type QueryHandler,
-  type QueryHandlers,
   type QueryName,
 } from './types'
 
-export interface AirplaneClientOptions extends AirplaneRuntimeConfig {
-  documents: Record<string, OperationDocument>
-  /** Hash of the compiled documents, mixed into the cache key. */
-  documentsHash: string
-  /** Types the documents select with an id; each gets a table keyed on it. */
-  entities?: Record<string, EntityInfo>
-  mutationHandlers: MutationHandlers
-  queryHandlers: QueryHandlers
-  stores: AirplaneStores
+export interface AirplaneClientOptions extends AirplaneRuntimeConfig, AirplaneEngineOptions {
   request: AirplaneRequestOptions
   /** Runs a function inside the Nuxt app context (so composables work in `headers`). */
   runWithContext?: <T>(fn: () => T) => T | Promise<Awaited<T>>
   /** The engine running in a web worker. The client then leaves every write to the tables to it. */
   remote?: AirplaneEngine
-  /** `'engine'`: this is the worker's side. It writes when asked and neither sends nor syncs. */
-  role?: 'engine'
-  /** Names of inferred tables left out because nothing in the app mentions them. */
-  unusedEntities?: string[]
 }
+
+// The pure pieces live in `helpers`; they are part of what this module offers.
+export * from './helpers'
 
 /** What `useQuery` observes: the live result of `read` plus the fetch record. */
 export interface QuerySnapshot {
@@ -50,98 +41,6 @@ export interface QuerySnapshot {
   cached: boolean
 }
 
-/** `ArchiveSite` → `Archive site`, `SendHTTPRequest` → `Send http request`, for mutations without a `describe`. */
-export function humanize(name: string) {
-  const words = name
-    .replace(/[_-]+/g, ' ')
-    // Acronym followed by a word: `HTTPRequest` → `HTTP Request`.
-    .replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2')
-    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
-    .toLowerCase()
-  return words.charAt(0).toUpperCase() + words.slice(1)
-}
-
-/** `undefined`, `null` and `{}` all mean "no variables" and share a key. */
-export function queryKey(name: string, variables: unknown) {
-  const normalized = variables && typeof variables === 'object' && Object.keys(variables).length ? variables : null
-  return `${name}:${hash(normalized)}`
-}
-
-// ---------------------------------------------------------------------------
-// Temp ids
-//
-// A row created offline has no server id yet. `apply` mints a placeholder
-// with `tempId()`; mutations queued after it carry that placeholder in their
-// variables. Once the server has answered the create, `reconcile` maps the
-// placeholder to the real id and every queued mutation that carries it is
-// rewritten, in its variables and its undo log, to point at the real row.
-//
-// A placeholder is also a dependency: a mutation that carries one cannot
-// succeed before the one that minted it has. So is anything a queued
-// mutation created locally, a row or an element of a list inside one: a
-// mutation whose `apply` touches it cannot succeed before it exists on the
-// server. The outbox row records both (`dependsOn`) and the chain is the
-// unit of failure: a rejected mutation holds back the rows below it and
-// nothing else, and rolling one back drops the ones that have nothing left
-// to do without it.
-//
-// Two mutations that wrote the same piece of the same thing (two renames of
-// one site) are ordered too (`after`): the later one waits while the earlier
-// one is failed, so the server never sees them the wrong way round. That is
-// order only. Rolling the earlier one back leaves the later one queued.
-// ---------------------------------------------------------------------------
-
-const TEMP_ID_PREFIX = 'tmp-'
-const TEMP_ID_RE = /^tmp-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
-
-function uuid() {
-  return typeof crypto === 'object' && typeof crypto.randomUUID === 'function'
-    ? crypto.randomUUID()
-    : 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
-        const r = (Math.random() * 16) | 0
-        return (c === 'x' ? r : (r & 0x3) | 0x8).toString(16)
-      })
-}
-
-/** A fresh placeholder id: `tmp-` plus a UUID. */
-export function newTempId() {
-  return `${TEMP_ID_PREFIX}${uuid()}`
-}
-
-/** Whether a value is an id minted by `tempId()`. */
-export function isTempId(value: unknown): value is string {
-  return typeof value === 'string' && TEMP_ID_RE.test(value)
-}
-
-/**
- * Replaces, anywhere in `value`, every string that is a key of `ids` with its
- * mapped id. Reports whether anything changed and which minted temp ids are
- * still in there with no mapping.
- */
-export function substituteTempIds<T>(value: T, ids: Record<string, string>): { value: T, replaced: boolean, unresolved: string[] } {
-  let replaced = false
-  const unresolved = new Set<string>()
-  const walk = (v: unknown): unknown => {
-    if (typeof v === 'string') {
-      if (Object.hasOwn(ids, v)) {
-        replaced = true
-        return ids[v]
-      }
-      if (isTempId(v)) unresolved.add(v)
-      return v
-    }
-    if (Array.isArray(v)) return v.map(walk)
-    if (v && typeof v === 'object' && Object.getPrototypeOf(v) === Object.prototype) {
-      const out: Record<string, unknown> = {}
-      for (const [k, item] of Object.entries(v)) out[k] = walk(item)
-      return out
-    }
-    return v
-  }
-  const next = walk(value) as T
-  return { value: replaced ? next : value, replaced, unresolved: [...unresolved] }
-}
-
 /** The APQ error a response carries, if any, by message or by extension code. */
 function persistedQueryError(body: GraphQLResponse): 'PersistedQueryNotFound' | 'PersistedQueryNotSupported' | undefined {
   for (const error of body.errors ?? []) {
@@ -149,30 +48,6 @@ function persistedQueryError(body: GraphQLResponse): 'PersistedQueryNotFound' | 
     if (error.message === 'PersistedQueryNotFound' || code === 'PERSISTED_QUERY_NOT_FOUND') return 'PersistedQueryNotFound'
     if (error.message === 'PersistedQueryNotSupported' || code === 'PERSISTED_QUERY_NOT_SUPPORTED') return 'PersistedQueryNotSupported'
   }
-}
-
-/** A mutation about to be sent still carries a temp id the server never assigned. */
-export class UnresolvedTempIdError extends Error {
-  override name = 'UnresolvedTempIdError'
-}
-
-/**
- * `ids` plus every outbox row that depends on one of them, directly or
- * through another row. With `ordered`, rows that only have to come after one
- * count too. A link always points at an older row, so one pass in id order
- * finds the whole closure.
- */
-export function withDependents(rows: MutationRow[], ids: Iterable<number>, ordered = false): Set<number> {
-  const set = new Set(ids)
-  for (const row of [...rows].sort((a, b) => a.id - b.id)) {
-    if (row.dependsOn?.some(id => set.has(id)) || (ordered && row.after?.some(id => set.has(id)))) set.add(row.id)
-  }
-  return set
-}
-
-/** The failed rows and every row that depends on one or has to come after one: what a sync leaves queued. */
-export function heldBack(rows: MutationRow[]): Set<number> {
-  return withDependents(rows, rows.filter(row => row.status === 'failed').map(row => row.id), true)
 }
 
 /** An error answer that is about the session or the server, not about the mutation it came back for. */
@@ -209,95 +84,29 @@ const STORAGE_CHECK_EVERY = 30_000
 
 export type AirplaneClient = ReturnType<typeof createAirplaneClient>
 
-/**
- * The tables to open: one per entity keyed on its id, plus the user's. A
- * user entry for an entity table lists extra indexes; the key is implied.
- */
-export function mergeStores(entities: Record<string, EntityInfo>, user: Record<string, string>) {
-  const stores: Record<string, string> = {}
-  for (const [name, { key }] of Object.entries(entities)) stores[name] = `&${key}`
-  for (const [name, spec] of Object.entries(user)) {
-    const entity = entities[name]
-    if (!entity) {
-      stores[name] = spec
-      continue
-    }
-    const extra = spec.split(',').map(s => s.trim()).filter(s => s && s.replace(/^[&+*]+/, '') !== entity.key)
-    stores[name] = [`&${entity.key}`, ...extra].join(', ')
-  }
-  return stores
-}
-
 export function createAirplaneClient(options: AirplaneClientOptions) {
   const entities = options.entities ?? {}
-  const db = createDb(options.dbName, mergeStores(entities, options.stores.stores), options.stores.version)
+  const { db, opened } = openDatabase(options)
   const { documents, mutationHandlers, queryHandlers } = options
-  const isEngine = options.role === 'engine'
 
-  // A table that was left out reads as `undefined` on `db`. Say why instead.
-  for (const name of options.unusedEntities ?? []) {
-    if (name in db) continue
-    Object.defineProperty(db, name, {
-      configurable: true,
-      get() {
-        throw new Error(`[nuxt-airplane] The table "${name}" was not created because nothing in the app mentions it. Use it as \`db.${name}\`, or list it in defineAirplaneStores({ ${name}: '' }) if it is only reached by a computed name.`)
-      },
-    })
-  }
-
-  // A schema that no longer matches what is on disk (lowered version, changed
-  // primary key) cannot be opened. This is a cache, so start over rather than
-  // leave the app without storage.
-  const opened = db.open().catch(async (error: Error) => {
-    if (!['VersionError', 'UpgradeError', 'SchemaError'].includes(error.name)) throw error
-    console.warn(`[nuxt-airplane] Could not open "${options.dbName}" (${error.name}), recreating it. Bump the store version to migrate instead.`)
-    await db.delete()
-    await db.open()
-  })
-
-  // --------------------------------------------------------------------------
-  // Cache key
-  // --------------------------------------------------------------------------
+  /** Everything that writes to the tables: here, or in the worker. */
+  const engine = createEngine(options, { db, opened })
+  const write = options.remote ?? engine
 
   /** Deploy key from config plus the documents hash: either changing busts the cache. */
-  const cacheKey = `${options.cacheKey ?? ''}:${options.documentsHash}`
-
-  /** Empties the tables and the fetch records but keeps the outbox, which is applied again on the empty tables. */
-  async function clearCache() {
-    const tables = db.tables.filter(t => !BOOKKEEPING_TABLES.has(t.name))
-    await quietly(db, async () => {
-      for (const table of tables) await table.clear()
-      // The server versions went with the tables: every row is the queue's own now.
-      await db.base.clear()
-      await raise(await queued())
-    })
-  }
+  const cacheKey = cacheKeyOf(options)
 
   /**
    * Resolves once the cache is known to belong to the current key. Writes
    * wait for it so a response stored by an old deploy's key is never mixed
    * with data stored under the new one.
    */
-  const ready = opened.then(async () => {
-    // With a worker, the cache is its to check and clear.
-    if (options.remote) return options.remote.ready()
-    const stored = (await db.meta.get('cacheKey'))?.value
-    if (stored !== undefined && stored !== cacheKey) {
-      if (import.meta.dev) console.info(`[nuxt-airplane] Cache key changed, clearing cached data (outbox kept).`)
-      await clearCache()
-    }
-    if (stored !== cacheKey) await db.meta.put({ key: 'cacheKey', value: cacheKey })
-    await requeueStuck()
-  })
+  const ready = opened.then(() => write.ready())
 
-  /**
-   * A tab closed mid-sync leaves rows marked `syncing`; they were never
-   * confirmed, so they go back in the queue. (Sends are idempotent from the
-   * outbox's point of view only if the API is; see the docs on retries.)
-   */
-  async function requeueStuck() {
-    await db.mutations.where('status').equals('syncing').modify({ status: 'pending' })
-  }
+  const queued = () => queuedRows(db)
+  const readTempIds = () => readTempIdMap(db)
+  const readQueryTables = () => readQueryTableMap(db)
+  const requeueStuck = () => requeueStuckRows(db)
 
   const state = reactive({
     /** What the browser reports; assumed online where `navigator.onLine` does not exist (Node, some webviews). */
@@ -331,13 +140,11 @@ export function createAirplaneClient(options: AirplaneClientOptions) {
   const synced = computed(() => !state.syncing && state.pending.length === 0)
 
   // Keep the pending list live from the outbox table.
-  if (!isEngine) {
-    liveQuery(() => db.mutations.orderBy('createdAt').toArray())
-      // A database closed under it (sign-out, a test) ends the list; nothing to report.
-      .subscribe({ next: rows => (state.pending = rows), error: () => {} })
-  }
+  liveQuery(() => db.mutations.orderBy('createdAt').toArray())
+    // A database closed under it (sign-out, a test) ends the list; nothing to report.
+    .subscribe({ next: rows => (state.pending = rows), error: () => {} })
 
-  if (!isEngine && typeof window !== 'undefined') {
+  if (typeof window !== 'undefined') {
     window.addEventListener('online', () => {
       state.networkOnline = true
       void sync()
@@ -447,7 +254,7 @@ export function createAirplaneClient(options: AirplaneClientOptions) {
     return !!queryHandler(name)?.read
   }
 
-  if (import.meta.dev && !isEngine) {
+  if (import.meta.dev) {
     const unhandled = Object.values(documents).filter(d => d.kind === 'query' && !readable(d.name)).map(d => `"${d.name}"`)
     if (unhandled.length) console.warn(`[nuxt-airplane] No query handler with \`read\` for ${unhandled.join(', ')}: served from the network only, nothing to show offline.`)
   }
@@ -455,115 +262,9 @@ export function createAirplaneClient(options: AirplaneClientOptions) {
   /** Refresh callbacks of the queries currently mounted somewhere. */
   const active = new Map<string, () => Promise<void>>()
 
-  /**
-   * Writes a response through the `store` handler and records the fetch. A
-   * query with neither `store` nor `read` leaves nothing behind.
-   *
-   * Server data belongs under the queue. Where the response carries a row a
-   * queued mutation has changed, it becomes that row's server version and the
-   * queue is put on again. The same happens while a queued mutation has
-   * found nothing to change yet, since this response may bring its row. Any
-   * other response, a page of a catalog nobody is editing, is written
-   * straight through at no extra cost.
-   */
-  async function storeResponse(name: string, variables: unknown, data: unknown) {
-    const h = queryHandler(name)
-    if (!h?.store && !h?.read) return
-    const key = queryKey(name, variables)
-    const fetched = (rows?: [string, IndexableType][]) =>
-      db.queries.put({ key, document: name, variables, updatedAt: Date.now(), ...(rows && { rows }) })
-    if (!h.store) {
-      await fetched()
-      return
-    }
-    const store = () => h.store!({ db, variables: variables as never }, data as never)
-    await quietly(db, async () => {
-      // A queued mutation that found nothing to change may find its row in this response.
-      let again = (await queued()).some(m => !m.keys?.length && mutationHandler(m.document)?.apply)
-      const brought = track()
-      // No row has a server version set aside: there is no second layer to keep apart.
-      if (!await db.base.count()) await store()
-      else {
-        const { changes } = await record(db, store)
-        for (const { table, key, after } of changes) {
-          if (!await db.base.get([table, key])) continue
-          await db.base.put(after === undefined ? { table, key, absent: 1 } : { table, key, row: after })
-          again = true
-        }
-      }
-      brought.stop()
-      if (again) await rebuild()
-      // The record keeps the rows of earlier fetches too, so one the server stopped returning can still be dropped.
-      for (const row of (await db.queries.get(key))?.rows ?? []) {
-        if (!brought.rows.has(sameRow(row))) brought.rows.set(sameRow(row), row)
-      }
-      const rows = [...brought.rows.values()]
-      await learnTables(name, rows)
-      await fetched(rows)
-    })
-  }
-
-  // --------------------------------------------------------------------------
-  // Which tables a query fills (meta table)
-  //
-  // Learned from what its `store` writes, and kept: after a sync, a query is
-  // refetched when a mutation changed a table it fills.
-  // --------------------------------------------------------------------------
-
-  const QUERY_TABLES_KEY = 'queryTables'
-  let knownTables: Record<string, string[]> | undefined
-
-  async function readQueryTables(): Promise<Record<string, string[]>> {
-    const raw = (await db.meta.get(QUERY_TABLES_KEY))?.value
-    return raw ? JSON.parse(raw) as Record<string, string[]> : {}
-  }
-
-  async function learnTables(name: string, rows: [string, IndexableType][]) {
-    knownTables ??= await readQueryTables()
-    const known = knownTables[name] ?? []
-    const added = [...new Set(rows.map(([table]) => table))].filter(table => !known.includes(table))
-    if (!added.length) return
-    knownTables = { ...knownTables, [name]: [...known, ...added] }
-    await db.meta.put({ key: QUERY_TABLES_KEY, value: JSON.stringify(knownTables) })
-  }
-
   // --------------------------------------------------------------------------
   // Room
-  //
-  // A cache that only grows meets the browser's allowance sooner or later.
-  // Each fetch record lists the rows its `store` wrote, so the least recently
-  // fetched can go, rows and record together, when room runs out. A row the
-  // queue has changed, or that a record being kept lists too, stays.
   // --------------------------------------------------------------------------
-
-  async function evict(keep: string[] = []): Promise<number> {
-    return quietly(db, async () => {
-      const kept = new Set(keep)
-      const records = await db.queries.orderBy('updatedAt').toArray()
-      const candidates = records.filter(r => !kept.has(r.key) && r.rows?.length)
-      // The oldest quarter: enough to matter, not the whole cache at once.
-      const out = candidates.slice(0, Math.ceil(candidates.length / 4))
-      if (!out.length) return 0
-      const going = new Set(out.map(r => r.key))
-      const held = new Set<string>()
-      for (const r of records) {
-        if (!going.has(r.key)) r.rows?.forEach(row => held.add(sameRow(row)))
-      }
-      for (const m of await queued()) m.keys?.forEach(row => held.add(sameRow(row)))
-      let dropped = 0
-      for (const { rows } of out) {
-        for (const row of rows!) {
-          if (held.has(sameRow(row))) continue
-          held.add(sameRow(row))
-          await putRow(db, row[0], row[1], undefined)
-          dropped++
-        }
-      }
-      await db.queries.bulkDelete(out.map(r => r.key))
-      if (import.meta.dev) console.info(`[nuxt-airplane] Storage is running low: dropped ${dropped} cached rows from the ${out.length} least recently fetched queries.`)
-      return dropped
-    })
-  }
 
   /**
    * Runs a write. If the browser refuses it for lack of room, the oldest
@@ -712,243 +413,6 @@ export function createAirplaneClient(options: AirplaneClientOptions) {
     return (mutationHandlers as Record<string, MutationHandler | undefined>)[name]
   }
 
-  /** The outbox, oldest first: the order mutations are applied and sent in. */
-  function queued() {
-    return db.mutations.orderBy('createdAt').toArray()
-  }
-
-  /**
-   * Runs `apply` for a queued mutation on top of the tables. The first time
-   * the queue changes a row, the row as it was goes to `base` as the server's
-   * version. The outbox row gets the rows it changed and what it created and
-   * wrote. Returns what it touched and wrote.
-   */
-  async function applyMutation(row: MutationRow, { tolerant = false } = {}): Promise<{ touched: Set<string>, wrote: Set<string> }> {
-    const h = mutationHandler(row.document)
-    if (!h?.apply) {
-      if (row.keys?.length) await db.mutations.update(row.id, { keys: [], creates: [], writes: [] })
-      return { touched: new Set(), wrote: new Set() }
-    }
-    // Ids minted on the first apply are handed out again each time, in the
-    // same order, so a re-applied create keeps the id later mutations reference.
-    const tempIds = [...(row.tempIds ?? [])]
-    let minted = 0
-    const tempId = () => (tempIds[minted] ??= newTempId(), tempIds[minted++]!)
-    const { changes, error } = await record(db, () =>
-      h.apply!({ db, variables: row.variables as never, tempId }), { tolerant })
-    // Said once per mutation, not every time the queue is put back on.
-    if (!error) skipped.delete(row.id)
-    else if (!skipped.has(row.id)) {
-      skipped.add(row.id)
-      console.warn(`[nuxt-airplane] "${row.document}" could not be applied again on the current data, so its change is not shown locally until it syncs:`, error)
-    }
-    await keepBase(changes)
-    const { created, touched, wrote } = describeChanges(changes)
-    await db.mutations.update(row.id, { tempIds, keys: changes.map(c => [c.table, c.key]), creates: [...created], writes: [...wrote] })
-    return { touched, wrote }
-  }
-
-  /** Queued mutations whose last re-apply threw. */
-  const skipped = new Set<number>()
-
-  /**
-   * Applies a queued mutation again when the queue is put back on. A handler
-   * that throws on what it now finds must not take the others down with it,
-   * or keep a response from being stored: what it wrote is taken back, the
-   * mutation stays queued with nothing applied, and the next time tries again.
-   */
-  function reapply(row: MutationRow) {
-    return applyMutation(row, { tolerant: true })
-  }
-
-  // --------------------------------------------------------------------------
-  // The two layers
-  //
-  // The tables show server data with the queue applied. `base` holds the
-  // server's version of each row the queue changed. Taking the queue off is
-  // putting those rows back; putting it on is applying it in order.
-  // --------------------------------------------------------------------------
-
-  /** Keeps the server's version of each row in `changes` that the queue had not changed before. */
-  async function keepBase(changes: RowChange[]) {
-    for (const { table, key, before } of changes) {
-      if (await db.base.get([table, key])) continue
-      await db.base.put(before === undefined ? { table, key, absent: 1 } : { table, key, row: before })
-    }
-  }
-
-  /** Takes the queue off: every row it changed goes back to the server's version. */
-  async function lower(keys?: [string, IndexableType][]) {
-    const entries = keys ? (await db.base.bulkGet(keys)).filter(e => !!e) : await db.base.toArray()
-    for (const entry of entries) await putRow(db, entry.table, entry.key, entry.absent ? undefined : entry.row)
-    if (keys) await db.base.bulkDelete(keys)
-    else await db.base.clear()
-  }
-
-  /** Puts mutations on, oldest first. */
-  async function raise(rows: MutationRow[]) {
-    for (const row of rows) await reapply(row)
-  }
-
-  /** Takes the whole queue off and puts it back on, with `between` run on server data alone. */
-  function rebuild(between?: () => Promise<unknown>) {
-    return quietly(db, async () => {
-      await lower()
-      await between?.()
-      await raise(await queued())
-    })
-  }
-
-  const sameRow = ([table, key]: [string, IndexableType]) => rowKey(table, key)
-
-  /** Whether any of `rows` changed a row that `row` changed too. */
-  function sharesRows(row: MutationRow, rows: MutationRow[]) {
-    const mine = new Set(row.keys?.map(sameRow))
-    return rows.some(m => m.keys?.some(k => mine.has(sameRow(k))))
-  }
-
-  /**
-   * The server accepted a mutation: its change is server data now. Where no
-   * other queued mutation changed the same rows, those rows as they stand are
-   * the server's version, and their `base` entries simply go. Otherwise the
-   * queue comes off, the accepted change is applied to the server data, and
-   * the rest goes back on.
-   */
-  function acknowledge(id: number) {
-    return quietly(db, async () => {
-      const rows = await queued()
-      const row = rows.find(m => m.id === id)
-      if (!row) return
-      const rest = rows.filter(m => m.id !== id)
-      await db.mutations.delete(id)
-      if (!sharesRows(row, rest)) {
-        if (row.keys?.length) await db.base.bulkDelete(row.keys)
-        return
-      }
-      await lower()
-      const h = mutationHandler(row.document)
-      const ids = [...(row.tempIds ?? [])]
-      if (h?.apply) await record(db, () => h.apply!({ db, variables: row.variables as never, tempId: () => ids.shift() ?? newTempId() }), { tolerant: true })
-      await raise(rest)
-    })
-  }
-
-  // --------------------------------------------------------------------------
-  // Temp id map (meta table), see `substituteTempIds`
-  // --------------------------------------------------------------------------
-
-  const TEMP_IDS_KEY = 'tempIds'
-  /**
-   * Resolved ids are kept after the outbox drains: a component may still hold
-   * a temp id it read before the create synced. The map is capped instead,
-   * oldest first, which is far more than one outbox would ever carry.
-   */
-  const TEMP_IDS_MAX = 1000
-
-  async function readTempIds(): Promise<Record<string, string>> {
-    const raw = (await db.meta.get(TEMP_IDS_KEY))?.value
-    return raw ? JSON.parse(raw) as Record<string, string> : {}
-  }
-
-  async function resolveTempId(tempId: string, id: string) {
-    await quietly(db, async () => {
-      // A create that reaches the server twice (a tab closed mid-sync) is
-      // handed the id its first run resolved to. That is a real row now, not
-      // a placeholder: pointing it at the duplicate would redirect later
-      // mutations from one server row to another.
-      if (tempId === id || Object.values(await readTempIds()).includes(tempId)) return
-      await moveRow(tempId, id)
-      await rewriteQueue(tempId, id)
-      const entries = Object.entries(await readTempIds()).filter(([key]) => key !== tempId)
-      entries.push([tempId, id])
-      await db.meta.put({ key: TEMP_IDS_KEY, value: JSON.stringify(Object.fromEntries(entries.slice(-TEMP_IDS_MAX))) })
-    })
-  }
-
-  /**
-   * Points the queued mutations that carry a placeholder at the server's id
-   * instead: in their variables, so applying them again targets the row
-   * where `moveRow` put it; in the minted ids of the mutation that created
-   * it, so applying the create again writes the same row; and in the rows
-   * and things they are recorded as having changed, which moved with it.
-   */
-  async function rewriteQueue(tempId: string, id: string) {
-    const ids = { [tempId]: id }
-    await db.mutations.toCollection().modify((row: MutationRow) => {
-      const { value, replaced } = substituteTempIds(row.variables, ids)
-      if (replaced) row.variables = value
-      if (row.tempIds?.includes(tempId)) row.tempIds = row.tempIds.map(t => (t === tempId ? id : t))
-      if (row.keys) row.keys = row.keys.map(([table, key]) => [table, key === tempId ? id : key])
-      if (row.creates) row.creates = row.creates.map(path => rekeyThing(path, tempId, id))
-      if (row.writes) row.writes = row.writes.map(path => rekeyThing(path, tempId, id))
-    })
-  }
-
-  /** A thing's path, moved with the row `moveRow` re-keyed. */
-  function rekeyThing(path: string, tempId: string, id: string) {
-    for (const table of db.tables) {
-      const from = thingPath([table.name, tempId])
-      if (path === from || path.startsWith(`${from}/`) || path.startsWith(`${from}#`)) return thingPath([table.name, String(id)]) + path.slice(from.length)
-    }
-    return path
-  }
-
-  /** A copy of `row` with its primary key, kept at `keyPath`, set to `id`. */
-  function rekeyed<T extends object>(row: T, keyPath: string, id: string): T {
-    const copy = Dexie.deepClone(row)
-    Dexie.setByKeyPath(copy, keyPath, id)
-    return copy
-  }
-
-  /**
-   * Re-keys the row created under a placeholder, in whichever table holds
-   * it, inferred or declared, and its entry in `base` with it, so the row
-   * stays put once the server has named it. A copy of it nested in another
-   * row, or a reference to it there, is left to the next refetch.
-   */
-  async function moveRow(tempId: string, id: string) {
-    for (const table of db.tables.filter(t => !(t.name in MODULE_STORES))) {
-      const { keyPath } = table.schema.primKey
-      // A lone placeholder is never the whole of a compound key.
-      if (Array.isArray(keyPath)) continue
-      const row = await table.get(tempId)
-      if (row !== undefined) {
-        await table.delete(tempId)
-        if (keyPath) await table.put(rekeyed(row, keyPath, id))
-        else await table.put(row, id)
-      }
-      const entry = await db.base.get([table.name, tempId])
-      if (!entry) continue
-      await db.base.delete([table.name, tempId])
-      await db.base.put({ ...entry, key: id, row: keyPath && entry.row ? rekeyed(entry.row as object, keyPath, id) : entry.row })
-    }
-  }
-
-  /** The context `reconcile` runs with. */
-  function reconcileContext(variables: unknown, tempIds: string[] = []): ReconcileContext<never> {
-    return { db, variables: variables as never, tempIds, resolve: resolveTempId }
-  }
-
-  /**
-   * What a new mutation is linked to in the queue. It depends on the rows
-   * that minted a placeholder its variables carry, and on those that created
-   * something its `apply` touched (a row, or an element of a list inside
-   * one): the server has seen neither yet. And it comes after the rows that
-   * wrote a piece it writes too. A placeholder already resolved is a real id
-   * by the time the mutation is sent, so it links nothing.
-   */
-  async function linksOf(id: number, variables: unknown, { touched, wrote }: { touched: Set<string>, wrote: Set<string> }) {
-    const { unresolved } = substituteTempIds(variables, await readTempIds())
-    const earlier = (await queued()).filter(row => row.id !== id)
-    const dependsOn = earlier
-      .filter(row => row.tempIds?.some(t => unresolved.includes(t)) || row.creates?.some(c => touched.has(c)))
-      .map(row => row.id)
-    const after = earlier
-      .filter(row => !dependsOn.includes(row.id) && row.writes?.some(w => wrote.has(w)))
-      .map(row => row.id)
-    return { dependsOn, after }
-  }
-
   /**
    * The variables to send for a mutation: the queued ones with every resolved
    * temp id replaced by its server id. Throws when a minted temp id is still
@@ -962,88 +426,6 @@ export function createAirplaneClient(options: AirplaneClientOptions) {
     return value
   }
 
-  async function describeMutation(name: string, variables: unknown) {
-    const { describe } = mutationHandler(name) ?? {}
-    if (typeof describe === 'string') return describe
-    if (describe) return describe({ db, variables: variables as never })
-    return humanize(name)
-  }
-
-  /**
-   * The queued mutation a new one of the same document could be folded into,
-   * newest first, and the variables of the two as one. Only a mutation that
-   * has never been sent: the server may have seen one that was, and would
-   * take a changed version of it for a retry.
-   */
-  async function mergeTarget(name: string, variables: unknown) {
-    const merge = mutationHandler(name)?.merge as ((a: unknown, b: unknown) => unknown) | undefined
-    if (!merge) return
-    for (const row of (await queued()).reverse()) {
-      if (row.document !== name || row.status !== 'pending' || row.attempts) continue
-      const merged = merge(row.variables, variables)
-      if (merged) return { id: row.id, variables: row.variables, merged, description: await describeMutation(name, merged) }
-    }
-  }
-
-  const union = <T>(a: T[] = [], b: T[] = []) => [...new Set([...a, ...b])]
-
-  /**
-   * Folds the mutation just queued into `target`, if that still holds: the
-   * target is as it was found, the new one minted nothing, and nothing
-   * queued between the two has to do with the new one. Its effect is on the
-   * tables already, so the target only takes over its variables and what it
-   * changed. Resolves with the merged row, or nothing when the two stay apart.
-   */
-  async function mergeInto(target: NonNullable<Awaited<ReturnType<typeof mergeTarget>>>, row: MutationRow) {
-    const rows = await queued()
-    const into = rows.find(m => m.id === target.id)
-    if (!into || into.status !== 'pending' || into.attempts || row.tempIds?.length || hash(into.variables) !== hash(target.variables)) return
-    const between = rows.slice(rows.indexOf(into) + 1).filter(m => m.id !== row.id)
-    const tied = (m: MutationRow) => !m.keys?.length || row.dependsOn?.includes(m.id) || row.after?.includes(m.id) || sharesRows(row, [m])
-    if (between.some(tied)) return
-    const others = (ids?: number[]) => ids?.filter(id => id !== into.id)
-    await db.mutations.delete(row.id)
-    await db.mutations.update(into.id, {
-      variables: target.merged,
-      description: target.description,
-      keys: [...new Map([...(into.keys ?? []), ...(row.keys ?? [])].map(k => [sameRow(k), k])).values()],
-      creates: union(into.creates, row.creates),
-      writes: union(into.writes, row.writes),
-      dependsOn: union(into.dependsOn, others(row.dependsOn)),
-      after: union(into.after, others(row.after)),
-    })
-    return (await db.mutations.get(into.id))!
-  }
-
-  async function enqueueLocal(name: string, input: unknown) {
-    if (document(name).kind !== 'mutation') throw new Error(`[nuxt-airplane] "${name}" is not a mutation`)
-    await ready
-    // A placeholder the server has already named is its real id from the start.
-    const named = substituteTempIds(input, await readTempIds()).value
-    const description = await describeMutation(name, named)
-    const target = await mergeTarget(name, named)
-    // One transaction: the mutation is queued with its effect applied and its
-    // dependencies known, or not at all if `apply` throws, and no rebase can
-    // find it half-queued.
-    let queuedAs: number | undefined
-    return db.transaction('rw', db.tables, async () => {
-      const variables = substituteTempIds(named, await readTempIds()).value
-      // The queue is ordered by this, so it must not step back with the clock.
-      const createdAt = Math.max(Date.now(), (await db.mutations.orderBy('createdAt').last())?.createdAt ?? 0)
-      const id = queuedAs = await db.mutations.add({ document: name, variables, description, status: 'pending', createdAt, idempotencyKey: uuid() } as MutationRow)
-      const did = await applyMutation((await db.mutations.get(id))!)
-      await db.mutations.update(id, await linksOf(id, variables, did))
-      const row = (await db.mutations.get(id))!
-      return (target && await mergeInto(target, row)) || row
-    }).catch(async (error) => {
-      // An abort removes the row. An `apply` that awaited something other
-      // than a Dexie operation made the transaction commit instead, row
-      // included: the caller is told it failed, so it must not be sent.
-      if (queuedAs !== undefined) await db.mutations.delete(queuedAs)
-      throw error
-    })
-  }
-
   /**
    * Applies a mutation to the tables and queues it for the server. Resolves
    * with its outbox row, or with the row it was merged into.
@@ -1054,66 +436,11 @@ export function createAirplaneClient(options: AirplaneClientOptions) {
     return row
   }
 
-  /**
-   * Undo a queued mutation and drop it from the outbox. Where no later
-   * mutation changed the same rows or is linked to it, its rows go back to
-   * the server's version and that is all. Otherwise the queue comes off and
-   * goes back on without it.
-   *
-   * A mutation that depended on a dropped one is dropped with it when it has
-   * nothing left to do: it carries a placeholder that will now never resolve,
-   * or applying it again changes nothing (a quantity set on an item that is
-   * gone). One that still does something stays queued on its own, such as a
-   * corrected save of the same row. Resolves with the mutations it dropped.
-   */
-  async function rollbackLocal(id: number): Promise<MutationRow[]> {
-    const target = await db.mutations.get(id)
-    if (!target || target.status === 'syncing') return []
-    // The hook is for what `apply` did outside the database, so it runs outside the transaction.
-    await mutationHandler(target.document)?.revert?.({ db, variables: target.variables as never })
-    const dropped = await quietly(db, async () => {
-      const rows = await queued()
-      const row = rows.find(m => m.id === id)
-      if (!row || row.status === 'syncing') return []
-      const others = rows.filter(m => m.id !== id)
-      await db.mutations.delete(id)
-      const linked = others.some(m => m.dependsOn?.includes(id) || m.after?.includes(id))
-      if (!linked && !sharesRows(row, others)) {
-        if (row.keys?.length) await lower(row.keys)
-        return [row]
-      }
-      await lower()
-      const gone = [row]
-      const lost = (ids?: number[]) => !!ids?.some(d => gone.some(m => m.id === d))
-      for (const m of others) {
-        const orphan = lost(m.dependsOn)
-        const placeholders = gone.flatMap(d => d.tempIds ?? [])
-        const stuck = orphan && substituteTempIds(m.variables, {}).unresolved.some(t => placeholders.includes(t))
-        if (!stuck && ((await reapply(m)).touched.size || !orphan)) {
-          if (orphan || lost(m.after)) {
-            const left = (ids?: number[]) => ids?.filter(d => !gone.some(x => x.id === d))
-            await db.mutations.update(m.id, { dependsOn: left(m.dependsOn), after: left(m.after) })
-          }
-          continue
-        }
-        await db.mutations.delete(m.id)
-        gone.push(m)
-      }
-      return gone
-    })
-    return dropped
-  }
-
   async function rollback(id: number): Promise<MutationRow[]> {
     const dropped = await write.rollback(id)
     // Nothing was waiting on it any more, but the network may be back.
     void sync()
     return dropped
-  }
-
-  /** Runs a mutation's `reconcile` with the server's answer. */
-  async function reconcileLocal(name: string, variables: unknown, tempIds: string[], result: unknown) {
-    await mutationHandler(name)?.reconcile?.(reconcileContext(variables, tempIds), result as never)
   }
 
   /**
@@ -1381,31 +708,8 @@ export function createAirplaneClient(options: AirplaneClientOptions) {
     return result
   }
 
-  /** Empties every table, including the outbox. */
-  async function clearLocal() {
-    await db.transaction('rw', db.tables, async () => {
-      for (const table of db.tables) await table.clear()
-    })
-    knownTables = undefined
-    await db.meta.put({ key: 'cacheKey', value: cacheKey })
-  }
-
-  /** Everything that writes to the tables, here or in the worker. */
-  const engine: AirplaneEngine = {
-    ready: () => ready,
-    storeResponse,
-    enqueue: enqueueLocal,
-    acknowledge,
-    rollback: rollbackLocal,
-    reconcile: reconcileLocal,
-    clearCache,
-    clear: clearLocal,
-    evict,
-  }
-  const write = options.remote ?? engine
-
   // Attempt to drain anything left over from a previous session.
-  if (!isEngine) void sync()
+  void sync()
 
   return {
     db,

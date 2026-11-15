@@ -7,13 +7,13 @@
 // write with a message. Both open the same database, and Dexie tells the
 // live queries on the page about what the worker committed.
 
-import { createAirplaneClient, type AirplaneClientOptions } from './client'
+import { createEngine, type AirplaneEngineOptions } from './engine'
 import { collect } from './collect'
 import { isQuotaError } from './db'
 import type { AirplaneEngine, AirplaneRuntimeConfig } from './types'
 
 /** What the page tells the worker to start it: the configuration and what the build made of the documents. */
-export type WorkerInit = AirplaneRuntimeConfig & Partial<Pick<AirplaneClientOptions, 'documents' | 'documentsHash' | 'entities' | 'unusedEntities'>>
+export type WorkerInit = AirplaneRuntimeConfig & Partial<Pick<AirplaneEngineOptions, 'documents' | 'documentsHash' | 'entities' | 'unusedEntities'>>
 
 /** The two ends of a message channel: a `Worker` seen from the page, or the worker's own scope. */
 export interface Port {
@@ -103,5 +103,5 @@ export function serveEngine(port: Port, engine: (init: Required<WorkerInit>) => 
 
 /** Called by the generated worker entry with the default exports of the handler files. */
 export function startWorker(handlers: unknown[], port: Port = globalThis as unknown as Port) {
-  serveEngine(port, init => createAirplaneClient({ ...init, ...collect(handlers), role: 'engine' }).engine)
+  serveEngine(port, init => createEngine({ ...init, ...collect(handlers) }))
 }
