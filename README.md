@@ -173,7 +173,7 @@ const { online, syncing, synced, pending, syncTotal, syncCount, lastError, sync,
 - A mutation the server rejects is marked `failed` and left in the queue. Only the mutations that depend on it, or edit the same field after it, wait (`blocked` counts them) until you `retry(id)` or `rollback(id)` it; the rest of the queue keeps syncing.
 - An answer that is not about the mutation (an expired session, a rate limit, a 5xx) stops the batch like a network failure instead of failing every queued mutation in turn.
 - A network failure stops the batch and keeps everything queued; the next `online` event (or `sync()`) resumes it, and the module retries by itself with a growing delay, or when `Retry-After` says. `retryAt` holds the time of the next attempt.
-- Mutations that have nothing to do with each other are sent side by side, four at a time by default (`concurrency` in `defineAirplaneRequest`). A chain, and edits of the same row, always go in order.
+- Mutations that have nothing to do with each other are sent side by side, four at a time by default (`concurrency` in `defineAirplaneRequest`). A chain, and edits of the same row, always go in order. This suits an API with one mutation per thing (`updateCartLineItem`, not an `updateCart` that takes the whole cart); set `concurrency: 1` for one that cannot take concurrent mutations.
 - Every queued mutation carries an idempotency key, the same on each attempt, in the request's `extensions`, so a server can tell a retry from a new mutation.
 - A handler's `merge` folds repeated edits of the same thing, such as a cart quantity, into one queued mutation.
 - Tabs share the database; a Web Lock makes sure only one of them sends the queue at a time.
