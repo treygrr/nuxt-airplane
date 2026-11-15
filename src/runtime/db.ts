@@ -1,15 +1,16 @@
 import { Dexie } from 'dexie'
 import type { DBCoreIndex, DBCoreMutateRequest, DBCoreMutateResponse, DBCoreTable, DBCoreTransaction, IndexableType } from 'dexie'
-import type { AirplaneDexie, UndoEntry, UndoOp, UndoStep } from './types'
+import type { AirplaneDexie } from './types'
 
 export const MODULE_STORES = {
   queries: '&key, document, updatedAt',
   mutations: '++id, status, createdAt',
   meta: '&key',
+  base: '[table+key]',
 }
 
 /** Tables that hold module bookkeeping rather than cached data. */
-export const BOOKKEEPING_TABLES = new Set(['mutations', 'meta'])
+export const BOOKKEEPING_TABLES = new Set(['mutations', 'meta', 'base'])
 
 export interface CreateDbOptions {
   /**
@@ -22,7 +23,7 @@ export interface CreateDbOptions {
 export function createDb(name: string, stores: Record<string, string> = {}, version = 1, { warnOnBooleanIndex = import.meta.dev }: CreateDbOptions = {}): AirplaneDexie {
   const db = new Dexie(name) as AirplaneDexie
   db.version(version).stores({ ...MODULE_STORES, ...stores })
-  installUndoLog(db, warnOnBooleanIndex)
+  installWriteLayer(db, warnOnBooleanIndex)
   return db
 }
 
@@ -60,17 +61,29 @@ function warnBooleanIndexes(table: DBCoreTable, values: readonly unknown[], warn
 }
 
 // ---------------------------------------------------------------------------
-// Undo log
+// Two layers
 //
-// A DBCore middleware that, for transactions started by `withUndoLog`, keeps
-// every row a write touches as it was before and as the writes left it. From
-// the two, `describeChanges` works out what the mutation did: the pieces to
-// put back to undo it, and what it created, touched and wrote (see below).
-// That is what lets a queued mutation be rolled back whatever tables its
-// `apply` handler wrote to.
+// The data tables show what the user should see: what the server said, with
+// the queued mutations applied on top. For every row the queue has changed,
+// the `base` table keeps the server's version (or a note that the server has
+// no such row). Nothing else is recorded about a mutation's effect: taking
+// the queue off the tables is putting those rows back, and putting it on
+// again is running the `apply` handlers in order.
+//
+// A DBCore middleware keeps the two layers apart at the point of writing:
+//
+// - Inside `record`, it notes each row as it was and as it ended up. That
+//   is how an `apply` tells which rows it changed, and a `store` which rows
+//   it brought from the server.
+// - Inside `quietly`, it stays out of the way: the module is moving rows
+//   between the layers itself.
+// - Any other write to a data table comes from outside the queue: the app's
+//   own code, or a `reconcile`. If the row has a server version in `base`,
+//   the same change is made there, so it survives the queue being taken off
+//   and put back.
 // ---------------------------------------------------------------------------
 
-/** A row as `apply` found it and as it left it, whatever the writes in between. */
+/** A row as a recorded function found it and as it left it, whatever the writes in between. */
 export interface RowChange {
   table: string
   key: IndexableType
@@ -93,8 +106,13 @@ interface Log {
 /** A write plus the row as it left it. */
 type Recorded = Write & { after?: unknown }
 
-/** Active logs, keyed by the IndexedDB transaction the writes run in. */
+/** Active recordings, keyed by the IndexedDB transaction the writes run in. */
 const logs = new WeakMap<object, Log>()
+/** Transactions in which the module moves rows between the layers itself. */
+const quiet = new WeakSet<object>()
+
+/** A row's identity across tables. */
+export const rowKey = (table: string, key: unknown) => `${table}\0${JSON.stringify(key)}`
 
 function keysOf(index: DBCoreIndex, values: readonly unknown[]) {
   return index.extractKey ? values.map(v => index.extractKey!(v)) : undefined
@@ -134,11 +152,53 @@ async function recordBefore(table: DBCoreTable, req: DBCoreMutateRequest): Promi
   }
 }
 
-function installUndoLog(db: Dexie, warnOnBooleanIndex = false) {
+/**
+ * A write from outside the queue. Where the row has a server version in
+ * `base`, the fields this write changes are changed there too. The caller's
+ * transaction usually does not cover `base`, so that follows in one of its
+ * own, right behind.
+ */
+async function writeThrough(db: AirplaneDexie, table: DBCoreTable, req: DBCoreMutateRequest) {
+  if (req.type === 'deleteRange') return table.mutate(req)
+  const trans = req.trans as DBCoreTransaction
+  const keys: unknown[] = (req.type === 'delete' ? req.keys : req.keys ?? keysOf(table.schema.primaryKey, req.values)) ?? []
+  const known = keys.map((key, i) => ({ key: key as IndexableType, i })).filter(({ key }) => key != null)
+  const before = await table.getMany({ trans, keys: known.map(({ key }) => key) })
+  const res = await table.mutate(req)
+  const writes = known.map(({ key, i }, n) => ({ key, before: before[n], after: req.type === 'delete' ? undefined : req.values[i] }))
+  if (writes.length) void Dexie.ignoreTransaction(() => carryToBase(db, table.name, writes)).catch(() => {})
+  return res
+}
+
+async function carryToBase(db: AirplaneDexie, table: string, writes: { key: IndexableType, before: unknown, after: unknown }[]) {
+  await db.transaction('rw', db.base, async () => {
+    const held = await db.base.bulkGet(writes.map(({ key }) => [table, key] as [string, IndexableType]))
+    for (const [n, { key, before, after }] of writes.entries()) {
+      const entry = held[n]
+      // A row the server does not have yet stays that way until its mutation is accepted.
+      if (!entry || entry.absent) continue
+      await db.base.put(after === undefined ? { table, key, absent: 1 } : { table, key, row: carry(entry.row, before, after) })
+    }
+  })
+}
+
+/** `row` with the top-level fields that differ between `before` and `after` taken from `after`. */
+function carry(row: unknown, before: unknown, after: unknown) {
+  if (!isObject(row) || !isObject(before) || !isObject(after)) return after
+  const next = { ...row }
+  for (const field of new Set([...Object.keys(before), ...Object.keys(after)])) {
+    if (deepEqual(before[field], after[field])) continue
+    if (field in after) next[field] = after[field]
+    else Reflect.deleteProperty(next, field)
+  }
+  return next
+}
+
+function installWriteLayer(db: Dexie, warnOnBooleanIndex = false) {
   const warned = new Set<string>()
   db.use({
     stack: 'dbcore',
-    name: 'nuxt-airplane-undo',
+    name: 'nuxt-airplane-layers',
     create: core => ({
       ...core,
       table(name) {
@@ -150,7 +210,7 @@ function installUndoLog(db: Dexie, warnOnBooleanIndex = false) {
           async mutate(req) {
             if (warnOnBooleanIndex && (req.type === 'add' || req.type === 'put')) warnBooleanIndexes(table, req.values, warned)
             const log = logs.get(req.trans as object)
-            if (!log) return table.mutate(req)
+            if (!log) return quiet.has(req.trans as object) ? table.mutate(req) : writeThrough(db as AirplaneDexie, table, req)
             const { entries, afterMutate } = await recordBefore(table, req)
             const res = await table.mutate(req)
             afterMutate?.(res)
@@ -159,7 +219,7 @@ function installUndoLog(db: Dexie, warnOnBooleanIndex = false) {
               if (entry.key == null) continue
               log.writes.push(entry)
               // Per row: the first state seen and the last one written.
-              const id = `${entry.table}\0${JSON.stringify(entry.key)}`
+              const id = rowKey(entry.table, entry.key)
               const seen = log.changes.get(id)
               log.changes.set(id, { table: entry.table, key: entry.key, before: seen ? seen.before : entry.before, after })
             }
@@ -180,112 +240,65 @@ function installUndoLog(db: Dexie, warnOnBooleanIndex = false) {
  * catch has to sit inside the transaction scope, because a rejection that
  * leaves a nested scope aborts the outermost one.
  */
-export async function withUndoLog<T>(db: AirplaneDexie, fn: () => Promise<T> | T, { tolerant = false } = {}): Promise<{ result?: T, changes: RowChange[], error?: Error }> {
+export async function record<T>(db: AirplaneDexie, fn: () => Promise<T> | T, { tolerant = false } = {}): Promise<{ result?: T, changes: RowChange[], error?: Error }> {
   const log: Log = { writes: [], changes: new Map() }
   let error: Error | undefined
   const result = await db.transaction('rw', db.tables, async () => {
     const idbtrans = Dexie.currentTransaction.idbtrans as object
+    const outer = logs.get(idbtrans)
     logs.set(idbtrans, log)
     try {
       return await fn()
     }
     catch (thrown) {
       if (!tolerant) throw thrown
-      logs.delete(idbtrans)
       // Row by row, newest write first: exact, since nothing else wrote in between.
-      for (const write of log.writes.reverse()) await putBack(db, write)
+      logs.delete(idbtrans)
+      quiet.add(idbtrans)
+      for (const write of log.writes.reverse()) await putRow(db, write.table, write.key, write.before)
       log.changes.clear()
       error = thrown instanceof Error ? thrown : new Error(String(thrown))
     }
     finally {
-      logs.delete(idbtrans)
+      if (outer) logs.set(idbtrans, outer)
+      else logs.delete(idbtrans)
     }
   })
-  return { result, changes: [...log.changes.values()], error }
+  return { result, changes: [...log.changes.values()].filter(c => !deepEqual(c.before, c.after)), error }
 }
 
-/** Restores one whole row, or removes it if it was not there. */
-async function putBack(db: AirplaneDexie, { table: name, key, before }: Write) {
+/** Runs `fn` in a read-write transaction in which the module moves rows between the layers itself. */
+export function quietly<T>(db: AirplaneDexie, fn: () => Promise<T>): Promise<T> {
+  return db.transaction('rw', db.tables, async () => {
+    quiet.add(Dexie.currentTransaction.idbtrans as object)
+    return await fn()
+  })
+}
+
+/** Writes one whole row, or removes it when `row` is undefined. A table that is gone is skipped. */
+export async function putRow(db: AirplaneDexie, name: string, key: IndexableType, row: unknown) {
   const table = db.tables.find(t => t.name === name)
   if (!table || key == null) return
-  if (before === undefined) await table.delete(key)
-  else if (table.schema.primKey.keyPath) await table.put(before)
-  else await table.put(before, key)
-}
-
-/**
- * Takes a mutation's effect back, newest entry first. A row it created is
- * deleted, a row it deleted is put back, and a row it changed gets back only
- * the pieces it changed: other fields, and other elements of a list, are
- * left as they are now, whoever wrote them since.
- */
-export async function applyUndo(db: AirplaneDexie, undo: UndoEntry[]) {
-  await db.transaction('rw', db.tables, async () => {
-    for (const entry of [...undo].reverse()) {
-      // A table that is gone, or an entry without its key, cannot be taken back.
-      const table = entry.key == null ? undefined : db.tables.find(t => t.name === entry.table)
-      if (!table) continue
-      if (!entry.ops) {
-        await putBack(db, entry.created ? { table: entry.table, key: entry.key } : entry)
-        continue
-      }
-      const row = await table.get(entry.key)
-      if (!isObject(row)) continue
-      for (const op of [...entry.ops].reverse()) revert(row, op)
-      if (table.schema.primKey.keyPath) await table.put(row)
-      else await table.put(row, entry.key)
-    }
-  })
-}
-
-/** Puts one piece of a row back. A piece whose place no longer exists is skipped. */
-function revert(row: Record<string, unknown>, { path, had, value, index }: UndoOp) {
-  let at: unknown = row
-  for (const step of path.slice(0, -1)) {
-    at = typeof step === 'string'
-      ? (isObject(at) ? at[step] : undefined)
-      : (Array.isArray(at) ? at.find(el => isObject(el) && String(el.id) === step.id) : undefined)
-  }
-  const last = path[path.length - 1]!
-  if (typeof last === 'string') {
-    if (!isObject(at)) return
-    if (had) at[last] = value
-    else Reflect.deleteProperty(at, last)
-  }
-  else if (Array.isArray(at)) {
-    const now = at.findIndex(el => isObject(el) && String(el.id) === last.id)
-    if (!had) {
-      if (now >= 0) at.splice(now, 1)
-    }
-    else if (now >= 0) at[now] = value
-    else at.splice(Math.min(index ?? at.length, at.length), 0, value)
-  }
-}
-
-/** Calls `fn` when the IndexedDB transaction the caller is running in commits. */
-export function whenCommitted(fn: () => void) {
-  (Dexie.currentTransaction.idbtrans as IDBTransaction).addEventListener('complete', fn)
+  if (row === undefined) await table.delete(key)
+  else if (table.schema.primKey.keyPath) await table.put(row)
+  else await table.put(row, key)
 }
 
 // ---------------------------------------------------------------------------
 // What a mutation did
 //
-// Comparing each row before and after `apply` gives four things.
+// Comparing each row before and after `apply` names three things.
 //
-// - The undo log: the pieces that changed, each with what was there before.
-//   A piece is a field, or an element with an `id` in a list, at any depth.
-//   Only those are put back on undo, so a write to another field of the same
-//   row (the app's own, a value `reconcile` merged, a later mutation the
-//   server has since accepted) survives it.
-// - What it created: rows, and list elements with an `id`, named by path
+// - What it created: rows, and list elements with an `id`, by path
 //   (`Site/s1`, `Site/s1/items/i1`, `Site/s1/items/nodes/i1`). A mutation
 //   that touches a thing an earlier queued one created depends on it, since
 //   the server has not seen that thing yet.
 // - What it touched: every thing it created, removed or changed, and what
 //   each sits in.
-// - What it wrote: the pieces themselves (`Site/s1#name`, `Site/s1/items/i1`).
-//   Two queued mutations that wrote the same piece must reach the server in
-//   order, so the later one waits while the earlier one is failed.
+// - What it wrote: the pieces themselves, a field (`Site/s1#name`) or a
+//   thing added or removed (`Site/s1/items/i1`). Two queued mutations that
+//   wrote the same piece must reach the server in order, so the later one
+//   waits while the earlier one is failed.
 //
 // Only list elements count as things. A single nested object with an `id`
 // (an owner, a category) refers to something that exists elsewhere and is
@@ -295,8 +308,6 @@ export function whenCommitted(fn: () => void) {
 // ---------------------------------------------------------------------------
 
 export interface Changes {
-  /** What to put back to undo the writes. */
-  undo: UndoEntry[]
   /** Things present after the writes and absent before. */
   created: Set<string>
   /** Things created, removed or changed. A change to a thing also touches what it sits in. */
@@ -315,7 +326,7 @@ export const keyLabel = (key: unknown) => (typeof key === 'string' ? key : JSON.
 
 /** What the rows in `changes` say the writes did. */
 export function describeChanges(changes: RowChange[]): Changes {
-  const out: Changes = { undo: [], created: new Set(), touched: new Set(), wrote: new Set() }
+  const out: Changes = { created: new Set(), touched: new Set(), wrote: new Set() }
   for (const { table, key, before, after } of changes) {
     if (deepEqual(before, after)) continue
     const names = [table, keyLabel(key)]
@@ -324,57 +335,46 @@ export function describeChanges(changes: RowChange[]): Changes {
     if (before === undefined) {
       out.created.add(name)
       out.wrote.add(name)
-      out.undo.push({ table, key, created: true })
       created(names, after, out)
     }
-    else if (after === undefined || !isObject(before) || !isObject(after)) {
-      out.wrote.add(name)
-      out.undo.push({ table, key, before })
-    }
-    else {
-      const ops: UndoOp[] = []
-      diffObject([], names, before, after, ops, out)
-      out.undo.push({ table, key, ops })
-    }
+    else if (after === undefined || !isObject(before) || !isObject(after)) out.wrote.add(name)
+    else diffObject(names, before, after, out)
   }
   return out
 }
 
 /** Two versions of an object: a row, a list element, or a plain object on the way to a list. */
-function diffObject(steps: UndoStep[], names: string[], before: Record<string, unknown>, after: Record<string, unknown>, ops: UndoOp[], out: Changes) {
+function diffObject(names: string[], before: Record<string, unknown>, after: Record<string, unknown>, out: Changes) {
   for (const field of new Set([...Object.keys(before), ...Object.keys(after)])) {
     const was = before[field]
     const is = after[field]
     if (deepEqual(was, is)) continue
-    const count = ops.length
-    if (isList(was) && isList(is)) diffList([...steps, field], [...names, field], was, is, ops, out)
-    else if (isObject(was) && isObject(is)) diffObject([...steps, field], [...names, field], was, is, ops, out)
+    const count = out.wrote.size
+    if (isList(was) && isList(is)) diffList([...names, field], was, is, out)
+    else if (isObject(was) && isObject(is)) diffObject([...names, field], was, is, out)
     // Anything else is one piece, as is a list that only changed its order.
-    if (ops.length > count) continue
-    ops.push({ path: [...steps, field], had: field in before, value: was })
+    if (out.wrote.size > count) continue
     out.wrote.add(`${thingPath(names)}#${escapePart(field)}`)
     if (was === undefined) created([...names, field], is, out, true)
   }
 }
 
 /** Two versions of a list of things, matched by id. */
-function diffList(steps: UndoStep[], names: string[], before: Thing[], after: Thing[], ops: UndoOp[], out: Changes) {
-  const was = new Map(before.map((el, index) => [String(el.id), { el, index }]))
+function diffList(names: string[], before: Thing[], after: Thing[], out: Changes) {
+  const was = new Map(before.map(el => [String(el.id), el]))
   const is = new Map(after.map(el => [String(el.id), el]))
   for (const id of new Set([...was.keys(), ...is.keys()])) {
     const old = was.get(id)
     const now = is.get(id)
-    if (old && now && deepEqual(old.el, now)) continue
+    if (old && now && deepEqual(old, now)) continue
     const name = thingPath([...names, id])
     out.touched.add(name)
     if (old && now) {
-      diffObject([...steps, { id }], [...names, id], old.el, now, ops, out)
+      diffObject([...names, id], old, now, out)
       continue
     }
     out.wrote.add(name)
-    if (old) ops.push({ path: [...steps, { id }], had: true, value: old.el, index: old.index })
-    else {
-      ops.push({ path: [...steps, { id }], had: false })
+    if (now) {
       out.created.add(name)
       created([...names, id], now, out)
     }

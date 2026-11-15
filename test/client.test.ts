@@ -903,7 +903,7 @@ describe('queue consistency', () => {
     await client.fetchQuery('GetSites', undefined)
     client.goOffline()
     const row = await client.enqueue('ArchiveSite', { id: 's1' })
-    expect(row.undo).toEqual([{ table: 'drafts', key: 1, created: true }, { table: 'notes', key: 1, created: true }])
+    expect(row.keys).toEqual([['drafts', 1], ['notes', 1]])
     expect(row.creates).toEqual(['drafts/1', 'notes/1'])
 
     // A response is stored under the queue, which unwinds and re-applies the inserts.
@@ -914,17 +914,6 @@ describe('queue consistency', () => {
     await client.rollback(row.id)
     expect(await client.db.table('drafts').count()).toBe(0)
     expect(await client.db.table('notes').count()).toBe(0)
-  })
-
-  it('skips an undo entry logged without its key, or for a table that is gone', async () => {
-    const client = createClient(server, { mutationHandlers: siteHandlers })
-    await client.fetchQuery('GetSites', undefined)
-    client.goOffline()
-    const id = await client.db.mutations.add({ document: 'ArchiveSite', variables: { id: 's2' }, description: 'old', status: 'pending', createdAt: Date.now(), undo: [{ table: 'Site' }, { table: 'gone', key: 1 }] } as never)
-    await client.fetchQuery('GetSites', undefined)
-    expect((await cachedSites(client))[1]!.archived).toBe(true)
-    await client.rollback(id)
-    expect((await cachedSites(client))[1]!.archived).toBe(false)
   })
 
   it('keeps what a synced mutation did when an older failed one on the same row is unwound', async () => {
@@ -1262,6 +1251,112 @@ describe('queue consistency', () => {
 })
 
 // ---------------------------------------------------------------------------
+// Two layers: what each operation costs
+// ---------------------------------------------------------------------------
+
+describe('two layers', () => {
+  /** Site handlers that count how often each mutation's apply runs. */
+  function counting() {
+    const applied: string[] = []
+    const handlers = {
+      RenameSite: { apply: ({ db, variables }: Ctx<{ id: string, name: string }>) => (applied.push(`rename ${variables.id}`), sites(db).update(variables.id, { name: variables.name })) },
+      ArchiveSite: { apply: ({ db, variables }: Ctx<{ id: string }>) => (applied.push(`archive ${variables.id}`), sites(db).update(variables.id, { archived: true })) },
+    } as unknown as MutationHandlers
+    return { applied, handlers }
+  }
+
+  it('keeps the server version of a row only while the queue changes it', async () => {
+    const client = createClient(server, { mutationHandlers: siteHandlers })
+    await client.fetchQuery('GetSites', undefined)
+    expect(await client.db.base.count()).toBe(0)
+    client.goOffline()
+    await client.enqueue('RenameSite', { id: 's1', name: 'Local' })
+    await client.enqueue('ArchiveSite', { id: 's1' })
+    expect(await client.db.base.toArray()).toEqual([{ table: 'Site', key: 's1', row: { id: 's1', name: 'North', archived: false } }])
+    client.goOnline()
+    await until(async () => (await client.db.mutations.count()) === 0, 'outbox to drain')
+    expect(await client.db.base.count()).toBe(0)
+    expect(await sites(client.db).get('s1')).toMatchObject({ name: 'Local', archived: true })
+  })
+
+  it('queues a mutation without applying the others again', async () => {
+    const { applied, handlers } = counting()
+    const client = createClient(server, { mutationHandlers: handlers })
+    await client.fetchQuery('GetSites', undefined)
+    client.goOffline()
+    await client.enqueue('RenameSite', { id: 's1', name: 'A' })
+    await client.enqueue('RenameSite', { id: 's2', name: 'B' })
+    await client.enqueue('ArchiveSite', { id: 's1' })
+    expect(applied).toEqual(['rename s1', 'rename s2', 'archive s1'])
+  })
+
+  it('stores a response that touches no pending row without applying anything again', async () => {
+    const { applied, handlers } = counting()
+    const client = createClient(server, { mutationHandlers: handlers })
+    await client.fetchQuery('GetSites', undefined)
+    client.goOffline()
+    await client.enqueue('RenameSite', { id: 's1', name: 'Local' })
+    applied.length = 0
+
+    server.sites[1]!.name = 'South 2'
+    await client.fetchQuery('GetSite', { id: 's2' })
+    expect(applied).toEqual([])
+    expect(await sites(client.db).get('s2')).toMatchObject({ name: 'South 2' })
+
+    // A response that carries the pending row goes under the queue.
+    server.sites[0]!.archived = true
+    await client.fetchQuery('GetSite', { id: 's1' })
+    expect(applied).toEqual(['rename s1'])
+    expect(await sites(client.db).get('s1')).toMatchObject({ name: 'Local', archived: true })
+    expect(await client.db.base.toArray()).toMatchObject([{ key: 's1', row: { name: 'North', archived: true } }])
+  })
+
+  it('acknowledges and rolls back a mutation on its own rows without touching the rest', async () => {
+    const { applied, handlers } = counting()
+    const client = createClient(server, { mutationHandlers: handlers })
+    await client.fetchQuery('GetSites', undefined)
+    client.goOffline()
+    const one = await client.enqueue('RenameSite', { id: 's1', name: 'One' })
+    const two = await client.enqueue('RenameSite', { id: 's2', name: 'bad' })
+    applied.length = 0
+
+    await client.rollback(one.id)
+    expect(applied).toEqual([])
+    expect(await sites(client.db).get('s1')).toMatchObject({ name: 'North' })
+
+    const three = await client.enqueue('ArchiveSite', { id: 's1' })
+    applied.length = 0
+    client.goOnline()
+    await until(async () => (await client.db.mutations.get(three.id)) === undefined, 'archive to sync')
+    expect(applied).toEqual([])
+    expect((await client.db.mutations.get(two.id))?.status).toBe('failed')
+    expect(await client.db.base.toArray()).toMatchObject([{ key: 's2', row: { name: 'South' } }])
+  })
+
+  it('rolls back correctly while a later mutation on the same row is in flight', async () => {
+    const client = createClient(server, { mutationHandlers: siteHandlers })
+    await client.fetchQuery('GetSites', undefined)
+    client.goOffline()
+    const rename = await client.enqueue('RenameSite', { id: 's1', name: 'bad' })
+    await client.enqueue('ArchiveSite', { id: 's2' })
+    client.goOnline()
+    await until(async () => (await client.db.mutations.get(rename.id))?.status === 'failed', 'rename to fail')
+    await until(async () => (await client.db.mutations.count()) === 1, 'the rest to sync')
+    client.goOffline()
+    const archive = await client.enqueue('ArchiveSite', { id: 's1' })
+    const impl = server.fetch.getMockImplementation()!
+    server.fetch.mockImplementation(async (url, init) => {
+      if ((init!.body as string).includes('mutation ArchiveSite')) await client.rollback(rename.id)
+      return impl(url, init)
+    })
+    client.goOnline()
+    await until(async () => (await client.db.mutations.get(archive.id)) === undefined, 'archive to sync')
+    expect(await sites(client.db).get('s1')).toMatchObject({ name: 'North', archived: true })
+    expect(await client.db.base.count()).toBe(0)
+  })
+})
+
+// ---------------------------------------------------------------------------
 // Inferred tables
 // ---------------------------------------------------------------------------
 
@@ -1276,7 +1371,7 @@ describe('inferred tables', () => {
   it('opens a table per entity, keyed on its id', async () => {
     const client = createClient(server, { stores: { stores: { Site: 'name' } } })
     await client.ready
-    expect(client.db.tables.map(t => t.name).sort()).toEqual(['Site', 'meta', 'mutations', 'queries'])
+    expect(client.db.tables.map(t => t.name).sort()).toEqual(['Site', 'base', 'meta', 'mutations', 'queries'])
     expect(sites(client.db).schema.primKey.keyPath).toBe('id')
     expect(sites(client.db).schema.indexes.map(i => i.name)).toEqual(['name'])
   })
@@ -1411,9 +1506,9 @@ describe('temp ids', () => {
     client.goOnline()
     await until(() => client.state.lastError !== null, 'network error')
     expect((await client.db.mutations.get(archive.id))!.variables).toEqual({ id: 's3' })
-    const log = (await client.db.mutations.get(rename.id))!.undo!
-    expect(log).toHaveLength(1)
-    expect(log[0]).toEqual({ table: 'Site', key: 's3', ops: [{ path: ['name'], had: true, value: 'West' }] })
+    expect((await client.db.mutations.get(rename.id))!.keys).toEqual([['Site', 's3']])
+    // The accepted create is the server's version of the row now, under both edits.
+    expect(await client.db.base.toArray()).toEqual([{ table: 'Site', key: 's3', row: { id: 's3', name: 'West', archived: false } }])
 
     // A refetch rebases both edits onto the real row, with nothing left under the placeholder.
     await client.fetchQuery('GetSites', undefined)
@@ -1601,7 +1696,8 @@ describe('query handlers and stores', () => {
     client.goOffline()
     const row = await client.enqueue('RenameSite', { id: 's1', name: 'Tabled' })
     await until(() => (snapshot.value.data as { sites: Site[] }).sites[0]!.name === 'Tabled', 'live read to update')
-    expect((await client.db.mutations.get(row.id))?.undo).toEqual([{ table: 'sites', key: 's1', ops: [{ path: ['name'], had: true, value: 'North' }] }])
+    expect((await client.db.mutations.get(row.id))?.keys).toEqual([['sites', 's1']])
+    expect(await client.db.base.toArray()).toMatchObject([{ table: 'sites', key: 's1', row: { name: 'North' } }])
 
     await client.rollback(row.id)
     expect((await table.get('s1'))!.name).toBe('North')
@@ -1754,22 +1850,13 @@ describe('what a mutation did', () => {
     expect(changes({ id: 's1', at: new Date(5) }, { id: 's1', at: new Date(5) }).touched).toEqual(new Set())
   })
 
-  it('logs the pieces that changed, and names the ones it wrote', () => {
+  it('names the pieces it wrote', () => {
     const site = { id: 's1', name: 'North', tags: ['a'], items: [{ id: 'i1', qty: 1 }, { id: 'i2', qty: 2 }] }
     const after = { id: 's1', name: 'South', tags: ['a', 'b'], note: 'new', items: [{ id: 'i2', qty: 5 }, { id: 'i3', qty: 0 }] }
-    const { undo, wrote } = did(site, after)
-    expect(undo).toEqual([{ table: 'Site', key: 's1', ops: [
-      { path: ['name'], had: true, value: 'North' },
-      { path: ['tags'], had: true, value: ['a'] },
-      { path: ['items', { id: 'i1' }], had: true, value: { id: 'i1', qty: 1 }, index: 0 },
-      { path: ['items', { id: 'i2' }, 'qty'], had: true, value: 2 },
-      { path: ['items', { id: 'i3' }], had: false },
-      { path: ['note'], had: false, value: undefined },
-    ] }])
-    expect(wrote).toEqual(new Set(['Site/s1#name', 'Site/s1#tags', 'Site/s1/items/i1', 'Site/s1/items/i2#qty', 'Site/s1/items/i3', 'Site/s1#note']))
-    expect(did(undefined, site).undo).toEqual([{ table: 'Site', key: 's1', created: true }])
-    expect(did(site, undefined).undo).toEqual([{ table: 'Site', key: 's1', before: site }])
+    expect(did(site, after).wrote).toEqual(new Set(['Site/s1#name', 'Site/s1#tags', 'Site/s1/items/i1', 'Site/s1/items/i2#qty', 'Site/s1/items/i3', 'Site/s1#note']))
+    expect(did(undefined, site).wrote).toEqual(new Set(['Site/s1']))
+    expect(did(site, undefined).wrote).toEqual(new Set(['Site/s1']))
     // A list that only changed its order is one piece.
-    expect(did(site, { ...site, items: [...site.items].reverse() }).undo[0]!.ops).toEqual([{ path: ['items'], had: true, value: site.items }])
+    expect(did(site, { ...site, items: [...site.items].reverse() }).wrote).toEqual(new Set(['Site/s1#items']))
   })
 })
