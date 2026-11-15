@@ -34,7 +34,7 @@ export function remoteEngine(port: Port, config: WorkerInit): AirplaneEngine {
   // A worker that could not load, or threw outside a call, will answer nothing: say so instead of waiting for ever.
   let broken: Error | undefined
   port.addEventListener('error', (event) => {
-    broken = new Error(`[nuxt-airplane] The worker failed${event.message ? `: ${event.message}` : ''}. Set \`worker: false\` in the module options to run the handlers on the page.`)
+    broken = new Error(`[nuxt-airplane] The worker failed${event.message ? `: ${event.message}` : ''}. Set \`handlers.worker\` to false in the module options to run the handlers on the page.`)
     for (const call of waiting.values()) call.reject(broken)
     waiting.clear()
   })

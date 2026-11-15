@@ -1,4 +1,4 @@
-// `generateHandlers`: a handler file, with its hooks in place and their
+// `handlers.generate`: a handler file, with its hooks in place and their
 // bodies empty, for every operation that has none yet.
 
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
@@ -40,7 +40,7 @@ function documentComment(source: string) {
   return source.trim().split('\n').map(line => `//   ${line}`.trimEnd().replace(/\*\//g, '* /')).join('\n')
 }
 
-const HEADER = '// Scaffolded by nuxt-airplane (`generateHandlers`). The file is yours: fill it in, change it, it is never overwritten.'
+const HEADER = '// Scaffolded by nuxt-airplane (`handlers.generate`). The file is yours: fill it in, change it, it is never overwritten.'
 
 /** The contents of a scaffolded handler file for one operation, or nothing for a subscription. */
 export function scaffoldHandler(op: Pick<OperationDocument, 'name' | 'kind' | 'source'>): string | undefined {

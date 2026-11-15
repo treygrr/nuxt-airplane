@@ -6,9 +6,11 @@ export default defineNuxtConfig({
   ],
   airplane: {
     endpoint: '/api/graphql',
-    schema: './schema.graphql',
-    schemaHeaders: { Authorization: 'Bearer build-only-token' },
-    cacheKey: 'fixture-1',
+    schema: {
+      source: './schema.graphql',
+      headers: { Authorization: 'Bearer build-only-token' },
+    },
+    database: { cacheKey: 'fixture-1' },
     persistedQueries: 'automatic',
   },
 })

@@ -17,8 +17,8 @@ export default defineNuxtConfig({
     endpoint: '/api/graphql',
     // Types come from the same SDL the server uses, so they are generated
     // without a running server (CI, fresh clones). Remove this line to see
-    // introspection at work instead; the server then needs `schemaHeaders`.
-    schema: './server/graphql/schema.graphql',
+    // introspection at work instead; the server then needs `schema.headers`.
+    schema: { source: './server/graphql/schema.graphql' },
     // Operations go out as a SHA-256 hash; Apollo Server supports this
     // (automatic persisted queries) out of the box and asks for the text once.
     persistedQueries: 'automatic',

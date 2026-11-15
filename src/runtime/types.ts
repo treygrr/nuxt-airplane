@@ -342,7 +342,7 @@ export interface AirplaneRuntimeConfig {
   cacheKey?: string
   /** Send operations by hash instead of text; see the `persistedQueries` module option. `''` means off. */
   persistedQueries?: PersistedQueriesMode | ''
-  /** Run the handlers that write (`store`, `apply`, `reconcile`…) in a web worker; see the `worker` module option. */
+  /** Run the handlers that write (`store`, `apply`, `reconcile`…) in a web worker; see the `handlers.worker` module option. */
   worker?: boolean
 }
 
