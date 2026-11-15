@@ -167,8 +167,9 @@ const { online, syncing, synced, pending, syncTotal, syncCount, lastError, sync,
 ```
 
 - `pending` lists the queued mutations oldest first, each with a human-readable `description` (from the handler's `describe` hook, or the humanized document name), its variables and status.
-- `rollback(id)` undoes a queued mutation locally and drops it from the queue, together with the mutations that depend on it (the ones that carry a placeholder it minted or touch something it created). It resolves with what it dropped, and `dependents(id)` lists them beforehand. Mutations queued after it are re-applied on top of the restored data.
-- A mutation the server rejects is marked `failed` and left in the queue. Only the mutations that depend on it wait (`blocked` counts them) until you `retry(id)` or `rollback(id)` it; the rest of the queue keeps syncing.
+- `rollback(id)` undoes a queued mutation locally and drops it from the queue, together with the mutations that depend on it (the ones that carry a placeholder it minted or touch something it created). A dependent that still does something on its own stays queued. It resolves with what it dropped, and `dependents(id)` lists the candidates beforehand. Mutations queued after it are re-applied on top of the restored data.
+- A mutation the server rejects is marked `failed` and left in the queue. Only the mutations that depend on it, or edit the same field after it, wait (`blocked` counts them) until you `retry(id)` or `rollback(id)` it; the rest of the queue keeps syncing.
+- An answer that is not about the mutation (an expired session, a rate limit, a 5xx) stops the batch like a network failure instead of failing every queued mutation in turn.
 - A network failure stops the batch and keeps everything queued; the next `online` event (or `sync()`) resumes it.
 - Tabs share the database; a Web Lock makes sure only one of them sends the queue at a time.
 - `goOffline()` holds the client offline whatever the network says: queries are read from the tables only and mutations stay queued. `goOnline()` releases it and syncs. `online` reflects the effective state; `networkOnline` and `forcedOffline` expose the two inputs. Handy for a "work offline" switch or for testing.

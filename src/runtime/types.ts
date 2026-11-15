@@ -63,12 +63,31 @@ export interface QueryRow {
 
 export type MutationStatus = 'pending' | 'syncing' | 'failed'
 
-/** One write recorded while `apply` ran, with the row as it was before. */
+/** A step from a row down to one of its pieces: a field name, or the id of a list element. */
+export type UndoStep = string | { id: string }
+
+/** One piece of a row that `apply` changed, with what was there before. */
+export interface UndoOp {
+  /** Where the piece is; the last step names it. */
+  path: UndoStep[]
+  /** Whether it existed. If not, undo removes it. */
+  had: boolean
+  /** What it was. */
+  value?: unknown
+  /** Where a removed list element sat. */
+  index?: number
+}
+
+/** What `apply` did to one row, as what it takes to undo it. */
 export interface UndoEntry {
   table: string
   key: IndexableType
-  /** `undefined` when the row did not exist, in which case undo deletes it. */
+  /** The row did not exist: undo deletes it. */
+  created?: true
+  /** The row as it was, when it was deleted or replaced whole: undo puts it back. */
   before?: unknown
+  /** Otherwise the pieces that changed: undo puts back those and nothing else. */
+  ops?: UndoOp[]
 }
 
 /** A queued mutation waiting to reach the server. */
@@ -102,6 +121,19 @@ export interface MutationRow {
    * `apply` touches one of them depends on this one.
    */
   creates?: string[]
+  /**
+   * The pieces `apply` wrote, by path: a field (`Site/s1#name`), or a thing
+   * it added or removed. A later mutation that writes one of them comes
+   * `after` this one.
+   */
+  writes?: string[]
+  /**
+   * Outbox ids of earlier mutations that wrote a piece this one writes too,
+   * such as two renames of the same site. Order only: this row waits while
+   * one of them is failed, so the server sees them in the order they were
+   * made, but rolling one back leaves this row queued.
+   */
+  after?: number[]
 }
 
 /** Module bookkeeping, e.g. the cache key the data was written under. */
@@ -246,6 +278,14 @@ export interface AirplaneRequestOptions {
   timeout?: number
   /** Sees every response before it is parsed, e.g. to react to a 401. */
   onResponse?: (response: Response, ctx: AirplaneRequestContext) => unknown
+  /**
+   * Whether an error answer to a queued mutation says nothing about that
+   * mutation (the session expired, the server is busy), so it should stay
+   * queued and the sync stop until the next attempt, like a network failure.
+   * By default: HTTP 401, 429 and 5xx, and the codes `UNAUTHENTICATED`,
+   * `TOO_MANY_REQUESTS` and `RATE_LIMITED`.
+   */
+  retryLater?: (error: GraphQLRequestError) => boolean
 }
 
 /** Marks what a file under the handlers directory default-exports. */
@@ -264,7 +304,8 @@ export interface GraphQLResponse<T = unknown> {
 }
 
 export class GraphQLRequestError extends Error {
-  constructor(public errors: GraphQLError[]) {
+  /** `status` is the HTTP status the errors came with. */
+  constructor(public errors: GraphQLError[], public status = 200) {
     super(errors.map(e => e.message).join('\n'))
     this.name = 'GraphQLRequestError'
   }

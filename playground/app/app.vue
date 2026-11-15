@@ -14,14 +14,18 @@ const sync = useSync()
 // list shows that, and indents each row under the one it depends on.
 const held = computed(() => {
   const ids = new Set(sync.pending.value.filter(m => m.status === 'failed').map(m => m.id))
-  for (const m of sync.pending.value) if (m.dependsOn?.some(id => ids.has(id))) ids.add(m.id)
+  for (const m of sync.pending.value) if (links(m).some(id => ids.has(id))) ids.add(m.id)
   return ids
 })
 function waiting(m: { id: number, status: string }) {
   return m.status === 'pending' && held.value.has(m.id)
 }
-function depth(m: { dependsOn?: number[] }): number {
-  const parents = sync.pending.value.filter(p => m.dependsOn?.includes(p.id))
+// What a row waits on: the ones it depends on, and the ones it only has to come after.
+function links(m: { dependsOn?: number[], after?: number[] }) {
+  return [...(m.dependsOn ?? []), ...(m.after ?? [])]
+}
+function depth(m: { dependsOn?: number[], after?: number[] }): number {
+  const parents = sync.pending.value.filter(p => links(m).includes(p.id))
   return parents.length ? 1 + Math.max(...parents.map(depth)) : 0
 }
 
