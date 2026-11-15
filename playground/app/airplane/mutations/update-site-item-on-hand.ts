@@ -8,5 +8,8 @@ export default defineMutationHandler('UpdateSiteItemOnHand', {
     const item = site.items.find(item => item.id === variables.itemId)
     if (item) item.onHand = variables.onHand
   }),
+  // Counting stock taps the same field again and again: only the last
+  // number has to reach the server.
+  merge: (earlier, later) => earlier.siteId === later.siteId && earlier.itemId === later.itemId && later,
   refetch: ['GetSites'],
 })

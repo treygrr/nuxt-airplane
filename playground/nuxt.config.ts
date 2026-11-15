@@ -22,5 +22,8 @@ export default defineNuxtConfig({
     // Operations go out as a SHA-256 hash; Apollo Server supports this
     // (automatic persisted queries) out of the box and asks for the text once.
     persistedQueries: 'automatic',
+    // The handlers that write (`store`, `apply`, …) run in a web worker, so
+    // storing the whole catalog does not hold up the page.
+    worker: true,
   },
 })

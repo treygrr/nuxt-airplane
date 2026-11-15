@@ -59,6 +59,12 @@ export interface QueryRow {
   document: string
   variables: unknown
   updatedAt: number
+  /**
+   * The rows its `store` wrote, as `[table, key]`. What may be dropped with
+   * this record when storage runs low, unless another record or the queue
+   * holds the same row.
+   */
+  rows?: [string, IndexableType][]
 }
 
 export type MutationStatus = 'pending' | 'syncing' | 'failed'
@@ -87,6 +93,13 @@ export interface MutationRow {
   /** Human-readable summary from the handler's `describe`, or the humanized document name. */
   description: string
   error?: string
+  /**
+   * Sent with every attempt, in the request's `extensions`, so a server can
+   * tell a retry of this mutation from a new one.
+   */
+  idempotencyKey?: string
+  /** How many times it has been sent. */
+  attempts?: number
   /** The rows `apply` changed, as `[table, key]`: what goes back to the server's version when it is taken off. */
   keys?: [string, IndexableType][]
   /**
@@ -188,10 +201,19 @@ export interface MutationHandler<N extends MutationName = MutationName> {
    */
   reconcile?: (ctx: ReconcileContext<MutationVariables<N>>, result: MutationResult<N>) => unknown
   /**
-   * Runs when a queued mutation is rolled back. When omitted the writes made
-   * by `apply` are undone from the recorded log instead.
+   * Runs when a queued mutation is rolled back, before the rows it changed go
+   * back to the server's version: for what `apply` did outside the database.
    */
   revert?: (ctx: HandlerContext<MutationVariables<N>>) => unknown
+  /**
+   * Folds a mutation queued later into one of the same document that is still
+   * waiting, so ten quantity changes of one cart line reach the server as
+   * one. Receives the variables of both and returns those of the single
+   * mutation that stands for them, or nothing when they are not about the
+   * same thing. Must be pure. Only a mutation that has never been sent is
+   * merged into, and only when nothing queued in between touched the same rows.
+   */
+  merge?: (earlier: MutationVariables<N>, later: MutationVariables<N>) => MutationVariables<N> | null | undefined | false
   /** Queries to refetch after the mutation has been sent. Defaults to every active query. */
   refetch?: QueryName[]
 }
@@ -245,6 +267,8 @@ export interface AirplaneRequestContext {
   document: string
   kind: OperationDocument['kind']
   variables: unknown
+  /** For a queued mutation: the key that is the same on every attempt to send it. */
+  idempotencyKey?: string
 }
 
 /** How requests to the GraphQL endpoint are made; see `defineAirplaneRequest`. */
@@ -274,6 +298,13 @@ export interface AirplaneRequestOptions {
    * `TOO_MANY_REQUESTS` and `RATE_LIMITED`.
    */
   retryLater?: (error: GraphQLRequestError) => boolean
+  /**
+   * How many queued mutations may be in flight at once (default 4). Only
+   * mutations that have nothing to do with each other are sent side by side:
+   * a chain, and edits of the same row, always go in order. Set it to 1 for
+   * an API that cannot take concurrent mutations from one client.
+   */
+  concurrency?: number
 }
 
 /** Marks what a file under the handlers directory default-exports. */
@@ -292,8 +323,11 @@ export interface GraphQLResponse<T = unknown> {
 }
 
 export class GraphQLRequestError extends Error {
-  /** `status` is the HTTP status the errors came with. */
-  constructor(public errors: GraphQLError[], public status = 200) {
+  /**
+   * `status` is the HTTP status the errors came with, and `retryAfter` the
+   * milliseconds its `Retry-After` header asked to wait, if it had one.
+   */
+  constructor(public errors: GraphQLError[], public status = 200, public retryAfter?: number) {
     super(errors.map(e => e.message).join('\n'))
     this.name = 'GraphQLRequestError'
   }
@@ -308,6 +342,26 @@ export interface AirplaneRuntimeConfig {
   cacheKey?: string
   /** Send operations by hash instead of text; see the `persistedQueries` module option. `''` means off. */
   persistedQueries?: PersistedQueriesMode | ''
+  /** Run the handlers that write (`store`, `apply`, `reconcile`…) in a web worker; see the `worker` module option. */
+  worker?: boolean
+}
+
+/**
+ * Everything that writes to the tables. It runs where the client does, or in
+ * a web worker with the client calling it over messages, so every argument
+ * and result is plain data.
+ */
+export interface AirplaneEngine {
+  ready: () => Promise<void>
+  storeResponse: (name: string, variables: unknown, data: unknown) => Promise<void>
+  enqueue: (name: string, input: unknown) => Promise<MutationRow>
+  acknowledge: (id: number) => Promise<void>
+  rollback: (id: number) => Promise<MutationRow[]>
+  reconcile: (name: string, variables: unknown, tempIds: string[], result: unknown) => Promise<void>
+  clearCache: () => Promise<void>
+  clear: () => Promise<void>
+  /** Drops the least recently fetched rows, keeping those of the queries in `keep` and of the queue. Resolves with how many went. */
+  evict: (keep: string[]) => Promise<number>
 }
 
 /**

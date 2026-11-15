@@ -1,4 +1,4 @@
-import { readFile } from 'node:fs/promises'
+import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { basename, dirname, join, resolve, sep } from 'node:path'
 import {
   addImportsDir,
@@ -11,10 +11,11 @@ import {
   useLogger,
 } from '@nuxt/kit'
 import type { GraphQLSchema } from 'graphql'
+import type { Plugin } from 'vite'
 import { hash } from 'ohash'
 import { glob } from 'tinyglobby'
 import { generateTypes, loadDocuments, loadSchema, type LoadedDocuments } from './codegen'
-import { WRAP_HINT, findUntaggedDefaultExport } from './handlers'
+import { WRAP_HINT, defaultExportHelper, findUntaggedDefaultExport, mentionedTables } from './handlers'
 import type { PersistedQueriesMode } from './runtime/types'
 
 export interface ModuleOptions {
@@ -51,6 +52,14 @@ export interface ModuleOptions {
    *   server from the manifest written to `.nuxt/nuxt-airplane/persisted-queries.json`.
    */
   persistedQueries: PersistedQueriesMode
+  /**
+   * Run the handlers that write to the tables (`store`, `apply`, `describe`,
+   * `merge`, `reconcile`, `revert`) in a web worker, so a large response or a
+   * long queue does not hold up the page. They cannot use Nuxt composables or
+   * the DOM there. `read`, `prefetch` and `defineAirplaneRequest` stay on the
+   * page. Needs the Vite builder. Default `false`.
+   */
+  worker: boolean
   /** Extra options passed to the `typescript` / `typescript-operations` codegen plugins. */
   codegen: Record<string, unknown>
 }
@@ -67,6 +76,7 @@ export default defineNuxtModule<ModuleOptions>({
     handlersDir: 'airplane',
     dbName: 'nuxt-airplane',
     persistedQueries: false,
+    worker: false,
     codegen: {},
   },
   async setup(options, nuxt) {
@@ -82,6 +92,7 @@ export default defineNuxtModule<ModuleOptions>({
       headers: options.headers ?? {},
       // A string so Nuxt's runtime config typing does not pin it to boolean.
       persistedQueries: options.persistedQueries || '',
+      worker: options.worker,
     }
 
     nuxt.options.build.transpile.push(resolver.resolve('./runtime'))
@@ -127,8 +138,32 @@ export default defineNuxtModule<ModuleOptions>({
       })
     }
 
+    // ------------------------------------------------------------------
+    // Which inferred tables the app uses
+    //
+    // Every type selected with an id could have a table, but one nobody
+    // reads or writes is an object store opened for nothing. Only those the
+    // app's source mentions are created.
+    // ------------------------------------------------------------------
+
+    const handlersRoot = join(srcDir, options.handlersDir) + sep
+    /** Per source file, the inferred tables it mentions. */
+    const mentions = new Map<string, string[]>()
+    async function scanFile(file: string) {
+      const source = await readFile(file, 'utf8').catch(() => null)
+      if (source === null) mentions.delete(file)
+      else mentions.set(file, mentionedTables(source, Object.keys(docs.entities), file.startsWith(handlersRoot)))
+    }
+    async function scanSources() {
+      mentions.clear()
+      const files = await glob(['**/*.{ts,js,mts,mjs,tsx,jsx,vue}'], { cwd: srcDir, absolute: true, ignore: ['**/node_modules/**', '**/.nuxt/**', '**/.output/**', '**/dist/**'] })
+      await Promise.all(files.map(scanFile))
+    }
+    const usedTables = () => new Set([...mentions.values()].flat())
+
     await reloadSchema()
     await reloadDocuments()
+    await scanSources()
     nuxt.options.watch.push(...docs.files)
 
     // ------------------------------------------------------------------
@@ -142,7 +177,8 @@ export default defineNuxtModule<ModuleOptions>({
         `export const documents = ${JSON.stringify(docs.operations, null, 2)}`,
         // Part of the cache key: any change to an operation invalidates cached responses.
         `export const documentsHash = ${JSON.stringify(hash(Object.values(docs.operations).map(op => op.source)))}`,
-        `export const entities = ${JSON.stringify(docs.entities)}`,
+        `export const entities = ${JSON.stringify(Object.fromEntries(Object.entries(docs.entities).filter(([name]) => usedTables().has(name))))}`,
+        `export const unusedEntities = ${JSON.stringify(Object.keys(docs.entities).filter(name => !usedTables().has(name)))}`,
         '',
       ].join('\n'),
     })
@@ -181,6 +217,64 @@ export default defineNuxtModule<ModuleOptions>({
       },
     })
 
+    // ------------------------------------------------------------------
+    // Worker
+    // ------------------------------------------------------------------
+
+    let useWorker = options.worker
+    if (useWorker && nuxt.options.builder !== '@nuxt/vite-builder') {
+      logger.warn('`worker: true` needs the Vite builder; the handlers stay on the page.')
+      useWorker = false
+    }
+
+    // The worker gets the handler files too, bar the ones that only describe
+    // requests: those are the page's, and may lean on Nuxt composables. Its
+    // entry is a plain file rather than a template, because Vite bundles a
+    // worker on its own, without the plugin that serves Nuxt's templates.
+    const workerEntry = join(nuxt.options.buildDir, 'nuxt-airplane-worker/entry.mjs')
+    async function writeWorkerEntry() {
+      const files: string[] = []
+      for (const file of await handlerFiles()) {
+        if (defaultExportHelper(await readFile(file, 'utf8')) !== 'defineAirplaneRequest') files.push(file)
+      }
+      const contents = [
+        // First, so the define* helpers exist when the handler files run.
+        `import ${JSON.stringify(resolver.resolve('./runtime/worker-globals'))}`,
+        `import { startWorker } from ${JSON.stringify(resolver.resolve('./runtime/worker'))}`,
+        ...files.map((file, i) => `import h${i} from ${JSON.stringify(file)}`),
+        `startWorker([${files.map((_, i) => `h${i}`).join(', ')}])`,
+        '',
+      ].join('\n')
+      if (await readFile(workerEntry, 'utf8').catch(() => null) === contents) return
+      await mkdir(dirname(workerEntry), { recursive: true })
+      await writeFile(workerEntry, contents)
+    }
+    const workerTemplate = addTemplate({
+      filename: 'nuxt-airplane/worker.mjs',
+      write: true,
+      getContents: async () => {
+        if (!useWorker) return 'export const createWorker = undefined\n'
+        // Written here so it follows the templates: after the build directory is cleared, and again when handlers change.
+        await writeWorkerEntry()
+        return `import AirplaneWorker from ${JSON.stringify(`${workerEntry}?worker`)}\nexport const createWorker = () => new AirplaneWorker({ name: 'nuxt-airplane' })\n`
+      },
+    })
+    nuxt.options.alias['#nuxt-airplane/worker'] = workerTemplate.dst
+
+    if (useWorker) {
+      // Auto-imports in the handler files have to work in the worker's bundle
+      // too, which Vite builds with a plugin list of its own.
+      nuxt.hook('vite:extendConfig', (config, { isClient }) => {
+        if (!isClient) return
+        // Nuxt's own instances of the two that matter: the auto-import transform, and the one that serves what it imports from.
+        const shared = (config.plugins ?? []).flat(5).filter((plugin): plugin is Plugin =>
+          !!plugin && typeof plugin === 'object' && 'name' in plugin && ['nuxt:imports-transform', 'nuxt:virtual'].includes(plugin.name))
+        const own = config.worker?.plugins
+        Object.assign(config, { worker: { ...config.worker, plugins: () => [...(own?.() ?? []), ...shared] } })
+      })
+    }
+    nuxt.options.alias['#nuxt-airplane/worker'] = workerTemplate.dst
+
     // Public types (AirplaneDexie, MutationHandler, …) for handler helpers.
     nuxt.options.alias['#nuxt-airplane'] = resolver.resolve('./runtime/types')
     nuxt.options.alias['#nuxt-airplane/documents'] = documentsTemplate.dst
@@ -194,6 +288,7 @@ export default defineNuxtModule<ModuleOptions>({
     async function regenerate() {
       await reloadSchema()
       await reloadDocuments()
+      await scanSources()
       await updateTemplates({ filter: t => t.filename.includes('nuxt-airplane') })
     }
 
@@ -229,7 +324,12 @@ export default defineNuxtModule<ModuleOptions>({
         const abs = join(srcDir, path)
         const isDocument = /\.(?:gql|graphql)$/.test(abs)
         const isHandler = abs.startsWith(join(srcDir, options.handlersDir))
-        if (isDocument || isHandler) await regenerate()
+        if (isDocument || isHandler) return regenerate()
+        // Any other source file may have started, or stopped, using a table.
+        if (!/\.(?:[mc]?[tj]sx?|vue)$/.test(abs)) return
+        const before = [...usedTables()].sort().join()
+        await scanFile(abs)
+        if ([...usedTables()].sort().join() !== before) await updateTemplates({ filter: t => t.filename === 'nuxt-airplane/documents.mjs' })
       })
     }
 

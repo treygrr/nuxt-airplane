@@ -420,9 +420,13 @@ declare module '#nuxt-airplane/documents' {
   export const documents: Record<string, { name: string, kind: 'query' | 'mutation' | 'subscription', source: string, hash: string }>
   export const documentsHash: string
   export const entities: Record<string, { key: string }>
+  export const unusedEntities: string[]
 }
 declare module '#nuxt-airplane/handlers' {
   export const handlers: unknown[]
+}
+declare module '#nuxt-airplane/worker' {
+  export const createWorker: (() => Worker) | undefined
 }
 `
 

@@ -48,10 +48,13 @@ describe('module', async () => {
     expect(types).toContain('"ArchiveSite": { result: ArchiveSiteMutation, variables: ArchiveSiteMutationVariables }')
   })
 
-  it('infers an entity table per type selected with an id, with its row type', async () => {
+  it('infers an entity table per type selected with an id, with its row type, and creates the ones the app uses', async () => {
     const source = await built('nuxt-airplane/documents.mjs')
     expect(source).not.toContain('__typename')
-    expect(source).toContain('export const entities = {"Site":{"key":"id"}}')
+    // The fixture keeps its sites in a table of its own and never reaches `db.Site`.
+    expect(source).toContain('export const entities = {}')
+    expect(source).toContain('export const unusedEntities = ["Site"]')
+    expect(await built('nuxt-airplane/worker.mjs')).toContain('export const createWorker = undefined')
     const types = await built('types/nuxt-airplane.d.ts')
     expect(types).toContain('export type SiteRow = { id: string, name: string, archived: boolean }')
     expect(types).toContain('"Site": SiteRow')

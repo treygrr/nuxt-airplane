@@ -134,7 +134,7 @@ Headers are computed when a request is sent, so a mutation queued offline goes o
 
 Every type your documents select with an `id` gets a `db.<Type>` table, keyed
 on it, with a row type built from the fields the documents select. Nothing to
-declare. `defineAirplaneStores` adds the indexes your `read` handlers sort or
+declare, and only the tables your app mentions are created. `defineAirplaneStores` adds the indexes your `read` handlers sort or
 filter on, and can declare tables of your own.
 
 ```ts
@@ -158,6 +158,8 @@ changes, in any table, the server's version is kept and put back.
 
 One file per operation also works: `defineMutationHandler('RenameSite', { … })` and `defineQueryHandler('GetSites', { … })` declare a single operation, and a folder with an `index.ts` is imported through its index only, so you can compose there.
 
+When storage runs low, the least recently fetched rows are dropped, never one a queued mutation has changed. `worker: true` in the module options runs the handlers that write (`store`, `apply`, …) in a web worker, so a large catalog does not hold up the page.
+
 Paginated queries can opt into fetching every page in the background so the whole set is available offline: `prefetch: { next: (data, vars) => data.pageInfo.hasNextPage ? { ...vars, after: data.pageInfo.endCursor } : null, when: () => settings.cacheCatalog }`. `useSync().prefetching` counts the runs in progress.
 
 ## Sync state
@@ -170,7 +172,10 @@ const { online, syncing, synced, pending, syncTotal, syncCount, lastError, sync,
 - `rollback(id)` undoes a queued mutation locally and drops it from the queue, together with the mutations that depend on it (the ones that carry a placeholder it minted or touch something it created). A dependent that still does something on its own stays queued. It resolves with what it dropped, and `dependents(id)` lists the candidates beforehand. Mutations queued after it are re-applied on top of the restored data.
 - A mutation the server rejects is marked `failed` and left in the queue. Only the mutations that depend on it, or edit the same field after it, wait (`blocked` counts them) until you `retry(id)` or `rollback(id)` it; the rest of the queue keeps syncing.
 - An answer that is not about the mutation (an expired session, a rate limit, a 5xx) stops the batch like a network failure instead of failing every queued mutation in turn.
-- A network failure stops the batch and keeps everything queued; the next `online` event (or `sync()`) resumes it.
+- A network failure stops the batch and keeps everything queued; the next `online` event (or `sync()`) resumes it, and the module retries by itself with a growing delay, or when `Retry-After` says. `retryAt` holds the time of the next attempt.
+- Mutations that have nothing to do with each other are sent side by side, four at a time by default (`concurrency` in `defineAirplaneRequest`). A chain, and edits of the same row, always go in order.
+- Every queued mutation carries an idempotency key, the same on each attempt, in the request's `extensions`, so a server can tell a retry from a new mutation.
+- A handler's `merge` folds repeated edits of the same thing, such as a cart quantity, into one queued mutation.
 - Tabs share the database; a Web Lock makes sure only one of them sends the queue at a time.
 - `goOffline()` holds the client offline whatever the network says: queries are read from the tables only and mutations stay queued. `goOnline()` releases it and syncs. `online` reflects the effective state; `networkOnline` and `forcedOffline` expose the two inputs. Handy for a "work offline" switch or for testing.
 
