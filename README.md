@@ -156,7 +156,7 @@ export default defineQueryHandlers({
 Rollback works without a `revert` handler: for every row a queued mutation
 changes, in any table, the server's version is kept and put back.
 
-One file per operation also works: `defineMutationHandler('RenameSite', { … })` and `defineQueryHandler('GetSites', { … })` declare a single operation, and a folder with an `index.ts` is imported through its index only, so you can compose there.
+One file per operation also works: `defineMutationHandler('RenameSite', { … })` and `defineQueryHandler('GetSites', { … })` declare a single operation, and a folder with an `index.ts` is imported through its index only, so you can compose there. `generateHandlers: true` in the module options writes such a file, with empty hooks, for every query and mutation that has no handler yet, and never overwrites one.
 
 When storage runs low, the least recently fetched rows are dropped, never one a queued mutation has changed. The handlers that write (`store`, `apply`, …) run in a web worker, so a large catalog does not hold up the page; they get `db` and `variables` but no Nuxt composables. `worker: false` in the module options keeps them on the page.
 

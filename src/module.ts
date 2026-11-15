@@ -1,5 +1,5 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
-import { basename, dirname, join, resolve, sep } from 'node:path'
+import { basename, dirname, join, relative, resolve, sep } from 'node:path'
 import {
   addImportsDir,
   addPlugin,
@@ -15,6 +15,7 @@ import type { Plugin } from 'vite'
 import { hash } from 'ohash'
 import { glob } from 'tinyglobby'
 import { generateTypes, loadDocuments, loadSchema, type LoadedDocuments } from './codegen'
+import { generateHandlerFiles } from './scaffold'
 import { WRAP_HINT, defaultExportHelper, findUntaggedDefaultExport, mentionedTables } from './handlers'
 import type { PersistedQueriesMode } from './runtime/types'
 
@@ -61,6 +62,14 @@ export interface ModuleOptions {
    * page. Needs the Vite builder, and stays off without it.
    */
   worker: boolean
+  /**
+   * Write a handler file, with its hooks in place and their bodies empty, for
+   * every query and mutation that has none: `mutations/<name>.ts` and
+   * `queries/<name>.ts` under the handlers directory. Runs when the app is
+   * prepared, built or started, and in dev whenever an operation is added. A
+   * file that exists is never touched. Default `false`.
+   */
+  generateHandlers: boolean
   /** Extra options passed to the `typescript` / `typescript-operations` codegen plugins. */
   codegen: Record<string, unknown>
 }
@@ -78,6 +87,7 @@ export default defineNuxtModule<ModuleOptions>({
     dbName: 'nuxt-airplane',
     persistedQueries: false,
     worker: true,
+    generateHandlers: false,
     codegen: {},
   },
   async setup(options, nuxt) {
@@ -162,8 +172,17 @@ export default defineNuxtModule<ModuleOptions>({
     }
     const usedTables = () => new Set([...mentions.values()].flat())
 
+    /** With `generateHandlers`: a scaffolded file for each operation that has no handler yet. */
+    async function scaffoldHandlers() {
+      if (!options.generateHandlers) return
+      const { written, behindIndex } = await generateHandlerFiles(join(srcDir, options.handlersDir), Object.values(docs.operations))
+      if (written.length) logger.info(`Scaffolded ${written.length} handler file${written.length > 1 ? 's' : ''}:\n${written.map(file => `  ${relative(nuxt.options.rootDir, file)}`).join('\n')}`)
+      for (const folder of behindIndex) logger.warn(`${relative(nuxt.options.rootDir, folder)} has an index file, so only what the index exports is picked up: export the new files from it.`)
+    }
+
     await reloadSchema()
     await reloadDocuments()
+    await scaffoldHandlers()
     await scanSources()
     nuxt.options.watch.push(...docs.files)
 
@@ -289,6 +308,7 @@ export default defineNuxtModule<ModuleOptions>({
     async function regenerate() {
       await reloadSchema()
       await reloadDocuments()
+      await scaffoldHandlers()
       await scanSources()
       await updateTemplates({ filter: t => t.filename.includes('nuxt-airplane') })
     }

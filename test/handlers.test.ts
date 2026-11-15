@@ -1,4 +1,8 @@
-import { describe, expect, it } from 'vitest'
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { declaresHandler, generateHandlerFiles, kebabCase } from '../src/scaffold'
 import { DEFINE_HELPERS, defaultExportHelper, findUntaggedDefaultExport, mentionedTables } from '../src/handlers'
 
 const reason = (source: string) => findUntaggedDefaultExport(source)?.reason ?? null
@@ -57,5 +61,78 @@ describe('what a source file uses', () => {
     expect(mentionedTables('<h1>Site</h1><script setup>const Item = 1</script>', names, false)).toEqual([])
     expect(mentionedTables('const rows = await useAirplane().db.Site.toArray()', names, false)).toEqual(['Site'])
     expect(mentionedTables('db.table("Item").count(); db.table(`Site`)', names, false)).toEqual(['Site', 'Item'])
+  })
+})
+
+describe('generateHandlers', () => {
+  const ops = [
+    { name: 'GetSites', kind: 'query' as const, source: 'query GetSites {\n  sites { id name }\n}' },
+    { name: 'RenameSite', kind: 'mutation' as const, source: 'mutation RenameSite($id: ID!, $name: String!) { renameSite(id: $id, name: $name) { id } }' },
+    { name: 'ArchiveSite', kind: 'mutation' as const, source: 'mutation ArchiveSite($id: ID!) { archiveSite(id: $id) { id } }' },
+    { name: 'SendHTTPPing', kind: 'mutation' as const, source: 'mutation SendHTTPPing { ping }' },
+    { name: 'OnSiteChanged', kind: 'subscription' as const, source: 'subscription OnSiteChanged { siteChanged { id } }' },
+  ]
+  let dir: string
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'airplane-scaffold-'))
+  })
+  afterEach(() => rm(dir, { recursive: true, force: true }))
+  const list = async () => (await readdir(dir, { recursive: true })).filter(f => f.endsWith('.ts')).sort()
+
+  it('names files after the operation', () => {
+    expect(kebabCase('UpdateSiteItemOnHand')).toBe('update-site-item-on-hand')
+    expect(kebabCase('SendHTTPPing')).toBe('send-http-ping')
+    expect(kebabCase('get_sites')).toBe('get-sites')
+  })
+
+  it('tells a declared handler from a name that is only referred to', () => {
+    expect(declaresHandler(`export default defineQueryHandler('GetSites', {})`, 'GetSites')).toBe(true)
+    expect(declaresHandler(`export default defineMutationHandler<'RenameSite'>(\n  "RenameSite", {})`, 'RenameSite')).toBe(true)
+    expect(declaresHandler(`export default defineQueryHandlers({ GetSites: { read() {} } })`, 'GetSites')).toBe(true)
+    expect(declaresHandler(`export default defineMutationHandlers({\n  'RenameSite': {},\n})`, 'RenameSite')).toBe(true)
+    expect(declaresHandler(`export default defineMutationHandler('ArchiveSite', { refetch: ['GetSites'] })`, 'GetSites')).toBe(false)
+    expect(declaresHandler(`// GetSites: handled elsewhere\nexport default defineQueryHandler('GetSite', {})`, 'GetSites')).toBe(false)
+  })
+
+  it('writes a file with empty hooks for each query and mutation, and none for a subscription', async () => {
+    const { written, behindIndex } = await generateHandlerFiles(dir, ops)
+    expect(await list()).toEqual(['mutations/archive-site.ts', 'mutations/rename-site.ts', 'mutations/send-http-ping.ts', 'queries/get-sites.ts'])
+    expect(written).toHaveLength(4)
+    expect(behindIndex).toEqual([])
+
+    const mutation = await readFile(join(dir, 'mutations/rename-site.ts'), 'utf8')
+    expect(mutation).toContain(`export default defineMutationHandler('RenameSite', {`)
+    expect(mutation).toContain('//   mutation RenameSite($id: ID!, $name: String!)')
+    expect(mutation).toMatch(/apply\(\) \{\s*\},/)
+    expect(mutation).toMatch(/reconcile\(\) \{\s*\},/)
+    expect(findUntaggedDefaultExport(mutation)).toBeNull()
+
+    const query = await readFile(join(dir, 'queries/get-sites.ts'), 'utf8')
+    expect(query).toContain(`export default defineQueryHandler('GetSites', {`)
+    expect(query).toContain('//   query GetSites {\n//     sites { id name }\n//   }')
+    expect(query).toMatch(/store\(\) \{\s*\},/)
+    expect(query).toMatch(/read\(\) \{\s*return null\s*\},/)
+  })
+
+  it('leaves alone what has a handler, wherever it is declared, and never overwrites a file', async () => {
+    await mkdir(join(dir, 'mutations'), { recursive: true })
+    await writeFile(join(dir, 'everything.ts'), `export default defineMutationHandlers({ RenameSite: { apply() {} } })`)
+    // Same file name as the scaffold would use, but about something else.
+    await writeFile(join(dir, 'mutations/archive-site.ts'), 'export const mine = true\n')
+    const { written } = await generateHandlerFiles(dir, ops)
+    expect(written.map(f => f.slice(dir.length + 1))).toEqual(['queries/get-sites.ts', 'mutations/send-http-ping.ts'])
+    expect(await readFile(join(dir, 'mutations/archive-site.ts'), 'utf8')).toBe('export const mine = true\n')
+
+    // A second run has nothing left to do, and edits made since are kept.
+    await writeFile(join(dir, 'queries/get-sites.ts'), `export default defineQueryHandler('GetSites', { read: () => null })\n`)
+    expect((await generateHandlerFiles(dir, ops)).written).toEqual([])
+    expect(await readFile(join(dir, 'queries/get-sites.ts'), 'utf8')).toContain('read: () => null')
+  })
+
+  it('says when a new file sits behind an index that has to export it', async () => {
+    await mkdir(join(dir, 'queries'), { recursive: true })
+    await writeFile(join(dir, 'queries/index.ts'), 'export default defineQueryHandlers({})\n')
+    const { behindIndex } = await generateHandlerFiles(dir, ops)
+    expect(behindIndex).toEqual([join(dir, 'queries')])
   })
 })
