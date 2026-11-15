@@ -32,11 +32,14 @@ export default defineNuxtConfig({
 | Option | Default | |
 | --- | --- | --- |
 | `endpoint` | `/api/graphql` | GraphQL endpoint. A relative path is resolved against the app itself. |
-| `schema` | – | SDL file or URL. When omitted the endpoint is introspected. In dev a relative endpoint is introspected once the dev server is up; the last good schema is cached in `node_modules/.cache/nuxt-airplane`. |
+| `schema.source` | – | SDL file or URL. When omitted the endpoint is introspected. In dev a relative endpoint is introspected once the dev server is up; the last good schema is cached in `node_modules/.cache/nuxt-airplane`. |
 | `documents` | `['**/*.gql', '**/*.graphql']` | Globs (relative to `srcDir`) of the files holding your operations. |
-| `handlersDir` | `airplane` | Directory (relative to `srcDir`) scanned for handler files. |
-| `dbName` | `nuxt-airplane` | IndexedDB database name. |
-| `cacheKey` | – | Deploy key (git SHA, build id). A change wipes cached data on next load, outbox kept; a hash of your documents is always mixed in. `NUXT_PUBLIC_AIRPLANE_CACHE_KEY` overrides it. |
+| `schema.headers` | `{}` | Headers for build-time introspection of a protected endpoint. Never shipped. |
+| `handlers.dir` | `airplane` | Directory (relative to `srcDir`) scanned for handler files. |
+| `handlers.worker` | `true` | Run the handlers that write (`store`, `apply`, …) in a web worker. |
+| `handlers.generate` | `false` | Scaffold a handler file with empty hooks for every operation without one. |
+| `database.name` | `nuxt-airplane` | IndexedDB database name. |
+| `database.cacheKey` | – | Deploy key (git SHA, build id). A change wipes cached data on next load, outbox kept; a hash of your documents is always mixed in. `NUXT_PUBLIC_AIRPLANE_CACHE_KEY` overrides it. |
 | `codegen` | `{}` | Extra config for the `typescript` / `typescript-operations` codegen plugins. |
 
 ## Operations
@@ -128,7 +131,7 @@ export default defineAirplaneRequest({
 })
 ```
 
-Headers are computed when a request is sent, so a mutation queued offline goes out later with the token valid at that moment. Static headers go in the `headers` module option; `schemaHeaders` covers build-time introspection of a protected endpoint.
+Headers are computed when a request is sent, so a mutation queued offline goes out later with the token valid at that moment. Static headers go in the `headers` module option; `schema.headers` covers build-time introspection of a protected endpoint.
 
 ## Tables and indexes
 
@@ -156,9 +159,9 @@ export default defineQueryHandlers({
 Rollback works without a `revert` handler: for every row a queued mutation
 changes, in any table, the server's version is kept and put back.
 
-One file per operation also works: `defineMutationHandler('RenameSite', { … })` and `defineQueryHandler('GetSites', { … })` declare a single operation, and a folder with an `index.ts` is imported through its index only, so you can compose there. `generateHandlers: true` in the module options writes such a file, with empty hooks, for every query and mutation that has no handler yet, and never overwrites one.
+One file per operation also works: `defineMutationHandler('RenameSite', { … })` and `defineQueryHandler('GetSites', { … })` declare a single operation, and a folder with an `index.ts` is imported through its index only, so you can compose there. `handlers: { generate: true }` in the module options writes such a file, with empty hooks, for every query and mutation that has no handler yet, and never overwrites one.
 
-When storage runs low, the least recently fetched rows are dropped, never one a queued mutation has changed. The handlers that write (`store`, `apply`, …) run in a web worker, so a large catalog does not hold up the page; they get `db` and `variables` but no Nuxt composables. `worker: false` in the module options keeps them on the page.
+When storage runs low, the least recently fetched rows are dropped, never one a queued mutation has changed. The handlers that write (`store`, `apply`, …) run in a web worker, so a large catalog does not hold up the page; they get `db` and `variables` but no Nuxt composables. `handlers: { worker: false }` in the module options keeps them on the page.
 
 Paginated queries can opt into fetching every page in the background so the whole set is available offline: `prefetch: { next: (data, vars) => data.pageInfo.hasNextPage ? { ...vars, after: data.pageInfo.endCursor } : null, when: () => settings.cacheCatalog }`. `useSync().prefetching` counts the runs in progress.
 
@@ -181,7 +184,7 @@ const { online, syncing, synced, pending, syncTotal, syncCount, lastError, sync,
 
 ## Security
 
-Cached data and the outbox live unencrypted in IndexedDB under your origin: clear them on sign-out with `useAirplane().clear()`, don't queue mutations whose variables you wouldn't store (change-password, card numbers), and render server error messages as text. Credentials are never persisted; `schemaHeaders` never ships. Full notes in the [Security guide](https://treygrr.github.io/nuxt-airplane/guide/security).
+Cached data and the outbox live unencrypted in IndexedDB under your origin: clear them on sign-out with `useAirplane().clear()`, don't queue mutations whose variables you wouldn't store (change-password, card numbers), and render server error messages as text. Credentials are never persisted; `schema.headers` never ships. Full notes in the [Security guide](https://treygrr.github.io/nuxt-airplane/guide/security).
 
 ## Contributing
 

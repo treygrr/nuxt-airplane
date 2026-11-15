@@ -2,6 +2,7 @@ import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promis
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { movedOptions } from '../src/module'
 import { declaresHandler, generateHandlerFiles, kebabCase } from '../src/scaffold'
 import { DEFINE_HELPERS, defaultExportHelper, findUntaggedDefaultExport, mentionedTables } from '../src/handlers'
 
@@ -64,7 +65,22 @@ describe('what a source file uses', () => {
   })
 })
 
-describe('generateHandlers', () => {
+describe('module options', () => {
+  it('names every option still under its old name, with where it went', () => {
+    expect(movedOptions({ endpoint: '/api/graphql', schema: { source: './schema.graphql' }, handlers: { dir: 'airplane' }, database: {} })).toEqual([])
+    expect(movedOptions({ schema: './schema.graphql', schemaHeaders: {}, handlersDir: 'x', generateHandlers: true, worker: false, dbName: 'app', cacheKey: 'v1' })).toEqual([
+      `  schema: '…' → schema: { source: '…' }`,
+      '  schemaHeaders → schema.headers',
+      '  handlersDir → handlers.dir',
+      '  generateHandlers → handlers.generate',
+      '  worker → handlers.worker',
+      '  dbName → database.name',
+      '  cacheKey → database.cacheKey',
+    ])
+  })
+})
+
+describe('handlers.generate', () => {
   const ops = [
     { name: 'GetSites', kind: 'query' as const, source: 'query GetSites {\n  sites { id name }\n}' },
     { name: 'RenameSite', kind: 'mutation' as const, source: 'mutation RenameSite($id: ID!, $name: String!) { renameSite(id: $id, name: $name) { id } }' },

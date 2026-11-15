@@ -19,40 +19,29 @@ import { generateHandlerFiles } from './scaffold'
 import { WRAP_HINT, defaultExportHelper, findUntaggedDefaultExport, mentionedTables } from './handlers'
 import type { PersistedQueriesMode } from './runtime/types'
 
-export interface ModuleOptions {
-  /** URL of the GraphQL endpoint. A path like `/api/graphql` is resolved against the app's own origin. */
-  endpoint: string
+/** Where the GraphQL schema comes from; types are generated from it at build time. */
+export interface SchemaOptions {
   /**
-   * Where the schema comes from: an SDL file or a URL. When omitted the
-   * endpoint is introspected (in dev, once the server is listening).
+   * An SDL file or a URL. When omitted the endpoint is introspected (in dev,
+   * once the server is listening).
    */
-  schema?: string
-  /** Globs, relative to `srcDir`, of the `.gql` / `.graphql` files holding the operations. */
-  documents: string[]
-  /** Directory, relative to `srcDir`, scanned for `defineMutationHandlers` / `defineQueryHandlers` / `defineAirplaneStores` files. */
-  handlersDir: string
-  /** Static headers sent with every request, e.g. an API key. Public: they ship to the browser. */
-  headers?: Record<string, string>
+  source?: string
   /** Headers for build-time introspection of a protected endpoint, e.g. from `process.env`. Never shipped. */
-  schemaHeaders?: Record<string, string>
-  /** Name of the IndexedDB database. */
-  dbName: string
+  headers?: Record<string, string>
+}
+
+/** The files that say what each operation means for the local data, and where they run. */
+export interface HandlersOptions {
+  /** Directory, relative to `srcDir`, scanned for `defineMutationHandlers` / `defineQueryHandlers` / `defineAirplaneStores` files. */
+  dir: string
   /**
-   * Changes to this value wipe the local cache on the next load (the outbox is
-   * kept). Set it per deploy, e.g. a git SHA or build id. A hash of the GraphQL
-   * documents is always mixed in, so editing a query busts the cache on its own.
-   * Overridable at runtime with `NUXT_PUBLIC_AIRPLANE_CACHE_KEY`.
+   * Write a handler file, with its hooks in place and their bodies empty, for
+   * every query and mutation that has none: `mutations/<name>.ts` and
+   * `queries/<name>.ts` under `dir`. Runs when the app is prepared, built or
+   * started, and in dev whenever an operation is added. A file that exists is
+   * never touched. Default `false`.
    */
-  cacheKey?: string
-  /**
-   * Send operations by their SHA-256 hash instead of their text.
-   * - `'automatic'`: Apollo-style automatic persisted queries. The hash is
-   *   sent first; the text follows only when the server answers
-   *   `PersistedQueryNotFound`. Works with any server that supports APQ.
-   * - `'manifest'`: only the hash is ever sent. Register the documents on the
-   *   server from the manifest written to `.nuxt/nuxt-airplane/persisted-queries.json`.
-   */
-  persistedQueries: PersistedQueriesMode
+  generate: boolean
   /**
    * Run the handlers that write to the tables (`store`, `apply`, `describe`,
    * `merge`, `reconcile`, `revert`) in a web worker, so a large response or a
@@ -62,16 +51,62 @@ export interface ModuleOptions {
    * page. Needs the Vite builder, and stays off without it.
    */
   worker: boolean
+}
+
+/** The IndexedDB database that holds the tables and the outbox. */
+export interface DatabaseOptions {
+  /** Name of the database. */
+  name: string
   /**
-   * Write a handler file, with its hooks in place and their bodies empty, for
-   * every query and mutation that has none: `mutations/<name>.ts` and
-   * `queries/<name>.ts` under the handlers directory. Runs when the app is
-   * prepared, built or started, and in dev whenever an operation is added. A
-   * file that exists is never touched. Default `false`.
+   * Changes to this value wipe the local cache on the next load (the outbox is
+   * kept). Set it per deploy, e.g. a git SHA or build id. A hash of the GraphQL
+   * documents is always mixed in, so editing a query busts the cache on its own.
+   * Overridable at runtime with `NUXT_PUBLIC_AIRPLANE_CACHE_KEY`.
    */
-  generateHandlers: boolean
+  cacheKey?: string
+}
+
+export interface ModuleOptions {
+  /** URL of the GraphQL endpoint. A path like `/api/graphql` is resolved against the app's own origin. */
+  endpoint: string
+  /** Static headers sent with every request, e.g. an API key. Public: they ship to the browser. */
+  headers?: Record<string, string>
+  /**
+   * Send operations by their SHA-256 hash instead of their text.
+   * - `'automatic'`: Apollo-style automatic persisted queries. The hash is
+   *   sent first; the text follows only when the server answers
+   *   `PersistedQueryNotFound`. Works with any server that supports APQ.
+   * - `'manifest'`: only the hash is ever sent. Register the documents on the
+   *   server from the manifest written to `.nuxt/nuxt-airplane/persisted-queries.json`.
+   */
+  persistedQueries: PersistedQueriesMode
+  /** Globs, relative to `srcDir`, of the `.gql` / `.graphql` files holding the operations. */
+  documents: string[]
+  /** Where the schema comes from. */
+  schema: SchemaOptions
+  /** The handler files: where they are, whether to scaffold them, where they run. */
+  handlers: HandlersOptions
+  /** The local database. */
+  database: DatabaseOptions
   /** Extra options passed to the `typescript` / `typescript-operations` codegen plugins. */
   codegen: Record<string, unknown>
+}
+
+/** Options from before they were grouped, and where each one went. */
+const MOVED: Record<string, string> = {
+  schemaHeaders: 'schema.headers',
+  handlersDir: 'handlers.dir',
+  generateHandlers: 'handlers.generate',
+  worker: 'handlers.worker',
+  dbName: 'database.name',
+  cacheKey: 'database.cacheKey',
+}
+
+/** The old names that a configuration still uses, each with its new place. */
+export function movedOptions(options: Record<string, unknown>): string[] {
+  const found = Object.keys(MOVED).filter(key => key in options).map(key => `  ${key} → ${MOVED[key]}`)
+  if (typeof options.schema === 'string') found.unshift(`  schema: '…' → schema: { source: '…' }`)
+  return found
 }
 
 export default defineNuxtModule<ModuleOptions>({
@@ -82,12 +117,11 @@ export default defineNuxtModule<ModuleOptions>({
   },
   defaults: {
     endpoint: '/api/graphql',
-    documents: ['**/*.gql', '**/*.graphql'],
-    handlersDir: 'airplane',
-    dbName: 'nuxt-airplane',
     persistedQueries: false,
-    worker: true,
-    generateHandlers: false,
+    documents: ['**/*.gql', '**/*.graphql'],
+    schema: {},
+    handlers: { dir: 'airplane', generate: false, worker: true },
+    database: { name: 'nuxt-airplane' },
     codegen: {},
   },
   async setup(options, nuxt) {
@@ -96,14 +130,18 @@ export default defineNuxtModule<ModuleOptions>({
     const { srcDir } = nuxt.options
     const cacheDir = join(nuxt.options.rootDir, 'node_modules/.cache/nuxt-airplane')
 
+    // An option under its old name would be ignored without a word. Stop instead.
+    const moved = movedOptions(options as unknown as Record<string, unknown>)
+    if (moved.length) throw new Error(`[nuxt-airplane] These options have moved into groups:\n${moved.join('\n')}`)
+
     nuxt.options.runtimeConfig.public.airplane = {
       endpoint: options.endpoint,
-      dbName: options.dbName,
-      cacheKey: options.cacheKey ?? '',
+      dbName: options.database.name,
+      cacheKey: options.database.cacheKey ?? '',
       headers: options.headers ?? {},
       // A string so Nuxt's runtime config typing does not pin it to boolean.
       persistedQueries: options.persistedQueries || '',
-      worker: options.worker,
+      worker: options.handlers.worker,
     }
 
     nuxt.options.build.transpile.push(resolver.resolve('./runtime'))
@@ -119,12 +157,12 @@ export default defineNuxtModule<ModuleOptions>({
     let introspectionUrl = /^https?:\/\//.test(options.endpoint) ? options.endpoint : undefined
 
     // A relative SDL path is relative to the app, not to wherever the build was started from.
-    const schemaSource = options.schema && !/^https?:\/\//.test(options.schema)
-      ? resolve(nuxt.options.rootDir, options.schema)
-      : options.schema
+    const schemaSource = options.schema.source && !/^https?:\/\//.test(options.schema.source)
+      ? resolve(nuxt.options.rootDir, options.schema.source)
+      : options.schema.source
     let schema: GraphQLSchema | null = null
     async function reloadSchema() {
-      schema = await loadSchema({ schema: schemaSource, endpoint: introspectionUrl ?? '', cacheDir, headers: options.schemaHeaders }, logger)
+      schema = await loadSchema({ schema: schemaSource, endpoint: introspectionUrl ?? '', cacheDir, headers: options.schema.headers }, logger)
       if (!schema) logger.warn('No GraphQL schema available yet, operations are untyped')
     }
 
@@ -139,7 +177,7 @@ export default defineNuxtModule<ModuleOptions>({
      * unit: only the index is imported, so it can compose the files beside it.
      */
     async function handlerFiles() {
-      const dir = join(srcDir, options.handlersDir)
+      const dir = join(srcDir, options.handlers.dir)
       const files = (await glob(['**/*.{ts,js,mts,mjs}'], { cwd: dir, absolute: true })).sort()
       const isIndex = (file: string) => /^index\.[mc]?[tj]s$/.test(basename(file))
       const indexDirs = files.filter(isIndex).map(file => dirname(file))
@@ -157,7 +195,7 @@ export default defineNuxtModule<ModuleOptions>({
     // app's source mentions are created.
     // ------------------------------------------------------------------
 
-    const handlersRoot = join(srcDir, options.handlersDir) + sep
+    const handlersRoot = join(srcDir, options.handlers.dir) + sep
     /** Per source file, the inferred tables it mentions. */
     const mentions = new Map<string, string[]>()
     async function scanFile(file: string) {
@@ -172,10 +210,10 @@ export default defineNuxtModule<ModuleOptions>({
     }
     const usedTables = () => new Set([...mentions.values()].flat())
 
-    /** With `generateHandlers`: a scaffolded file for each operation that has no handler yet. */
+    /** With `handlers.generate`: a scaffolded file for each operation that has no handler yet. */
     async function scaffoldHandlers() {
-      if (!options.generateHandlers) return
-      const { written, behindIndex } = await generateHandlerFiles(join(srcDir, options.handlersDir), Object.values(docs.operations))
+      if (!options.handlers.generate) return
+      const { written, behindIndex } = await generateHandlerFiles(join(srcDir, options.handlers.dir), Object.values(docs.operations))
       if (written.length) logger.info(`Scaffolded ${written.length} handler file${written.length > 1 ? 's' : ''}:\n${written.map(file => `  ${relative(nuxt.options.rootDir, file)}`).join('\n')}`)
       for (const folder of behindIndex) logger.warn(`${relative(nuxt.options.rootDir, folder)} has an index file, so only what the index exports is picked up: export the new files from it.`)
     }
@@ -241,9 +279,9 @@ export default defineNuxtModule<ModuleOptions>({
     // Worker
     // ------------------------------------------------------------------
 
-    let useWorker = options.worker
+    let useWorker = options.handlers.worker
     if (useWorker && nuxt.options.builder !== '@nuxt/vite-builder') {
-      logger.info('The worker needs the Vite builder; the handlers stay on the page.')
+      logger.info('`handlers.worker` needs the Vite builder; the handlers stay on the page.')
       useWorker = false
     }
 
@@ -326,7 +364,7 @@ export default defineNuxtModule<ModuleOptions>({
       let devUrl: string | undefined
       let nitroBuilt = false
       function introspectDevServer() {
-        if (introspectionUrl || options.schema || !devUrl || !nitroBuilt) return
+        if (introspectionUrl || options.schema.source || !devUrl || !nitroBuilt) return
         introspectionUrl = new URL(options.endpoint, devUrl).href
         regenerate().catch(error => logger.error('Failed to generate GraphQL types', error))
       }
@@ -344,7 +382,7 @@ export default defineNuxtModule<ModuleOptions>({
       nuxt.hook('builder:watch', async (_event, path) => {
         const abs = join(srcDir, path)
         const isDocument = /\.(?:gql|graphql)$/.test(abs)
-        const isHandler = abs.startsWith(join(srcDir, options.handlersDir))
+        const isHandler = abs.startsWith(join(srcDir, options.handlers.dir))
         if (isDocument || isHandler) return regenerate()
         // Any other source file may have started, or stopped, using a table.
         if (!/\.(?:[mc]?[tj]sx?|vue)$/.test(abs)) return

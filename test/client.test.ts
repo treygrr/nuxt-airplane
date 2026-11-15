@@ -1866,7 +1866,7 @@ describe('engine in a worker', () => {
     const waiting = engine.enqueue('RenameSite', {})
     listeners.error!({ message: 'script failed to load' })
     await expect(waiting).rejects.toThrow('The worker failed: script failed to load')
-    await expect(engine.ready()).rejects.toThrow('worker: false')
+    await expect(engine.ready()).rejects.toThrow('`handlers.worker` to false')
   })
 
   it('brings an error from a handler back to the caller', async () => {

@@ -11,7 +11,7 @@ export default defineNuxtPlugin({
   name: 'nuxt-airplane',
   setup(nuxtApp) {
     const config = useRuntimeConfig().public.airplane as AirplaneRuntimeConfig
-    // With `worker: true`, the handlers that write run in a worker and the page asks it for each write.
+    // With `handlers.worker`, the handlers that write run in a worker and the page asks it for each write.
     // Typed here because the alias resolves to the generated file, where it is `undefined` without the option.
     let worker: Worker | undefined
     try {
