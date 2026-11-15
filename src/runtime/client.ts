@@ -333,7 +333,8 @@ export function createAirplaneClient(options: AirplaneClientOptions) {
   // Keep the pending list live from the outbox table.
   if (!isEngine) {
     liveQuery(() => db.mutations.orderBy('createdAt').toArray())
-      .subscribe({ next: rows => (state.pending = rows) })
+      // A database closed under it (sign-out, a test) ends the list; nothing to report.
+      .subscribe({ next: rows => (state.pending = rows), error: () => {} })
   }
 
   if (!isEngine && typeof window !== 'undefined') {
@@ -1289,8 +1290,9 @@ export function createAirplaneClient(options: AirplaneClientOptions) {
         // Network trouble: leave the rest queued for the next attempt.
         stopped = true
         retryAfter ??= (error as { retryAfter?: number } | null)?.retryAfter
-        state.lastError = error instanceof Error ? error.message : String(error)
+        // Back in the queue before the error shows: whoever reacts to it finds a mutation that can be rolled back.
         await db.mutations.update(row.id, { status: 'pending' }).catch(() => {})
+        state.lastError = error instanceof Error ? error.message : String(error)
         return 'stopped'
       }
     }

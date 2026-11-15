@@ -1876,6 +1876,7 @@ describe('engine in a worker', () => {
     await first.client.fetchQuery('GetSites', undefined)
     first.client.goOffline()
     await first.client.enqueue('RenameSite', { id: 's1', name: 'Kept' })
+    await until(() => first.client.state.pending.length === 1, 'the pending list')
     const dbName = first.client.db.name
     first.client.db.close()
 
