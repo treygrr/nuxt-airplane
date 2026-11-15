@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { reactive } from 'vue'
 import { backoffDelay, createAirplaneClient, parseRetryAfter, queryKey, isTempId, mergeStores, newTempId, substituteTempIds, withDependents, type AirplaneClient, type AirplaneClientOptions } from '../src/runtime/client'
 import { describeChanges } from '../src/runtime/db'
+import { createEngine, type AirplaneEngineOptions } from '../src/runtime/engine'
 import { remoteEngine, serveEngine, type Port } from '../src/runtime/worker'
 import type { AirplaneDexie, AirplaneRequestContext, AirplaneRequestOptions, MutationHandlers, OperationDocument, QueryHandlers } from '../src/runtime/types'
 
@@ -1805,13 +1806,18 @@ describe('engine in a worker', () => {
     return { page: end(0), worker: end(1) }
   }
 
+  /** The worker's side: an engine by itself, with no client around it. */
+  function createTestEngine(extra: Partial<AirplaneEngineOptions> & { dbName: string }) {
+    return createEngine({ documentsHash: 'h1', documents, entities: ENTITIES, mutationHandlers: {}, queryHandlers: siteQueries, stores: { stores: {} }, ...extra })
+  }
+
   /** A client whose every write goes over a channel to an engine on the same database. */
   function createWorkerClient(handlers: MutationHandlers, extra: Partial<AirplaneClientOptions> = {}) {
     const dbName = `test-worker-${++n}`
     const { page, worker } = channel()
     const calls: string[] = []
     serveEngine(worker, () => {
-      const engine = createClient(server, { dbName, mutationHandlers: handlers, role: 'engine', ...extra }).engine
+      const engine = createTestEngine({ dbName, mutationHandlers: handlers, ...extra })
       return Object.fromEntries(Object.entries(engine).map(([method, fn]) => [method, (...args: unknown[]) => {
         calls.push(method)
         return (fn as (...args: unknown[]) => unknown)(...args)
@@ -1891,7 +1897,7 @@ describe('engine in a worker', () => {
     first.client.db.close()
 
     const { page, worker } = channel()
-    serveEngine(worker, () => createClient(server, { dbName, mutationHandlers: siteHandlers, role: 'engine', documentsHash: 'h2' }).engine)
+    serveEngine(worker, () => createTestEngine({ dbName, mutationHandlers: siteHandlers, documentsHash: 'h2' }))
     const client = createClient(server, { dbName, mutationHandlers: siteHandlers, documentsHash: 'h2', remote: remoteEngine(page, { endpoint: '', dbName }) })
     client.goOffline()
     await client.ready
