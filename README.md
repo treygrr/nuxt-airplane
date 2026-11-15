@@ -104,8 +104,8 @@ export default defineMutationHandlers({
     describe: ({ variables }) => `Rename site to ${variables.name}`,
     // Optional: merge the server's response once it has been sent.
     reconcile: ({ db, variables }, result) => { /* ... */ },
-    // Optional: undo `apply`. When omitted, the rows `apply` touched are
-    // snapshotted and restored on rollback.
+    // Optional: runs on rollback, for side effects outside the database.
+    // The rows `apply` changed go back to the server's version by themselves.
     revert: ({ db, variables }) => { /* ... */ },
     // Queries to refetch after the server accepted it. Defaults to every active query.
     refetch: ['GetSites'],
@@ -153,8 +153,8 @@ export default defineQueryHandlers({
 })
 ```
 
-Rollback works without a `revert` handler: writes made during `apply`, to any
-table, are recorded by an undo log.
+Rollback works without a `revert` handler: for every row a queued mutation
+changes, in any table, the server's version is kept and put back.
 
 One file per operation also works: `defineMutationHandler('RenameSite', { … })` and `defineQueryHandler('GetSites', { … })` declare a single operation, and a folder with an `index.ts` is imported through its index only, so you can compose there.
 

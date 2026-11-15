@@ -63,31 +63,18 @@ export interface QueryRow {
 
 export type MutationStatus = 'pending' | 'syncing' | 'failed'
 
-/** A step from a row down to one of its pieces: a field name, or the id of a list element. */
-export type UndoStep = string | { id: string }
-
-/** One piece of a row that `apply` changed, with what was there before. */
-export interface UndoOp {
-  /** Where the piece is; the last step names it. */
-  path: UndoStep[]
-  /** Whether it existed. If not, undo removes it. */
-  had: boolean
-  /** What it was. */
-  value?: unknown
-  /** Where a removed list element sat. */
-  index?: number
-}
-
-/** What `apply` did to one row, as what it takes to undo it. */
-export interface UndoEntry {
+/**
+ * The server's version of a row the queue has changed. The data tables show
+ * that row with the queued mutations applied; this is what it goes back to
+ * when they are taken off.
+ */
+export interface BaseRow {
   table: string
   key: IndexableType
-  /** The row did not exist: undo deletes it. */
-  created?: true
-  /** The row as it was, when it was deleted or replaced whole: undo puts it back. */
-  before?: unknown
-  /** Otherwise the pieces that changed: undo puts back those and nothing else. */
-  ops?: UndoOp[]
+  /** The row as the server has it. */
+  row?: unknown
+  /** The server has no such row: a queued mutation created it. */
+  absent?: 1
 }
 
 /** A queued mutation waiting to reach the server. */
@@ -100,8 +87,8 @@ export interface MutationRow {
   /** Human-readable summary from the handler's `describe`, or the humanized document name. */
   description: string
   error?: string
-  /** Writes made by `apply`, oldest first, used to roll the mutation back. */
-  undo?: UndoEntry[]
+  /** The rows `apply` changed, as `[table, key]`: what goes back to the server's version when it is taken off. */
+  keys?: [string, IndexableType][]
   /**
    * Ids handed out by `tempId()` while `apply` ran, in call order. A re-apply
    * (rebase) hands out the same ones so the local rows keep their ids. Each
@@ -146,6 +133,7 @@ export type AirplaneDexie = Dexie & {
   queries: EntityTable<QueryRow, 'key'>
   mutations: EntityTable<MutationRow, 'id'>
   meta: EntityTable<MetaRow, 'key'>
+  base: Table<BaseRow, [string, IndexableType]>
 } & {
   [K in keyof NuxtAirplaneStores]: Table<NuxtAirplaneStores[K], IndexableType>
 }
