@@ -1,10 +1,11 @@
 import { Dexie, liveQuery } from 'dexie'
 import { hash } from 'ohash'
 import { reactive, computed, shallowRef, readonly } from 'vue'
-import { BOOKKEEPING_TABLES, MODULE_STORES, createDb, describeChanges, putRow, quietly, record, rowKey, thingPath, type RowChange } from './db'
+import { BOOKKEEPING_TABLES, MODULE_STORES, createDb, describeChanges, isQuotaError, putRow, quietly, record, rowKey, thingPath, track, type RowChange } from './db'
 import type { IndexableType } from 'dexie'
 import {
   GraphQLRequestError,
+  type AirplaneEngine,
   type EntityInfo,
   type GraphQLResponse,
   type MutationHandlers,
@@ -33,6 +34,12 @@ export interface AirplaneClientOptions extends AirplaneRuntimeConfig {
   request: AirplaneRequestOptions
   /** Runs a function inside the Nuxt app context (so composables work in `headers`). */
   runWithContext?: <T>(fn: () => T) => T | Promise<Awaited<T>>
+  /** The engine running in a web worker. The client then leaves every write to the tables to it. */
+  remote?: AirplaneEngine
+  /** `'engine'`: this is the worker's side. It writes when asked and neither sends nor syncs. */
+  role?: 'engine'
+  /** Names of inferred tables left out because nothing in the app mentions them. */
+  unusedEntities?: string[]
 }
 
 /** What `useQuery` observes: the live result of `read` plus the fetch record. */
@@ -87,15 +94,18 @@ export function queryKey(name: string, variables: unknown) {
 const TEMP_ID_PREFIX = 'tmp-'
 const TEMP_ID_RE = /^tmp-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 
-/** A fresh placeholder id: `tmp-` plus a UUID. */
-export function newTempId() {
-  const uuid = typeof crypto === 'object' && typeof crypto.randomUUID === 'function'
+function uuid() {
+  return typeof crypto === 'object' && typeof crypto.randomUUID === 'function'
     ? crypto.randomUUID()
     : 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
         const r = (Math.random() * 16) | 0
         return (c === 'x' ? r : (r & 0x3) | 0x8).toString(16)
       })
-  return `${TEMP_ID_PREFIX}${uuid}`
+}
+
+/** A fresh placeholder id: `tmp-` plus a UUID. */
+export function newTempId() {
+  return `${TEMP_ID_PREFIX}${uuid()}`
 }
 
 /** Whether a value is an id minted by `tempId()`. */
@@ -171,6 +181,32 @@ export function retryLaterByDefault(error: GraphQLRequestError) {
     || error.errors.some(e => ['UNAUTHENTICATED', 'TOO_MANY_REQUESTS', 'RATE_LIMITED'].includes(String(e.extensions?.code)))
 }
 
+/** The milliseconds a `Retry-After` header asks to wait: a number of seconds, or a date. */
+export function parseRetryAfter(value: string | null, now = Date.now()): number | undefined {
+  if (!value) return undefined
+  const ms = /^\s*\d+(?:\.\d+)?\s*$/.test(value) ? Number(value) * 1000 : Date.parse(value) - now
+  return Number.isFinite(ms) ? Math.max(0, ms) : undefined
+}
+
+/** First wait after a sync that could not get through, doubled each time up to the cap. */
+const BACKOFF_BASE = 1000
+const BACKOFF_MAX = 5 * 60_000
+/** A server may ask for longer than the cap, but not for ever. */
+const RETRY_AFTER_MAX = 60 * 60_000
+
+/** How long to wait before attempt number `failures` + 1: exponential, with jitter so clients do not return together. */
+export function backoffDelay(failures: number, retryAfter?: number, random = Math.random()) {
+  if (retryAfter !== undefined) return Math.min(retryAfter, RETRY_AFTER_MAX)
+  return Math.min(BACKOFF_MAX, BACKOFF_BASE * 2 ** failures) * (0.5 + random / 2)
+}
+
+/** Mutations in flight at once, unless `concurrency` says otherwise. */
+const SYNC_LANES = 4
+/** Share of the browser's allowance in use above which the oldest cached rows are dropped. */
+const STORAGE_HIGH_WATER = 0.9
+/** At most one look at the allowance per this many milliseconds. */
+const STORAGE_CHECK_EVERY = 30_000
+
 export type AirplaneClient = ReturnType<typeof createAirplaneClient>
 
 /**
@@ -196,6 +232,18 @@ export function createAirplaneClient(options: AirplaneClientOptions) {
   const entities = options.entities ?? {}
   const db = createDb(options.dbName, mergeStores(entities, options.stores.stores), options.stores.version)
   const { documents, mutationHandlers, queryHandlers } = options
+  const isEngine = options.role === 'engine'
+
+  // A table that was left out reads as `undefined` on `db`. Say why instead.
+  for (const name of options.unusedEntities ?? []) {
+    if (name in db) continue
+    Object.defineProperty(db, name, {
+      configurable: true,
+      get() {
+        throw new Error(`[nuxt-airplane] The table "${name}" was not created because nothing in the app mentions it. Use it as \`db.${name}\`, or list it in defineAirplaneStores({ ${name}: '' }) if it is only reached by a computed name.`)
+      },
+    })
+  }
 
   // A schema that no longer matches what is on disk (lowered version, changed
   // primary key) cannot be opened. This is a cache, so start over rather than
@@ -231,6 +279,8 @@ export function createAirplaneClient(options: AirplaneClientOptions) {
    * with data stored under the new one.
    */
   const ready = opened.then(async () => {
+    // With a worker, the cache is its to check and clear.
+    if (options.remote) return options.remote.ready()
     const stored = (await db.meta.get('cacheKey'))?.value
     if (stored !== undefined && stored !== cacheKey) {
       if (import.meta.dev) console.info(`[nuxt-airplane] Cache key changed, clearing cached data (outbox kept).`)
@@ -272,6 +322,8 @@ export function createAirplaneClient(options: AirplaneClientOptions) {
     syncCount: 0,
     /** Current pending list could not be sent because of a network error */
     lastError: null as string | null,
+    /** When the next attempt is due after a sync that could not get through, as a timestamp. */
+    retryAt: null as number | null,
     /** Paginated queries currently being walked to the end by `prefetch`. */
     prefetching: 0,
   })
@@ -279,10 +331,13 @@ export function createAirplaneClient(options: AirplaneClientOptions) {
   const synced = computed(() => !state.syncing && state.pending.length === 0)
 
   // Keep the pending list live from the outbox table.
-  liveQuery(() => db.mutations.orderBy('createdAt').toArray())
-    .subscribe({ next: rows => (state.pending = rows) })
+  if (!isEngine) {
+    liveQuery(() => db.mutations.orderBy('createdAt').toArray())
+      // A database closed under it (sign-out, a test) ends the list; nothing to report.
+      .subscribe({ next: rows => (state.pending = rows), error: () => {} })
+  }
 
-  if (typeof window !== 'undefined') {
+  if (!isEngine && typeof window !== 'undefined') {
     window.addEventListener('online', () => {
       state.networkOnline = true
       void sync()
@@ -346,24 +401,30 @@ export function createAirplaneClient(options: AirplaneClientOptions) {
    */
   let persistedUnsupported = false
 
-  async function request<T>(name: string, variables: unknown): Promise<T> {
+  async function request<T>(name: string, variables: unknown, idempotencyKey?: string): Promise<T> {
     const doc = document(name)
-    const ctx: AirplaneRequestContext = { document: name, kind: doc.kind, variables }
+    const ctx: AirplaneRequestContext = { document: name, kind: doc.kind, variables, ...(idempotencyKey && { idempotencyKey }) }
     const mode = options.persistedQueries
-    const extensions = mode && doc.hash && !persistedUnsupported
+    const persisted = mode && doc.hash && !persistedUnsupported
       ? { persistedQuery: { version: 1, sha256Hash: doc.hash } }
       : undefined
+    // The same key on every attempt lets the server answer a retry without applying it twice.
+    const extensions = (withPersisted: boolean) => {
+      const out = { ...(withPersisted && persisted), ...(idempotencyKey && { idempotencyKey }) }
+      return Object.keys(out).length ? out : undefined
+    }
 
-    let { res, body } = await post<T>(ctx, { variables: variables ?? undefined, extensions, query: extensions ? undefined : doc.source })
-    if (extensions && mode === 'automatic') {
+    let { res, body } = await post<T>(ctx, { variables: variables ?? undefined, extensions: extensions(true), query: persisted ? undefined : doc.source })
+    if (persisted && mode === 'automatic') {
       const miss = persistedQueryError(body)
       if (miss === 'PersistedQueryNotSupported') persistedUnsupported = true
       // Not found: send the text along with the hash so the server registers
       // it. Not supported: send the text alone, and keep doing so.
-      if (miss) ({ res, body } = await post<T>(ctx, { variables: variables ?? undefined, query: doc.source, extensions: miss === 'PersistedQueryNotFound' ? extensions : undefined }))
+      if (miss) ({ res, body } = await post<T>(ctx, { variables: variables ?? undefined, query: doc.source, extensions: extensions(miss === 'PersistedQueryNotFound') }))
     }
-    if (body.errors?.length) throw new GraphQLRequestError(body.errors, res.status)
-    if (!res.ok) throw new Error(`[nuxt-airplane] ${res.status} ${res.statusText}`)
+    const retryAfter = parseRetryAfter(res.headers.get('retry-after'))
+    if (body.errors?.length) throw new GraphQLRequestError(body.errors, res.status, retryAfter)
+    if (!res.ok) throw Object.assign(new Error(`[nuxt-airplane] ${res.status} ${res.statusText}`), { retryAfter })
     // A 200 without `data` (proxy page, empty body) must not end up in the cache.
     if (body.data == null) throw new Error('[nuxt-airplane] Response has no data')
     return body.data as T
@@ -386,7 +447,7 @@ export function createAirplaneClient(options: AirplaneClientOptions) {
     return !!queryHandler(name)?.read
   }
 
-  if (import.meta.dev) {
+  if (import.meta.dev && !isEngine) {
     const unhandled = Object.values(documents).filter(d => d.kind === 'query' && !readable(d.name)).map(d => `"${d.name}"`)
     if (unhandled.length) console.warn(`[nuxt-airplane] No query handler with \`read\` for ${unhandled.join(', ')}: served from the network only, nothing to show offline.`)
   }
@@ -408,7 +469,9 @@ export function createAirplaneClient(options: AirplaneClientOptions) {
   async function storeResponse(name: string, variables: unknown, data: unknown) {
     const h = queryHandler(name)
     if (!h?.store && !h?.read) return
-    const fetched = () => db.queries.put({ key: queryKey(name, variables), document: name, variables, updatedAt: Date.now() })
+    const key = queryKey(name, variables)
+    const fetched = (rows?: [string, IndexableType][]) =>
+      db.queries.put({ key, document: name, variables, updatedAt: Date.now(), ...(rows && { rows }) })
     if (!h.store) {
       await fetched()
       return
@@ -417,6 +480,7 @@ export function createAirplaneClient(options: AirplaneClientOptions) {
     await quietly(db, async () => {
       // A queued mutation that found nothing to change may find its row in this response.
       let again = (await queued()).some(m => !m.keys?.length && mutationHandler(m.document)?.apply)
+      const brought = track()
       // No row has a server version set aside: there is no second layer to keep apart.
       if (!await db.base.count()) await store()
       else {
@@ -427,17 +491,139 @@ export function createAirplaneClient(options: AirplaneClientOptions) {
           again = true
         }
       }
+      brought.stop()
       if (again) await rebuild()
-      await fetched()
+      // The record keeps the rows of earlier fetches too, so one the server stopped returning can still be dropped.
+      for (const row of (await db.queries.get(key))?.rows ?? []) {
+        if (!brought.rows.has(sameRow(row))) brought.rows.set(sameRow(row), row)
+      }
+      const rows = [...brought.rows.values()]
+      await learnTables(name, rows)
+      await fetched(rows)
     })
   }
 
-  async function fetchQuery<T>(name: string, variables: unknown): Promise<T> {
-    await ready
-    const data = await request<T>(name, variables)
-    await storeResponse(name, variables, data)
-    if (queryHandler(name)?.prefetch) void prefetch(name, variables, data)
-    return data
+  // --------------------------------------------------------------------------
+  // Which tables a query fills (meta table)
+  //
+  // Learned from what its `store` writes, and kept: after a sync, a query is
+  // refetched when a mutation changed a table it fills.
+  // --------------------------------------------------------------------------
+
+  const QUERY_TABLES_KEY = 'queryTables'
+  let knownTables: Record<string, string[]> | undefined
+
+  async function readQueryTables(): Promise<Record<string, string[]>> {
+    const raw = (await db.meta.get(QUERY_TABLES_KEY))?.value
+    return raw ? JSON.parse(raw) as Record<string, string[]> : {}
+  }
+
+  async function learnTables(name: string, rows: [string, IndexableType][]) {
+    knownTables ??= await readQueryTables()
+    const known = knownTables[name] ?? []
+    const added = [...new Set(rows.map(([table]) => table))].filter(table => !known.includes(table))
+    if (!added.length) return
+    knownTables = { ...knownTables, [name]: [...known, ...added] }
+    await db.meta.put({ key: QUERY_TABLES_KEY, value: JSON.stringify(knownTables) })
+  }
+
+  // --------------------------------------------------------------------------
+  // Room
+  //
+  // A cache that only grows meets the browser's allowance sooner or later.
+  // Each fetch record lists the rows its `store` wrote, so the least recently
+  // fetched can go, rows and record together, when room runs out. A row the
+  // queue has changed, or that a record being kept lists too, stays.
+  // --------------------------------------------------------------------------
+
+  async function evict(keep: string[] = []): Promise<number> {
+    return quietly(db, async () => {
+      const kept = new Set(keep)
+      const records = await db.queries.orderBy('updatedAt').toArray()
+      const candidates = records.filter(r => !kept.has(r.key) && r.rows?.length)
+      // The oldest quarter: enough to matter, not the whole cache at once.
+      const out = candidates.slice(0, Math.ceil(candidates.length / 4))
+      if (!out.length) return 0
+      const going = new Set(out.map(r => r.key))
+      const held = new Set<string>()
+      for (const r of records) {
+        if (!going.has(r.key)) r.rows?.forEach(row => held.add(sameRow(row)))
+      }
+      for (const m of await queued()) m.keys?.forEach(row => held.add(sameRow(row)))
+      let dropped = 0
+      for (const { rows } of out) {
+        for (const row of rows!) {
+          if (held.has(sameRow(row))) continue
+          held.add(sameRow(row))
+          await putRow(db, row[0], row[1], undefined)
+          dropped++
+        }
+      }
+      await db.queries.bulkDelete(out.map(r => r.key))
+      if (import.meta.dev) console.info(`[nuxt-airplane] Storage is running low: dropped ${dropped} cached rows from the ${out.length} least recently fetched queries.`)
+      return dropped
+    })
+  }
+
+  /**
+   * Runs a write. If the browser refuses it for lack of room, the oldest
+   * cached rows go and the write is tried once more.
+   */
+  async function withRoom<T>(fn: () => Promise<T>): Promise<T> {
+    try {
+      return await fn()
+    }
+    catch (error) {
+      if (!isQuotaError(error) || !await write.evict([...active.keys()])) throw error
+      return fn()
+    }
+  }
+
+  let storageChecked = 0
+
+  /** Drops the oldest cached rows before the allowance is reached, so a write does not have to fail first. */
+  async function keepRoom() {
+    const storage = typeof navigator === 'object' ? navigator.storage : undefined
+    if (!storage?.estimate || Date.now() - storageChecked < STORAGE_CHECK_EVERY) return
+    storageChecked = Date.now()
+    const { usage, quota } = await storage.estimate()
+    if (usage && quota && usage / quota > STORAGE_HIGH_WATER) await write.evict([...active.keys()])
+  }
+
+  /** Stores a response through the engine, making room if it has to. */
+  async function keep(name: string, variables: unknown, data: unknown) {
+    await withRoom(() => write.storeResponse(name, variables, data))
+    void keepRoom().catch(() => {})
+  }
+
+  /** Fetches under way, by query key, and how many mutations had been accepted when each started. */
+  const inflight = new Map<string, { accepted: number, promise: Promise<unknown> }>()
+  /** Mutations the server has accepted this session. A fetch started before the last one may be stale. */
+  let accepted = 0
+
+  /**
+   * Fetches a query and stores the response. Callers asking for the same
+   * query while it is on its way share the one request, unless a mutation
+   * has been accepted since it left: then it may not show that change.
+   */
+  function fetchQuery<T>(name: string, variables: unknown): Promise<T> {
+    const key = queryKey(name, variables)
+    const current = inflight.get(key)
+    if (current?.accepted === accepted) return current.promise as Promise<T>
+    const entry = {
+      accepted,
+      promise: (async () => {
+        await ready
+        const data = await request<T>(name, variables)
+        await keep(name, variables, data)
+        if (queryHandler(name)?.prefetch) void prefetch(name, variables, data)
+        return data
+      })().finally(() => {
+        if (inflight.get(key) === entry) inflight.delete(key)
+      }),
+    }
+    inflight.set(key, entry)
+    return entry.promise
   }
 
   /** Documents whose remaining pages are being fetched right now. */
@@ -461,7 +647,7 @@ export function createAirplaneClient(options: AirplaneClientOptions) {
         if (!next) break
         vars = next
         page = await request(name, vars)
-        await storeResponse(name, vars, page)
+        await keep(name, vars, page)
         pages++
       }
     }
@@ -495,11 +681,25 @@ export function createAirplaneClient(options: AirplaneClientOptions) {
     return { snapshot: readonly(snapshot), unsubscribe: () => subscription.unsubscribe() }
   }
 
-  async function refetchActive(only?: Iterable<QueryName>) {
+  /**
+   * Refetches mounted queries: all of them, or those named, or those that
+   * fill one of `tables`. A query that has not shown which tables it fills
+   * (never fetched, or nothing came back) is refetched to be safe.
+   */
+  async function refetchActive(only?: Iterable<QueryName>, tables?: Set<string>) {
     const names = only && [...only]
+    const fills = tables?.size ? await readQueryTables() : {}
+    const wanted = (key: string) => {
+      if (!names) return true
+      const name = key.slice(0, key.lastIndexOf(':'))
+      if (names.includes(name as QueryName)) return true
+      if (!tables?.size) return false
+      const known = fills[name]
+      return !known || known.some(table => tables.has(table))
+    }
     await Promise.allSettled(
       [...active.entries()]
-        .filter(([key]) => !names || names.some(name => key.startsWith(`${name}:`)))
+        .filter(([key]) => wanted(key))
         .map(([, refresh]) => refresh()),
     )
   }
@@ -769,24 +969,72 @@ export function createAirplaneClient(options: AirplaneClientOptions) {
     return humanize(name)
   }
 
-  async function enqueue(name: string, input: unknown) {
+  /**
+   * The queued mutation a new one of the same document could be folded into,
+   * newest first, and the variables of the two as one. Only a mutation that
+   * has never been sent: the server may have seen one that was, and would
+   * take a changed version of it for a retry.
+   */
+  async function mergeTarget(name: string, variables: unknown) {
+    const merge = mutationHandler(name)?.merge as ((a: unknown, b: unknown) => unknown) | undefined
+    if (!merge) return
+    for (const row of (await queued()).reverse()) {
+      if (row.document !== name || row.status !== 'pending' || row.attempts) continue
+      const merged = merge(row.variables, variables)
+      if (merged) return { id: row.id, variables: row.variables, merged, description: await describeMutation(name, merged) }
+    }
+  }
+
+  const union = <T>(a: T[] = [], b: T[] = []) => [...new Set([...a, ...b])]
+
+  /**
+   * Folds the mutation just queued into `target`, if that still holds: the
+   * target is as it was found, the new one minted nothing, and nothing
+   * queued between the two has to do with the new one. Its effect is on the
+   * tables already, so the target only takes over its variables and what it
+   * changed. Resolves with the merged row, or nothing when the two stay apart.
+   */
+  async function mergeInto(target: NonNullable<Awaited<ReturnType<typeof mergeTarget>>>, row: MutationRow) {
+    const rows = await queued()
+    const into = rows.find(m => m.id === target.id)
+    if (!into || into.status !== 'pending' || into.attempts || row.tempIds?.length || hash(into.variables) !== hash(target.variables)) return
+    const between = rows.slice(rows.indexOf(into) + 1).filter(m => m.id !== row.id)
+    const tied = (m: MutationRow) => !m.keys?.length || row.dependsOn?.includes(m.id) || row.after?.includes(m.id) || sharesRows(row, [m])
+    if (between.some(tied)) return
+    const others = (ids?: number[]) => ids?.filter(id => id !== into.id)
+    await db.mutations.delete(row.id)
+    await db.mutations.update(into.id, {
+      variables: target.merged,
+      description: target.description,
+      keys: [...new Map([...(into.keys ?? []), ...(row.keys ?? [])].map(k => [sameRow(k), k])).values()],
+      creates: union(into.creates, row.creates),
+      writes: union(into.writes, row.writes),
+      dependsOn: union(into.dependsOn, others(row.dependsOn)),
+      after: union(into.after, others(row.after)),
+    })
+    return (await db.mutations.get(into.id))!
+  }
+
+  async function enqueueLocal(name: string, input: unknown) {
     if (document(name).kind !== 'mutation') throw new Error(`[nuxt-airplane] "${name}" is not a mutation`)
     await ready
     // A placeholder the server has already named is its real id from the start.
     const named = substituteTempIds(input, await readTempIds()).value
     const description = await describeMutation(name, named)
+    const target = await mergeTarget(name, named)
     // One transaction: the mutation is queued with its effect applied and its
     // dependencies known, or not at all if `apply` throws, and no rebase can
     // find it half-queued.
     let queuedAs: number | undefined
-    const row = await db.transaction('rw', db.tables, async () => {
+    return db.transaction('rw', db.tables, async () => {
       const variables = substituteTempIds(named, await readTempIds()).value
       // The queue is ordered by this, so it must not step back with the clock.
       const createdAt = Math.max(Date.now(), (await db.mutations.orderBy('createdAt').last())?.createdAt ?? 0)
-      const id = queuedAs = await db.mutations.add({ document: name, variables, description, status: 'pending', createdAt } as MutationRow)
+      const id = queuedAs = await db.mutations.add({ document: name, variables, description, status: 'pending', createdAt, idempotencyKey: uuid() } as MutationRow)
       const did = await applyMutation((await db.mutations.get(id))!)
       await db.mutations.update(id, await linksOf(id, variables, did))
-      return (await db.mutations.get(id))!
+      const row = (await db.mutations.get(id))!
+      return (target && await mergeInto(target, row)) || row
     }).catch(async (error) => {
       // An abort removes the row. An `apply` that awaited something other
       // than a Dexie operation made the transaction commit instead, row
@@ -794,6 +1042,14 @@ export function createAirplaneClient(options: AirplaneClientOptions) {
       if (queuedAs !== undefined) await db.mutations.delete(queuedAs)
       throw error
     })
+  }
+
+  /**
+   * Applies a mutation to the tables and queues it for the server. Resolves
+   * with its outbox row, or with the row it was merged into.
+   */
+  async function enqueue(name: string, input: unknown) {
+    const row = await withRoom(() => write.enqueue(name, input))
     void sync()
     return row
   }
@@ -810,7 +1066,7 @@ export function createAirplaneClient(options: AirplaneClientOptions) {
    * gone). One that still does something stays queued on its own, such as a
    * corrected save of the same row. Resolves with the mutations it dropped.
    */
-  async function rollback(id: number): Promise<MutationRow[]> {
+  async function rollbackLocal(id: number): Promise<MutationRow[]> {
     const target = await db.mutations.get(id)
     if (!target || target.status === 'syncing') return []
     // The hook is for what `apply` did outside the database, so it runs outside the transaction.
@@ -845,9 +1101,19 @@ export function createAirplaneClient(options: AirplaneClientOptions) {
       }
       return gone
     })
+    return dropped
+  }
+
+  async function rollback(id: number): Promise<MutationRow[]> {
+    const dropped = await write.rollback(id)
     // Nothing was waiting on it any more, but the network may be back.
     void sync()
     return dropped
+  }
+
+  /** Runs a mutation's `reconcile` with the server's answer. */
+  async function reconcileLocal(name: string, variables: unknown, tempIds: string[], result: unknown) {
+    await mutationHandler(name)?.reconcile?.(reconcileContext(variables, tempIds), result as never)
   }
 
   /**
@@ -923,71 +1189,176 @@ export function createAirplaneClient(options: AirplaneClientOptions) {
     })
   }
 
+  let retryTimer: ReturnType<typeof setTimeout> | undefined
+  /** Syncs in a row that could not get through. */
+  let failures = 0
+
+  function cancelRetry() {
+    clearTimeout(retryTimer)
+    retryTimer = undefined
+    state.retryAt = null
+  }
+
+  /**
+   * A sync that the network or the server stopped is tried again on its own,
+   * later each time, or when the server said to (`Retry-After`).
+   */
+  function retryLater(retryAfter?: number) {
+    const delay = backoffDelay(failures++, retryAfter)
+    cancelRetry()
+    state.retryAt = Date.now() + delay
+    retryTimer = setTimeout(() => {
+      retryTimer = undefined
+      state.retryAt = null
+      void sync().catch(() => {})
+    }, delay)
+    // Never the reason a process stays alive (Node, tests).
+    ;(retryTimer as { unref?: () => void }).unref?.()
+  }
+
+  type Outcome = 'sent' | 'held' | 'stopped' | 'gone'
+
+  /**
+   * One run over the queue. Mutations that have nothing to do with each other
+   * go out side by side, up to `concurrency` at once. One that is linked to
+   * an earlier one, or changed a row an earlier one changed, waits for it. A
+   * mutation without an `apply`, or whose `apply` changed nothing, could be
+   * about anything: it waits for everything before it and everything after
+   * waits for it.
+   */
   async function runSync() {
     await ready
     if (!state.online) return
     const queue = await sendable()
     if (!queue.length) return
 
+    cancelRetry()
     state.syncing = true
     state.syncTotal = queue.length
     state.syncCount = 0
     state.lastError = null
     const refetch = new Set<QueryName>()
+    const tables = new Set<string>()
     let refetchAll = false
+    /** A network failure, or an answer about the session: nothing more is started. */
+    let stopped = false
+    let retryAfter: number | undefined
 
-    /** Rows this batch failed to send, and the rows below them: they stay queued. */
-    const held = new Set<number>()
-    try {
-      for (const row of queue) {
-        if (row.dependsOn?.some(id => held.has(id)) || row.after?.some(id => held.has(id))) {
-          held.add(row.id)
-          continue
-        }
-        // Rolled back while an earlier row of this batch was in flight: it is gone, do not send it.
-        if (!await db.mutations.update(row.id, { status: 'syncing' })) continue
+    async function send(snapshot: MutationRow): Promise<Outcome> {
+      // As it is now, not as the batch found it: a later edit may have been merged into it since. Gone if rolled back.
+      const row = await db.transaction('rw', db.mutations, async () => {
+        const current = await db.mutations.get(snapshot.id)
+        if (current?.status !== 'pending') return
+        await db.mutations.update(current.id, { status: 'syncing', attempts: (current.attempts ?? 0) + 1 })
+        return current
+      })
+      if (!row) return 'gone'
+      try {
+        // An earlier row of this batch may have resolved a temp id this one
+        // carries. Rewriting the row too keeps a later rebase on the real id.
+        const variables = await outboundVariables(row.document, row.variables)
+        if (variables !== row.variables) await db.mutations.update(row.id, { variables })
+        const result = await request(row.document, variables, row.idempotencyKey)
+        const h = mutationHandler(row.document)
         try {
-          // An earlier row of this batch may have resolved a temp id this one
-          // carries. Rewriting the row too keeps a later rebase on the real id.
-          const variables = await outboundVariables(row.document, row.variables)
-          if (variables !== row.variables) await db.mutations.update(row.id, { variables })
-          const result = await request(row.document, variables)
-          const h = mutationHandler(row.document)
-          try {
-            await h?.reconcile?.(reconcileContext(variables, row.tempIds), result as never)
-          }
-          catch (error) {
-            // A handler bug, not a rejection: sending the mutation again would apply it twice on the server.
-            state.lastError = error instanceof Error ? error.message : String(error)
-            console.warn(`[nuxt-airplane] reconcile of "${row.document}" threw after the server accepted it:`, error)
-          }
-          if (h?.refetch) h.refetch.forEach(n => refetch.add(n))
-          else refetchAll = true
-          await acknowledge(row.id)
-          state.syncCount++
+          await write.reconcile(row.document, variables, row.tempIds ?? [], result)
         }
         catch (error) {
-          // An answer about the session or the server, not this mutation: nothing
-          // behind it would fare better, so stop here as for a network failure.
-          const later = error instanceof GraphQLRequestError && (options.request.retryLater ?? retryLaterByDefault)(error)
-          if (!later && (error instanceof GraphQLRequestError || error instanceof UnresolvedTempIdError)) {
-            // The server rejected it: park it so the user can retry or roll it
-            // back. Only the rows that depend on it wait; the batch goes on.
-            await db.mutations.update(row.id, { status: 'failed', error: error.message })
-            held.add(row.id)
-            continue
-          }
-          // Network trouble: leave the rest queued for the next attempt.
-          await db.mutations.update(row.id, { status: 'pending' })
+          // A handler bug, not a rejection: sending the mutation again would apply it twice on the server.
           state.lastError = error instanceof Error ? error.message : String(error)
-          break
+          console.warn(`[nuxt-airplane] reconcile of "${row.document}" threw after the server accepted it:`, error)
         }
+        if (h?.refetch) h.refetch.forEach(n => refetch.add(n))
+        // What it changed says which queries to ask again. Without that, all of them.
+        else if (row.keys?.length) row.keys.forEach(([table]) => tables.add(table))
+        else refetchAll = true
+        accepted++
+        await write.acknowledge(row.id)
+        state.syncCount++
+        return 'sent'
       }
+      catch (error) {
+        // An answer about the session or the server, not this mutation: nothing
+        // behind it would fare better, so stop here as for a network failure.
+        const later = error instanceof GraphQLRequestError && (options.request.retryLater ?? retryLaterByDefault)(error)
+        if (!later && (error instanceof GraphQLRequestError || error instanceof UnresolvedTempIdError)) {
+          // The server rejected it: park it so the user can retry or roll it
+          // back. Only the rows that depend on it wait; the batch goes on.
+          await db.mutations.update(row.id, { status: 'failed', error: error.message })
+          return 'held'
+        }
+        // Network trouble: leave the rest queued for the next attempt.
+        stopped = true
+        retryAfter ??= (error as { retryAfter?: number } | null)?.retryAfter
+        // Back in the queue before the error shows: whoever reacts to it finds a mutation that can be rolled back.
+        await db.mutations.update(row.id, { status: 'pending' }).catch(() => {})
+        state.lastError = error instanceof Error ? error.message : String(error)
+        return 'stopped'
+      }
+    }
+
+    let free = Math.max(1, Math.floor(options.request.concurrency ?? SYNC_LANES))
+    const waiting: (() => void)[] = []
+    const lane = async () => {
+      if (free > 0) free--
+      else await new Promise<void>(resolve => waiting.push(resolve))
+    }
+    const leave = () => {
+      const next = waiting.shift()
+      if (next) next()
+      else free++
+    }
+
+    const outcomes = new Map<number, Promise<Outcome>>()
+    /** The last row of the batch to have changed each table row. */
+    const lastOn = new Map<string, number>()
+    /** The last row of the batch that could be about anything. */
+    let barrier: number | undefined
+    try {
+      for (const row of queue) {
+        const links = new Set([...(row.dependsOn ?? []), ...(row.after ?? [])])
+        const earlier = new Set(links)
+        if (!row.keys?.length) {
+          for (const id of outcomes.keys()) earlier.add(id)
+          barrier = row.id
+        }
+        else {
+          if (barrier !== undefined) earlier.add(barrier)
+          for (const key of row.keys) {
+            const last = lastOn.get(sameRow(key))
+            if (last !== undefined) earlier.add(last)
+            lastOn.set(sameRow(key), row.id)
+          }
+        }
+        const before = [...earlier].filter(id => outcomes.has(id)).map(async id => [id, await outcomes.get(id)!] as const)
+        outcomes.set(row.id, (async (): Promise<Outcome> => {
+          const done = await Promise.all(before)
+          // Failed, or waiting on one that did: this one waits too. Rows it only shares with a failed one do not hold it.
+          if (done.some(([id, outcome]) => outcome === 'held' && links.has(id))) return 'held'
+          if (stopped || done.some(([, outcome]) => outcome === 'stopped')) return 'stopped'
+          await lane()
+          try {
+            return stopped ? 'stopped' : await send(row)
+          }
+          catch (error) {
+            // The database went away under it: nothing else will get through either.
+            stopped = true
+            state.lastError = error instanceof Error ? error.message : String(error)
+            return 'stopped'
+          }
+          finally {
+            leave()
+          }
+        })())
+      }
+      await Promise.all(outcomes.values())
     }
     finally {
       state.syncing = false
     }
-    if (state.syncCount) await refetchActive(refetchAll ? undefined : refetch)
+    if (stopped) retryLater(retryAfter)
+    else failures = 0
+    if (state.syncCount) await refetchActive(refetchAll ? undefined : refetch, tables)
   }
 
   /**
@@ -1003,23 +1374,38 @@ export function createAirplaneClient(options: AirplaneClientOptions) {
     if (!state.online) throw new Error(`[nuxt-airplane] Cannot send "${name}" while offline`)
     await sync()
     const outbound = await outboundVariables(name, variables)
-    const result = await request<T>(name, outbound)
-    const h = mutationHandler(name)
-    await h?.reconcile?.(reconcileContext(outbound), result as never)
-    await refetchActive(h?.refetch)
+    const result = await request<T>(name, outbound, uuid())
+    accepted++
+    await write.reconcile(name, outbound, [], result)
+    await refetchActive(mutationHandler(name)?.refetch)
     return result
   }
 
   /** Empties every table, including the outbox. */
-  async function clear() {
+  async function clearLocal() {
     await db.transaction('rw', db.tables, async () => {
       for (const table of db.tables) await table.clear()
     })
+    knownTables = undefined
     await db.meta.put({ key: 'cacheKey', value: cacheKey })
   }
 
+  /** Everything that writes to the tables, here or in the worker. */
+  const engine: AirplaneEngine = {
+    ready: () => ready,
+    storeResponse,
+    enqueue: enqueueLocal,
+    acknowledge,
+    rollback: rollbackLocal,
+    reconcile: reconcileLocal,
+    clearCache,
+    clear: clearLocal,
+    evict,
+  }
+  const write = options.remote ?? engine
+
   // Attempt to drain anything left over from a previous session.
-  void sync()
+  if (!isEngine) void sync()
 
   return {
     db,
@@ -1043,7 +1429,9 @@ export function createAirplaneClient(options: AirplaneClientOptions) {
     goOnline,
     cacheKey,
     ready,
-    clear,
-    clearCache,
+    clear: () => write.clear(),
+    clearCache: () => write.clearCache(),
+    evict: () => write.evict([...active.keys()]),
+    engine,
   }
 }

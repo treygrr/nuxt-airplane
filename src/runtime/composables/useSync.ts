@@ -23,6 +23,8 @@ export interface UseSyncReturn {
   syncCount: Ref<number>
   /** Message of the network error that stopped the last sync, if any. */
   lastError: Ref<string | null>
+  /** When the module will try again by itself after a sync that could not get through, as a timestamp, or `null`. */
+  retryAt: Ref<number | null>
   /** Paginated queries currently being fetched to the end for offline use. */
   prefetching: Ref<number>
   /** Send the queue now. Does nothing while offline. */
@@ -54,6 +56,7 @@ export function useSync(): UseSyncReturn {
       syncTotal: computed(() => 0),
       syncCount: computed(() => 0),
       lastError: computed(() => null),
+      retryAt: computed(() => null),
       prefetching: computed(() => 0),
       sync: off,
       rollback: async () => [],
@@ -75,6 +78,7 @@ export function useSync(): UseSyncReturn {
     syncTotal: toRef(state, 'syncTotal'),
     syncCount: toRef(state, 'syncCount'),
     lastError: toRef(state, 'lastError'),
+    retryAt: toRef(state, 'retryAt'),
     prefetching: toRef(state, 'prefetching'),
     sync: client.sync,
     rollback: client.rollback,

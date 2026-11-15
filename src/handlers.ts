@@ -53,3 +53,30 @@ export function findUntaggedDefaultExport(source: string): { reason: string } | 
 
   return null
 }
+
+/**
+ * The define* helper a file's default export is a call to, when that can be
+ * read off the text. The worker leaves out the files it has no use for by it.
+ */
+export function defaultExportHelper(source: string): typeof DEFINE_HELPERS[number] | undefined {
+  const code = stripComments(source)
+  const match = /\bexport\s+default\s+(?:await\s+)?([\w$]+)\s*(?:<[^()]*>\s*)?\(/.exec(code)
+  return DEFINE_HELPERS.find(helper => helper === match?.[1])
+}
+
+/**
+ * The inferred tables a source file mentions. In the handlers directory any
+ * use of the name counts: `db.Site`, `{ Site }`, a key of
+ * `defineAirplaneStores`. Elsewhere it has to look like a table being
+ * reached: `.Site`, or the name alone in quotes as in `db.table('Site')`.
+ */
+export function mentionedTables(source: string, names: string[], isHandler: boolean): string[] {
+  const code = stripComments(source)
+  return names.filter((name) => {
+    const word = name.replace(/\$/g, '\\$&')
+    const pattern = isHandler
+      ? `(?<![\\w$])${word}(?![\\w$])`
+      : `(?:\\.\\s*${word}(?![\\w$])|['"\`]${word}['"\`])`
+    return new RegExp(pattern).test(code)
+  })
+}

@@ -4,8 +4,10 @@
 import 'fake-indexeddb/auto'
 import { createHash } from 'node:crypto'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { createAirplaneClient, isTempId, mergeStores, newTempId, substituteTempIds, withDependents, type AirplaneClient, type AirplaneClientOptions } from '../src/runtime/client'
+import { reactive } from 'vue'
+import { backoffDelay, createAirplaneClient, parseRetryAfter, queryKey, isTempId, mergeStores, newTempId, substituteTempIds, withDependents, type AirplaneClient, type AirplaneClientOptions } from '../src/runtime/client'
 import { describeChanges } from '../src/runtime/db'
+import { remoteEngine, serveEngine, type Port } from '../src/runtime/worker'
 import type { AirplaneDexie, AirplaneRequestContext, AirplaneRequestOptions, MutationHandlers, OperationDocument, QueryHandlers } from '../src/runtime/types'
 
 // ---------------------------------------------------------------------------
@@ -307,7 +309,7 @@ describe('queries', () => {
     expect(data.sites).toHaveLength(2)
     expect(await sites(client.db).count()).toBe(2)
     // The fetch record carries no data: the tables hold it.
-    expect((await client.db.queries.toArray())[0]).toEqual({ key: expect.any(String), document: 'GetSites', variables: undefined, updatedAt: expect.any(Number) })
+    expect((await client.db.queries.toArray())[0]).toEqual({ key: expect.any(String), document: 'GetSites', variables: undefined, updatedAt: expect.any(Number), rows: [['Site', 's1'], ['Site', 's2']] })
 
     const { snapshot, unsubscribe } = client.watchQuery('GetSites', undefined)
     await until(() => snapshot.value.cached, 'fetch record')
@@ -1084,7 +1086,8 @@ describe('queue consistency', () => {
   })
 
   it('does not send a mutation rolled back while the batch was in flight', async () => {
-    const client = createClient(server, { mutationHandlers: createHandlers })
+    // One at a time, so the create is still waiting when the archive is on its way.
+    const client = createClient(server, { mutationHandlers: createHandlers, request: { concurrency: 1 } })
     await client.fetchQuery('GetSites', undefined)
     client.goOffline()
     await client.enqueue('ArchiveSite', { id: 's2' })
@@ -1203,7 +1206,7 @@ describe('queue consistency', () => {
   })
 
   it('stops the sync on an answer about the session, not the mutation', async () => {
-    const client = createClient(server, { mutationHandlers: siteHandlers })
+    const client = createClient(server, { mutationHandlers: siteHandlers, request: { concurrency: 1 } })
     await client.fetchQuery('GetSites', undefined)
     client.goOffline()
     for (const id of ['s1', 's2', 's2']) await client.enqueue('ArchiveSite', { id })
@@ -1360,7 +1363,549 @@ describe('two layers', () => {
 // Inferred tables
 // ---------------------------------------------------------------------------
 
+describe('merging queued edits', () => {
+  /** Two renames of the same site are one rename to the later name. */
+  const merging = {
+    ...siteHandlers,
+    RenameSite: {
+      ...(siteHandlers as Record<string, object>).RenameSite,
+      merge: (a: { id: string }, b: { id: string }) => (a.id === b.id ? b : null),
+    },
+  } as unknown as MutationHandlers
+
+  it('folds a later edit of the same thing into the one still waiting', async () => {
+    const client = createClient(server, { mutationHandlers: merging })
+    await client.fetchQuery('GetSites', undefined)
+    client.goOffline()
+    const first = await client.enqueue('RenameSite', { id: 's1', name: 'A' })
+    const other = await client.enqueue('RenameSite', { id: 's2', name: 'Other' })
+    const second = await client.enqueue('RenameSite', { id: 's1', name: 'B' })
+    const third = await client.enqueue('RenameSite', { id: 's1', name: 'C' })
+
+    expect(second.id).toBe(first.id)
+    expect(third).toMatchObject({ id: first.id, variables: { id: 's1', name: 'C' }, description: 'Rename s1 to C' })
+    expect((await client.db.mutations.toArray()).map(m => m.id)).toEqual([first.id, other.id])
+    expect((await sites(client.db).get('s1'))?.name).toBe('C')
+
+    client.goOnline()
+    await until(async () => (await client.db.mutations.count()) === 0, 'outbox to drain')
+    expect(server.mutations().map(c => c.variables)).toEqual(expect.arrayContaining([{ id: 's1', name: 'C' }, { id: 's2', name: 'Other' }]))
+    expect(server.mutations()).toHaveLength(2)
+    expect(await client.db.base.count()).toBe(0)
+  })
+
+  it('puts the row back as the server has it when a merged edit is rolled back', async () => {
+    const client = createClient(server, { mutationHandlers: merging })
+    await client.fetchQuery('GetSites', undefined)
+    client.goOffline()
+    await client.enqueue('RenameSite', { id: 's1', name: 'A' })
+    const merged = await client.enqueue('RenameSite', { id: 's1', name: 'B' })
+    await client.rollback(merged.id)
+    expect((await sites(client.db).get('s1'))?.name).toBe('North')
+    expect(await client.db.mutations.count()).toBe(0)
+  })
+
+  it('keeps them apart when something queued in between changed the same row', async () => {
+    const client = createClient(server, { mutationHandlers: merging })
+    await client.fetchQuery('GetSites', undefined)
+    client.goOffline()
+    await client.enqueue('RenameSite', { id: 's1', name: 'A' })
+    await client.enqueue('ArchiveSite', { id: 's1' })
+    await client.enqueue('RenameSite', { id: 's1', name: 'B' })
+    expect((await client.db.mutations.toArray()).map(m => m.document)).toEqual(['RenameSite', 'ArchiveSite', 'RenameSite'])
+  })
+
+  it('never changes a mutation the server may already have seen', async () => {
+    const client = createClient(server, { mutationHandlers: merging })
+    await client.fetchQuery('GetSites', undefined)
+    const restore = cutNetworkFor('RenameSite')
+    const first = await client.enqueue('RenameSite', { id: 's1', name: 'A' })
+    await until(() => client.state.lastError !== null, 'the send to fail')
+    expect((await client.db.mutations.get(first.id))?.attempts).toBe(1)
+    const second = await client.enqueue('RenameSite', { id: 's1', name: 'B' })
+    expect(second.id).not.toBe(first.id)
+    restore()
+    await client.sync()
+    await until(async () => (await client.db.mutations.count()) === 0, 'outbox to drain')
+    expect(server.sites[0]!.name).toBe('B')
+  })
+
+  it('leaves mutations alone without a merge handler', async () => {
+    const client = createClient(server, { mutationHandlers: siteHandlers })
+    await client.fetchQuery('GetSites', undefined)
+    client.goOffline()
+    await client.enqueue('RenameSite', { id: 's1', name: 'A' })
+    await client.enqueue('RenameSite', { id: 's1', name: 'B' })
+    expect(await client.db.mutations.count()).toBe(2)
+  })
+})
+
+describe('sending side by side', () => {
+  /** Holds every mutation at the server until released, and counts how many are there at once. */
+  function gate() {
+    const impl = server.fetch.getMockImplementation()!
+    let inside = 0
+    let most = 0
+    const order: string[] = []
+    const releases: (() => void)[] = []
+    server.fetch.mockImplementation(async (url, init) => {
+      const body = init!.body as string
+      if (!body.includes('mutation ')) return impl(url, init)
+      order.push(JSON.stringify((JSON.parse(body) as { variables: unknown }).variables))
+      most = Math.max(most, ++inside)
+      await new Promise<void>(resolve => releases.push(resolve))
+      inside--
+      return impl(url, init)
+    })
+    return { most: () => most, inside: () => inside, order, release: () => releases.splice(0).forEach(r => r()) }
+  }
+
+  async function drain(client: AirplaneClient, g: ReturnType<typeof gate>) {
+    await until(async () => {
+      g.release()
+      return (await client.db.mutations.count()) === 0
+    }, 'outbox to drain')
+  }
+
+  it('sends mutations that have nothing to do with each other at once', async () => {
+    const client = createClient(server, { mutationHandlers: siteHandlers })
+    await client.fetchQuery('GetSites', undefined)
+    client.goOffline()
+    await client.enqueue('ArchiveSite', { id: 's1' })
+    await client.enqueue('ArchiveSite', { id: 's2' })
+    const g = gate()
+    client.goOnline()
+    await until(() => g.inside() === 2, 'both to be in flight')
+    await drain(client, g)
+    expect(server.sites.map(s => s.archived)).toEqual([true, true])
+  })
+
+  it('keeps edits of one row, and a chain, in order', async () => {
+    const client = createClient(server, { mutationHandlers: chainHandlers, entities: CHAIN_ENTITIES })
+    await queueChain(client)
+    await client.enqueue('RenameSite', { id: 's2', name: 'Later' })
+    const g = gate()
+    client.goOnline()
+    // The create heads its chain and the archive of s2 its own: two in flight, the rest waiting on them.
+    await until(() => g.inside() === 2, 'the two heads to be in flight')
+    await new Promise(r => setTimeout(r, 30))
+    expect(g.order).toHaveLength(2)
+    await drain(client, g)
+    expect(g.most()).toBe(2)
+    expect(server.mutations().map(c => c.op).filter(op => op !== 'ArchiveSite' && op !== 'RenameSite')).toEqual(['CreateSite', 'AddSiteItem', 'SetItemQty'])
+    expect(server.sites[1]).toMatchObject({ archived: true, name: 'Later' })
+  })
+
+  it('never has more in flight than `concurrency`', async () => {
+    const client = createClient(server, { mutationHandlers: createHandlers, request: { concurrency: 2 } })
+    await client.fetchQuery('GetSites', undefined)
+    client.goOffline()
+    for (const name of ['a', 'b', 'c', 'd', 'e']) await client.enqueue('CreateSite', { name })
+    const g = gate()
+    client.goOnline()
+    await drain(client, g)
+    expect(g.most()).toBe(2)
+    expect(server.sites).toHaveLength(7)
+  })
+
+  it('sends mutations it knows nothing about one at a time', async () => {
+    // No `apply`: what they touch is unknown, so their order is all there is to go on.
+    const client = createClient(server)
+    await client.fetchQuery('GetSites', undefined)
+    client.goOffline()
+    await client.enqueue('ArchiveSite', { id: 's1' })
+    await client.enqueue('RenameSite', { id: 's2', name: 'X' })
+    await client.enqueue('ArchiveSite', { id: 's2' })
+    const g = gate()
+    client.goOnline()
+    await drain(client, g)
+    expect(g.most()).toBe(1)
+    expect(server.mutations().map(c => c.op)).toEqual(['ArchiveSite', 'RenameSite', 'ArchiveSite'])
+  })
+
+  it('lets what is in flight land and starts nothing more once the network fails', async () => {
+    const client = createClient(server, { mutationHandlers: createHandlers, request: { concurrency: 2 } })
+    await client.fetchQuery('GetSites', undefined)
+    client.goOffline()
+    await client.enqueue('ArchiveSite', { id: 's1' })
+    for (const name of ['a', 'b', 'c']) await client.enqueue('CreateSite', { name })
+    const restore = cutNetworkFor('ArchiveSite')
+    client.goOnline()
+    await until(() => client.state.lastError !== null && !client.state.syncing, 'sync to stop')
+    expect(server.mutations().length).toBeLessThanOrEqual(2)
+    expect((await client.db.mutations.toArray()).every(m => m.status === 'pending')).toBe(true)
+    expect(client.state.retryAt).toBeGreaterThan(Date.now())
+    restore()
+    await client.sync()
+    await until(async () => (await client.db.mutations.count()) === 0, 'outbox to drain')
+    expect(client.state.retryAt).toBeNull()
+    expect(server.sites).toHaveLength(5)
+  })
+})
+
+describe('retries', () => {
+  it('sends the same idempotency key on every attempt, a different one per mutation', async () => {
+    const seen: { op: string, key?: string, header: string | null }[] = []
+    const impl = server.fetch.getMockImplementation()!
+    server.fetch.mockImplementation(async (url, init) => {
+      const body = JSON.parse(init!.body as string) as { query: string, extensions?: { idempotencyKey?: string } }
+      if (body.query.startsWith('mutation')) seen.push({ op: /mutation (\w+)/.exec(body.query)![1]!, key: body.extensions?.idempotencyKey, header: new Headers(init!.headers).get('idempotency-key') })
+      return impl(url, init)
+    })
+    const client = createClient(server, {
+      mutationHandlers: siteHandlers,
+      request: { concurrency: 1, headers: (ctx: AirplaneRequestContext) => (ctx.idempotencyKey ? { 'Idempotency-Key': ctx.idempotencyKey } : undefined) },
+    })
+    await client.fetchQuery('GetSites', undefined)
+    const restore = cutNetworkFor('ArchiveSite')
+    client.goOffline()
+    const row = await client.enqueue('ArchiveSite', { id: 's1' })
+    await client.enqueue('RenameSite', { id: 's2', name: 'X' })
+    client.goOnline()
+    await until(() => client.state.lastError !== null && !client.state.syncing, 'sync to stop')
+    restore()
+    await client.sync()
+    await until(async () => (await client.db.mutations.count()) === 0, 'outbox to drain')
+
+    expect(row.idempotencyKey).toMatch(/^[0-9a-f-]{36}$/)
+    const archive = seen.filter(c => c.op === 'ArchiveSite')
+    expect(archive.map(c => c.key)).toEqual([row.idempotencyKey])
+    expect(archive[0]!.header).toBe(row.idempotencyKey)
+    const rename = seen.find(c => c.op === 'RenameSite')!
+    expect(rename.key).toBeTruthy()
+    expect(rename.key).not.toBe(row.idempotencyKey)
+  })
+
+  it('keeps the key next to the persisted query hash', async () => {
+    const bodies: { extensions?: Record<string, unknown> }[] = []
+    const client = createClient(server, { documents: hashedDocuments, persistedQueries: 'automatic', mutationHandlers: siteHandlers })
+    const sent = withApq()
+    const impl = server.fetch.getMockImplementation()!
+    server.fetch.mockImplementation(async (url, init) => {
+      bodies.push(JSON.parse(init!.body as string) as { extensions?: Record<string, unknown> })
+      return impl(url, init)
+    })
+    await client.enqueue('ArchiveSite', { id: 's1' })
+    await until(async () => (await client.db.mutations.count()) === 0, 'outbox to drain')
+    expect(sent.length).toBe(2)
+    for (const body of bodies) expect(body.extensions?.idempotencyKey).toMatch(/^[0-9a-f-]{36}$/)
+    expect(bodies[0]!.extensions?.persistedQuery).toBeTruthy()
+    expect(server.sites[0]!.archived).toBe(true)
+  })
+
+  it('tries again on its own when the server says when', async () => {
+    const client = createClient(server, { mutationHandlers: siteHandlers })
+    await client.fetchQuery('GetSites', undefined)
+    const impl = server.fetch.getMockImplementation()!
+    let busy = 1
+    server.fetch.mockImplementation(async (url, init) => {
+      if (busy-- > 0 && (init!.body as string).includes('mutation ')) return new Response('busy', { status: 503, headers: { 'Retry-After': '0' } })
+      return impl(url, init)
+    })
+    await client.enqueue('ArchiveSite', { id: 's1' })
+    // Nobody calls sync again: the retry is the module's.
+    await until(async () => (await client.db.mutations.count()) === 0, 'outbox to drain')
+    expect(server.sites[0]!.archived).toBe(true)
+    expect(client.state.retryAt).toBeNull()
+  })
+
+  it('waits longer each time, within bounds, and takes the server at its word', () => {
+    expect(backoffDelay(0, undefined, 0)).toBe(500)
+    expect(backoffDelay(0, undefined, 1)).toBe(1000)
+    expect(backoffDelay(3, undefined, 1)).toBe(8000)
+    expect(backoffDelay(30, undefined, 1)).toBe(5 * 60_000)
+    expect(backoffDelay(5, 2500)).toBe(2500)
+    expect(backoffDelay(0, 24 * 60 * 60_000)).toBe(60 * 60_000)
+    expect(parseRetryAfter('120')).toBe(120_000)
+    expect(parseRetryAfter('Wed, 21 Oct 2015 07:28:10 GMT', Date.parse('Wed, 21 Oct 2015 07:28:00 GMT'))).toBe(10_000)
+    expect(parseRetryAfter('Wed, 21 Oct 2015 07:28:00 GMT', Date.parse('Wed, 21 Oct 2015 07:29:00 GMT'))).toBe(0)
+    expect(parseRetryAfter('soon')).toBeUndefined()
+    expect(parseRetryAfter(null)).toBeUndefined()
+  })
+})
+
+describe('refetching after a sync', () => {
+  const ITEM_ENTITIES = { Site: { key: 'id' }, Item: { key: 'id' } }
+  const queries = {
+    ...siteQueries,
+    SearchItems: {
+      store: ({ db }: { db: AirplaneDexie }, data: { searchItems: { edges: { node: { id: string } }[] } }) => db.table('Item').bulkPut(data.searchItems.edges.map(e => e.node)),
+      read: async ({ db }: { db: AirplaneDexie }) => ({ searchItems: await db.table('Item').toArray() }),
+    },
+  } as unknown as QueryHandlers
+
+  function mount(client: AirplaneClient, name: string, variables?: unknown) {
+    const refresh = vi.fn(async () => void await client.fetchQuery(name, variables))
+    client.active.set(queryKey(name, variables), refresh)
+    return refresh
+  }
+
+  it('asks again only the queries that fill a table the mutation changed', async () => {
+    const client = createClient(server, { entities: ITEM_ENTITIES, queryHandlers: queries, mutationHandlers: siteHandlers })
+    await client.fetchQuery('GetSites', undefined)
+    await client.fetchQuery('SearchItems', undefined)
+    const sitesQuery = mount(client, 'GetSites')
+    const itemsQuery = mount(client, 'SearchItems')
+    await client.enqueue('ArchiveSite', { id: 's1' })
+    await until(() => sitesQuery.mock.calls.length > 0, 'the sites to be refetched')
+    await client.sync()
+    expect(sitesQuery).toHaveBeenCalledTimes(1)
+    expect(itemsQuery).not.toHaveBeenCalled()
+  })
+
+  it('asks again a query that has not shown which tables it fills', async () => {
+    const client = createClient(server, { entities: ITEM_ENTITIES, queryHandlers: queries, mutationHandlers: siteHandlers })
+    await client.fetchQuery('GetSites', undefined)
+    const itemsQuery = mount(client, 'SearchItems')
+    await client.enqueue('ArchiveSite', { id: 's1' })
+    await until(() => itemsQuery.mock.calls.length > 0, 'the unknown query to be refetched')
+  })
+
+  it('asks again every query after a mutation it knows nothing about', async () => {
+    const client = createClient(server, { entities: ITEM_ENTITIES, queryHandlers: queries })
+    await client.fetchQuery('GetSites', undefined)
+    await client.fetchQuery('SearchItems', undefined)
+    const itemsQuery = mount(client, 'SearchItems')
+    await client.enqueue('ArchiveSite', { id: 's1' })
+    await until(() => itemsQuery.mock.calls.length > 0, 'every query to be refetched')
+  })
+
+  it('shares one request between callers asking for the same query at once', async () => {
+    const client = createClient(server)
+    const [a, b] = await Promise.all([client.fetchQuery('GetSites', undefined), client.fetchQuery('GetSites', {}), client.fetchQuery('GetSite', { id: 's1' })])
+    expect(a).toBe(b)
+    expect(server.calls.map(c => c.op).sort()).toEqual(['GetSite', 'GetSites'])
+    await client.fetchQuery('GetSites', undefined)
+    expect(server.calls.filter(c => c.op === 'GetSites')).toHaveLength(2)
+  })
+
+  it('does not hand a fetch that left before a mutation was accepted to a caller after it', async () => {
+    const client = createClient(server, { mutationHandlers: siteHandlers })
+    await client.fetchQuery('GetSites', undefined)
+    const impl = server.fetch.getMockImplementation()!
+    let release!: () => void
+    const held = new Promise<void>(resolve => (release = resolve))
+    let first = true
+    server.fetch.mockImplementation(async (url, init) => {
+      if (first && (init!.body as string).includes('query GetSites')) {
+        first = false
+        const stale = await impl(url, init)
+        await held
+        return stale
+      }
+      return impl(url, init)
+    })
+    const slow = client.fetchQuery<{ sites: Site[] }>('GetSites', undefined)
+    await client.enqueue('ArchiveSite', { id: 's1' })
+    await until(async () => (await client.db.mutations.count()) === 0, 'outbox to drain')
+    const fresh = await client.fetchQuery<{ sites: Site[] }>('GetSites', undefined)
+    expect(fresh.sites[0]!.archived).toBe(true)
+    release()
+    expect((await slow).sites[0]!.archived).toBe(false)
+  })
+})
+
+describe('room', () => {
+  it('drops the least recently fetched rows, and their record, when asked', async () => {
+    const client = createClient(server)
+    for (const id of ['s1', 's2']) {
+      await client.fetchQuery('GetSite', { id })
+      await new Promise(r => setTimeout(r, 2))
+    }
+    expect(await client.evict()).toBe(1)
+    expect((await cachedSites(client)).map(s => s.id)).toEqual(['s2'])
+    expect((await client.db.queries.toArray()).map(q => q.variables)).toEqual([{ id: 's2' }])
+  })
+
+  it('keeps rows a mounted query, a newer record or the queue holds', async () => {
+    const client = createClient(server, { mutationHandlers: siteHandlers })
+    await client.fetchQuery('GetSite', { id: 's1' })
+    await new Promise(r => setTimeout(r, 2))
+    await client.fetchQuery('GetSite', { id: 's2' })
+    await new Promise(r => setTimeout(r, 2))
+    await client.fetchQuery('GetSites', undefined)
+    client.goOffline()
+    await client.enqueue('RenameSite', { id: 's1', name: 'Mine' })
+
+    // Mounted: its record is not a candidate at all.
+    client.active.set(queryKey('GetSite', { id: 's1' }), async () => {})
+    expect(await client.evict()).toBe(0)
+    // The oldest record that is left goes, but GetSites still lists its row.
+    expect((await client.db.queries.toArray()).map(q => q.document).sort()).toEqual(['GetSite', 'GetSites'])
+    expect(await sites(client.db).count()).toBe(2)
+
+    client.active.clear()
+    while ((await client.db.queries.count()) > 0) await client.evict()
+    // Every record is gone. The row the queue changed is not.
+    expect(await cachedSites(client)).toMatchObject([{ id: 's1', name: 'Mine' }])
+    await client.rollback((await client.db.mutations.toArray())[0]!.id)
+    expect(await cachedSites(client)).toMatchObject([{ id: 's1', name: 'North' }])
+  })
+
+  it('makes room and tries once more when the browser refuses a write', async () => {
+    let refuse = 1
+    const client = createClient(server, {
+      queryHandlers: {
+        ...siteQueries,
+        GetSites: {
+          ...(siteQueries as Record<string, object>).GetSites,
+          store: ({ db }: { db: AirplaneDexie }, data: { sites: Site[] }) => {
+            if (refuse-- > 0) throw Object.assign(new Error('full'), { name: 'QuotaExceededError' })
+            return sites(db).bulkPut(data.sites)
+          },
+        },
+      } as unknown as QueryHandlers,
+    })
+    await client.fetchQuery('GetSite', { id: 's2' })
+    await client.fetchQuery('GetSites', undefined)
+    expect((await cachedSites(client)).map(s => s.id)).toEqual(['s1', 's2'])
+    expect((await client.db.queries.toArray()).map(q => q.document)).toEqual(['GetSites'])
+  })
+
+  it('fails the write when there is nothing left to drop', async () => {
+    const client = createClient(server, {
+      queryHandlers: { GetSites: { store: () => { throw Object.assign(new Error('full'), { name: 'QuotaExceededError' }) }, read: () => null } } as unknown as QueryHandlers,
+    })
+    await expect(client.fetchQuery('GetSites', undefined)).rejects.toThrow('full')
+  })
+
+  it('writes a large response a chunk at a time and still knows every row', async () => {
+    const many = Array.from({ length: 1234 }, (_, i) => ({ id: `m${String(i).padStart(4, '0')}`, name: `Site ${i}`, archived: false }))
+    const client = createClient(server, {
+      mutationHandlers: {
+        ...siteHandlers,
+        CreateSite: { apply: ({ db }: Ctx<unknown>) => sites(db).bulkPut(many.map(s => ({ ...s, name: 'Changed' }))) },
+      } as unknown as MutationHandlers,
+    })
+    server.fetch.mockImplementationOnce(async () => Response.json({ data: { sites: many } }))
+    await client.fetchQuery('GetSites', undefined)
+    expect(await sites(client.db).count()).toBe(1234)
+    expect((await client.db.queries.toArray())[0]!.rows).toHaveLength(1234)
+
+    client.goOffline()
+    const row = await client.enqueue('CreateSite', { name: 'x' })
+    expect(await client.db.base.count()).toBe(1234)
+    expect((await sites(client.db).get('m1233'))?.name).toBe('Changed')
+    await client.rollback(row.id)
+    expect(await sites(client.db).toArray()).toEqual(many)
+  })
+})
+
+describe('engine in a worker', () => {
+  /** Two ends that copy what is posted, as a worker and its page do. */
+  function channel() {
+    const ends = [new Set<(event: { data: unknown }) => void>(), new Set<(event: { data: unknown }) => void>()]
+    const end = (mine: number): Port => ({
+      postMessage: (message) => {
+        const data = structuredClone(message)
+        setTimeout(() => ends[1 - mine]!.forEach(listener => listener({ data })), 0)
+      },
+      addEventListener: (type, listener) => void (type === 'message' && ends[mine]!.add(listener as (event: { data: unknown }) => void)),
+    })
+    return { page: end(0), worker: end(1) }
+  }
+
+  /** A client whose every write goes over a channel to an engine on the same database. */
+  function createWorkerClient(handlers: MutationHandlers, extra: Partial<AirplaneClientOptions> = {}) {
+    const dbName = `test-worker-${++n}`
+    const { page, worker } = channel()
+    const calls: string[] = []
+    serveEngine(worker, () => {
+      const engine = createClient(server, { dbName, mutationHandlers: handlers, role: 'engine', ...extra }).engine
+      return Object.fromEntries(Object.entries(engine).map(([method, fn]) => [method, (...args: unknown[]) => {
+        calls.push(method)
+        return (fn as (...args: unknown[]) => unknown)(...args)
+      }])) as unknown as typeof engine
+    })
+    // The page has the handlers too, but must not run the ones that write.
+    const never = () => {
+      throw new Error('ran on the page')
+    }
+    const onPage = Object.fromEntries(Object.entries(handlers).map(([name, h]) => [name, { ...h, apply: h?.apply && never, reconcile: h?.reconcile && never }])) as MutationHandlers
+    const client = createClient(server, { dbName, mutationHandlers: onPage, remote: remoteEngine(page, { endpoint: '', dbName }), ...extra })
+    return { client, calls }
+  }
+
+  it('stores, applies, syncs and rolls back through the engine', async () => {
+    const { client, calls } = createWorkerClient(createHandlers)
+    const live = watchData(client, 'GetSites')
+    await client.fetchQuery('GetSites', undefined)
+    await until(() => live<{ sites: Site[] }>()?.sites.length === 2, 'the page to see what the engine stored')
+
+    client.goOffline()
+    const rename = await client.enqueue('RenameSite', { id: 's1', name: 'Renamed' })
+    expect(rename).toMatchObject({ document: 'RenameSite', keys: [['Site', 's1']] })
+    await client.enqueue('CreateSite', { name: 'West' })
+    await until(() => live<{ sites: Site[] }>().sites.some(s => s.name === 'West'), 'the page to see the applied create')
+    await until(() => client.state.pending.length === 2, 'the pending list')
+
+    await client.rollback(rename.id)
+    expect((await sites(client.db).get('s1'))?.name).toBe('North')
+
+    client.goOnline()
+    await until(async () => (await client.db.mutations.count()) === 0, 'outbox to drain')
+    expect(server.sites.map(s => s.name)).toEqual(['North', 'South', 'West'])
+    expect((await cachedSites(client)).map(s => s.id)).toEqual(['s1', 's2', 's3'])
+    expect(await client.db.base.count()).toBe(0)
+    expect(calls).toEqual(expect.arrayContaining(['ready', 'storeResponse', 'enqueue', 'rollback', 'reconcile', 'acknowledge']))
+  })
+
+  it('takes variables a component hands over as a reactive object', async () => {
+    const { client } = createWorkerClient(siteHandlers)
+    await client.fetchQuery('GetSites', undefined)
+    client.goOffline()
+    const row = await client.enqueue('RenameSite', reactive({ id: 's1', name: 'Reactive' }))
+    expect(row.variables).toEqual({ id: 's1', name: 'Reactive' })
+    expect((await sites(client.db).get('s1'))?.name).toBe('Reactive')
+  })
+
+  it('fails the calls, waiting and later, when the worker itself fails', async () => {
+    const listeners: Record<string, (event: { data?: unknown, message?: string }) => void> = {}
+    const dead: Port = { postMessage: () => {}, addEventListener: (type, listener) => void (listeners[type] = listener) }
+    const engine = remoteEngine(dead, { endpoint: '', dbName: 'x' })
+    const waiting = engine.enqueue('RenameSite', {})
+    listeners.error!({ message: 'script failed to load' })
+    await expect(waiting).rejects.toThrow('The worker failed: script failed to load')
+    await expect(engine.ready()).rejects.toThrow('worker: false')
+  })
+
+  it('brings an error from a handler back to the caller', async () => {
+    const { client } = createWorkerClient({
+      RenameSite: {
+        apply: () => {
+          throw new TypeError('no such site')
+        },
+      },
+    } as unknown as MutationHandlers)
+    await expect(client.enqueue('RenameSite', { id: 'nope', name: 'x' })).rejects.toMatchObject({ name: 'TypeError', message: 'no such site' })
+    expect(await client.db.mutations.count()).toBe(0)
+  })
+
+  it('clears the cache in the engine when the key changes, keeping the outbox', async () => {
+    const first = createWorkerClient(siteHandlers)
+    await first.client.fetchQuery('GetSites', undefined)
+    first.client.goOffline()
+    await first.client.enqueue('RenameSite', { id: 's1', name: 'Kept' })
+    await until(() => first.client.state.pending.length === 1, 'the pending list')
+    const dbName = first.client.db.name
+    first.client.db.close()
+
+    const { page, worker } = channel()
+    serveEngine(worker, () => createClient(server, { dbName, mutationHandlers: siteHandlers, role: 'engine', documentsHash: 'h2' }).engine)
+    const client = createClient(server, { dbName, mutationHandlers: siteHandlers, documentsHash: 'h2', remote: remoteEngine(page, { endpoint: '', dbName }) })
+    client.goOffline()
+    await client.ready
+    expect(await client.db.queries.count()).toBe(0)
+    expect(await client.db.mutations.count()).toBe(1)
+  })
+})
+
 describe('inferred tables', () => {
+  it('says why a table that was left out is not there', () => {
+    const client = createClient(server, { unusedEntities: ['SiteItem'] })
+    expect(() => (client.db as unknown as Record<string, unknown>).SiteItem).toThrow('was not created because nothing in the app mentions it')
+  })
+
   it('merges the inferred tables with the user stores', () => {
     const entities = { Site: { key: 'id' }, Item: { key: 'id' } }
     expect(mergeStores(entities, {})).toEqual({ Site: '&id', Item: '&id' })

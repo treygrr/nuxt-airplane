@@ -111,6 +111,50 @@ const logs = new WeakMap<object, Log>()
 /** Transactions in which the module moves rows between the layers itself. */
 const quiet = new WeakSet<object>()
 
+/** Notes of which rows a transaction wrote, for `track`. */
+const trackers = new WeakMap<object, Map<string, [string, IndexableType]>>()
+
+/**
+ * From here to the end of the current transaction, notes every row written
+ * to a data table, whether it changed or not. That is how a query's record
+ * knows which rows its `store` brought, at the cost of no extra read.
+ */
+export function track() {
+  const idbtrans = Dexie.currentTransaction.idbtrans as object
+  const rows = new Map<string, [string, IndexableType]>()
+  trackers.set(idbtrans, rows)
+  return { rows, stop: () => trackers.delete(idbtrans) }
+}
+
+/** Whether an error, or what caused it, is the browser refusing a write for lack of room. */
+export function isQuotaError(error: unknown): boolean {
+  for (let e = error as { name?: string, inner?: unknown } | undefined, depth = 0; e && depth < 5; e = e.inner as typeof e, depth++) {
+    if (e.name === 'QuotaExceededError') return true
+  }
+  return false
+}
+
+/** Rows written per request to IndexedDB. */
+const CHUNK = 500
+
+/**
+ * A large `bulkPut` cloned in one go holds the thread for as long as it
+ * takes. Written a chunk at a time, the browser gets a turn between chunks
+ * (each one waits for IndexedDB to answer) and the transaction stays the same.
+ */
+async function mutateInChunks(table: DBCoreTable, req: DBCoreMutateRequest): Promise<DBCoreMutateResponse> {
+  if ((req.type !== 'add' && req.type !== 'put') || req.values.length <= CHUNK) return table.mutate(req)
+  const out: DBCoreMutateResponse = { numFailures: 0, failures: {}, results: req.wantResults ? [] : undefined, lastResult: undefined }
+  for (let at = 0; at < req.values.length; at += CHUNK) {
+    const res = await table.mutate({ ...req, values: req.values.slice(at, at + CHUNK), keys: req.keys?.slice(at, at + CHUNK) })
+    out.numFailures += res.numFailures
+    for (const [i, failure] of Object.entries(res.failures)) out.failures[Number(i) + at] = failure
+    if (res.results) (out.results ??= []).push(...res.results)
+    out.lastResult = res.lastResult
+  }
+  return out
+}
+
 /** A row's identity across tables. */
 export const rowKey = (table: string, key: unknown) => `${table}\0${JSON.stringify(key)}`
 
@@ -164,7 +208,7 @@ async function writeThrough(db: AirplaneDexie, table: DBCoreTable, req: DBCoreMu
   const keys: unknown[] = (req.type === 'delete' ? req.keys : req.keys ?? keysOf(table.schema.primaryKey, req.values)) ?? []
   const known = keys.map((key, i) => ({ key: key as IndexableType, i })).filter(({ key }) => key != null)
   const before = await table.getMany({ trans, keys: known.map(({ key }) => key) })
-  const res = await table.mutate(req)
+  const res = await mutateInChunks(table, req)
   const writes = known.map(({ key, i }, n) => ({ key, before: before[n], after: req.type === 'delete' ? undefined : req.values[i] }))
   if (writes.length) void Dexie.ignoreTransaction(() => carryToBase(db, table.name, writes)).catch(() => {})
   return res
@@ -209,10 +253,19 @@ function installWriteLayer(db: Dexie, warnOnBooleanIndex = false) {
           ...table,
           async mutate(req) {
             if (warnOnBooleanIndex && (req.type === 'add' || req.type === 'put')) warnBooleanIndexes(table, req.values, warned)
+            const tracked = trackers.get(req.trans as object)
+            if (tracked && req.type !== 'deleteRange') {
+              const keys = req.type === 'delete' ? req.keys : req.keys ?? keysOf(table.schema.primaryKey, req.values) ?? []
+              for (const key of keys) {
+                if (key == null) continue
+                if (req.type === 'delete') tracked.delete(rowKey(name, key))
+                else tracked.set(rowKey(name, key), [name, key as IndexableType])
+              }
+            }
             const log = logs.get(req.trans as object)
-            if (!log) return quiet.has(req.trans as object) ? table.mutate(req) : writeThrough(db as AirplaneDexie, table, req)
+            if (!log) return quiet.has(req.trans as object) ? mutateInChunks(table, req) : writeThrough(db as AirplaneDexie, table, req)
             const { entries, afterMutate } = await recordBefore(table, req)
-            const res = await table.mutate(req)
+            const res = await mutateInChunks(table, req)
             afterMutate?.(res)
             for (const { after, ...entry } of entries) {
               // A write whose key never became known left nothing that can be taken back.
