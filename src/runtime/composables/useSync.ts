@@ -27,8 +27,10 @@ export interface UseSyncReturn {
   prefetching: Ref<number>
   /** Send the queue now. Does nothing while offline. */
   sync: () => Promise<void>
-  /** Undo a queued mutation and remove it from the queue. */
-  rollback: (id: number) => Promise<void>
+  /** Undo a queued mutation and remove it from the queue, with the ones that depend on it. Resolves with what it dropped. */
+  rollback: (id: number) => Promise<MutationRow[]>
+  /** The queued mutations that depend on one, directly or not: what rolling it back drops with it. */
+  dependents: (id: number) => MutationRow[]
   /** Put a failed mutation back in the queue and sync. */
   retry: (id: number) => Promise<void>
   /** Hold the client offline regardless of the network until `goOnline()`. */
@@ -54,7 +56,8 @@ export function useSync(): UseSyncReturn {
       lastError: computed(() => null),
       prefetching: computed(() => 0),
       sync: off,
-      rollback: off,
+      rollback: async () => [],
+      dependents: () => [],
       retry: off,
       goOffline: () => {},
       goOnline: () => {},
@@ -75,6 +78,7 @@ export function useSync(): UseSyncReturn {
     prefetching: toRef(state, 'prefetching'),
     sync: client.sync,
     rollback: client.rollback,
+    dependents: client.dependents,
     retry: client.retry,
     goOffline: client.goOffline,
     goOnline: client.goOnline,
