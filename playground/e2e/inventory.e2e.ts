@@ -37,7 +37,8 @@ test('adds a product in the modal, restocks it from the cart in whole boxes', as
   const box = variant.boxQuantity!
   await page.goto('/inventory/site-1')
   await ready(page)
-  await expect(page.getByRole('switch', { name: 'Track inventory levels' }).or(page.getByLabel('Track inventory levels'))).toBeChecked()
+  // A site that tracks inventory has a restock cart.
+  await expect(page.getByRole('link', { name: 'Restock cart' })).toBeVisible()
 
   // Step 1: the product. Step 2: its levels.
   await page.getByRole('button', { name: 'Add product' }).click()
@@ -139,7 +140,9 @@ test('a site opts out of tracking: its levels and cart go', async ({ page, reque
   await expect(page.getByRole('columnheader', { name: 'Min' })).toHaveCount(0)
   await expect(page.getByRole('link', { name: 'Restock cart' })).toHaveCount(0)
   await expect.poll(async () => (await serverQuery<{ siteCartLines: unknown[] }>(request, '{ siteCartLines(siteId: "site-1") { id } }')).siteCartLines).toHaveLength(0)
-  expect((await serverQuery<{ site: { name: string, tracksInventory: boolean } }>(request, '{ site(id: "site-1") { name tracksInventory } }')).site).toEqual({ name: 'North Warehouse (old)', tracksInventory: false })
+  // Two changes to different fields of the site: they may land in either order.
+  await expect.poll(async () => (await serverQuery<{ site: { name: string, tracksInventory: boolean } }>(request, '{ site(id: "site-1") { name tracksInventory } }')).site)
+    .toEqual({ name: 'North Warehouse (old)', tracksInventory: false })
 
   // A site that does not track has no cart to add to.
   await page.goto('/inventory/site-2')
