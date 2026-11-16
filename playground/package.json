@@ -18,5 +18,8 @@
     "nuxt": "^4.6.3",
     "vuetify": "^4.3.3",
     "vuetify-nuxt-module": "^1.0.0-rc.6"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.65.1"
   }
 }
