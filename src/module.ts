@@ -88,7 +88,7 @@ export interface ModuleOptions {
   handlers: HandlersOptions
   /** The local database. */
   database: DatabaseOptions
-  /** Extra options passed to the `typescript` / `typescript-operations` codegen plugins. */
+  /** Extra options passed to the `typescript-operations` codegen plugin. `scalars` is merged with the module's `ID` mapping. */
   codegen: Record<string, unknown>
 }
 
