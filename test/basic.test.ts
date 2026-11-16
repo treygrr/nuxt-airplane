@@ -74,6 +74,9 @@ describe('module', async () => {
     // queries/ has an index: only the index is imported, not the pieces beside it.
     expect(handlers).toContain('airplane/queries/index.ts')
     expect(handlers).not.toContain('airplane/queries/get-sites.ts')
+    // A file with no default export is imported as a namespace: its missing default is undefined, not a link error.
+    expect(handlers).toMatch(/import \* as h\d+ from ".*airplane\/helpers\.ts"/)
+    expect(handlers).toMatch(/export const handlers = \[(h\d+\.default(, )?)+\]/)
   })
 
   it('ships the public options in the payload and keeps the build-time ones out', async () => {

@@ -109,6 +109,15 @@ export function movedOptions(options: Record<string, unknown>): string[] {
   return found
 }
 
+/**
+ * Imports the handler files as namespaces and takes their default exports.
+ * A file without one (helpers kept beside the handlers) then contributes
+ * `undefined`, which the runtime skips, where a default import of it would
+ * be a module link error that stops the app.
+ */
+const handlerImports = (files: string[]) => files.map((file, i) => `import * as h${i} from ${JSON.stringify(file)}`).join('\n')
+const handlerList = (files: string[]) => files.map((_, i) => `h${i}.default`).join(', ')
+
 export default defineNuxtModule<ModuleOptions>({
   meta: {
     name: 'nuxt-airplane',
@@ -269,9 +278,7 @@ export default defineNuxtModule<ModuleOptions>({
         if (offenders.length) {
           throw new Error(`[nuxt-airplane] Files in the handlers directory must default-export the result of a define* helper:\n${offenders.join('\n')}\n${WRAP_HINT}`)
         }
-        const imports = files.map((file, i) => `import h${i} from ${JSON.stringify(file)}`)
-        const list = files.map((_, i) => `h${i}`).join(', ')
-        return `${imports.join('\n')}\nexport const handlers = [${list}]\n`
+        return `${handlerImports(files)}\nexport const handlers = [${handlerList(files)}]\n`
       },
     })
 
@@ -299,8 +306,8 @@ export default defineNuxtModule<ModuleOptions>({
         // First, so the define* helpers exist when the handler files run.
         `import ${JSON.stringify(resolver.resolve('./runtime/worker-globals'))}`,
         `import { startWorker } from ${JSON.stringify(resolver.resolve('./runtime/worker'))}`,
-        ...files.map((file, i) => `import h${i} from ${JSON.stringify(file)}`),
-        `startWorker([${files.map((_, i) => `h${i}`).join(', ')}])`,
+        handlerImports(files),
+        `startWorker([${handlerList(files)}])`,
         '',
       ].join('\n')
       if (await readFile(workerEntry, 'utf8').catch(() => null) === contents) return
