@@ -5,7 +5,7 @@
 // `read` answers any filter and sort from the tables, also ones the server
 // was never asked: a search typed offline finds what is stored.
 
-import { connection, decodeCursor, listingKey, putProducts } from '../../lib/airplane'
+import { OFFLINE_CATALOG_KEY, connection, decodeCursor, listingKey, putProducts } from '../../lib/airplane'
 
 type ProductRow = NuxtAirplaneStores['Product']
 type Sort = 'NAME' | 'PRICE_ASC' | 'PRICE_DESC' | 'RATING' | 'NEWEST'
@@ -22,9 +22,6 @@ const ORDER: Record<Sort, (a: ProductRow, b: ProductRow) => number> = {
 /** Pages the background walk asks for: larger than a screenful, fewer round trips. */
 const PREFETCH_PAGE = 200
 
-/** The "keep catalog offline" setting, kept in this browser. */
-export const OFFLINE_CATALOG_KEY = 'toolshed:offline-catalog'
-
 export default defineQueryHandler('GetProducts', {
   async store({ db, variables }, data) {
     await putProducts(db, data.products.edges.map(e => e.node))
@@ -34,19 +31,44 @@ export default defineQueryHandler('GetProducts', {
 
   async read({ db, variables }) {
     const { first = 24, after, categoryId, search, sort = 'NAME', inStockOnly } = variables ?? {}
-    let rows: ProductRow[]
-    if (categoryId) {
-      const children = await db.Category.where('parentId').equals(categoryId).primaryKeys()
-      rows = await db.Product.where('categoryId').anyOf([categoryId, ...children]).toArray()
-    }
-    else rows = await db.Product.toArray()
+    const offset = decodeCursor(after)
+    const size = first ?? 24
     const q = search?.trim().toLowerCase()
-    if (q) rows = rows.filter(p => p.name.toLowerCase().includes(q) || p.brand.toLowerCase().includes(q))
-    if (inStockOnly) rows = rows.filter(p => p.variants.some(v => v.stock > 0))
-    rows.sort(ORDER[sort ?? 'NAME'])
+    const matches = (p: ProductRow) => (!q || p.name.toLowerCase().includes(q) || p.brand.toLowerCase().includes(q))
+      && (!inStockOnly || p.variants.some(v => v.stock > 0))
+    const filtered = !!q || !!inStockOnly
     // The server's count when it has said, or what the tables hold.
     const known = (await db.Listing.get(listingKey('products', { categoryId, search, inStockOnly })))?.totalCount ?? 0
-    return { products: connection(rows, decodeCursor(after), first ?? 24, Math.max(known, rows.length)) }
+
+    if (categoryId) {
+      // A category is a few thousand products at most: read it and sort it here.
+      const children = await db.Category.where('parentId').equals(categoryId).primaryKeys()
+      const rows = (await db.Product.where('categoryId').anyOf([categoryId, ...children]).toArray()).filter(matches).sort(ORDER[sort ?? 'NAME'])
+      return { products: connection(rows, offset, size, Math.max(known, rows.length)) }
+    }
+
+    // The whole catalog: walk an index in the sort order, only as far as the
+    // page needs. Loading every product and sorting it would run again on
+    // each write to the table, once per page while the catalog is fetched in
+    // the background (FINDINGS.md, 7). Ties come out in id order here, which
+    // can differ from the server's.
+    const ordered = () => {
+      switch (sort) {
+        case 'PRICE_ASC': return db.Product.orderBy('[price+name]')
+        case 'PRICE_DESC': return db.Product.orderBy('[price+name]').reverse()
+        case 'RATING': return db.Product.orderBy('rating').reverse()
+        case 'NEWEST': return db.Product.orderBy('createdAt').reverse()
+        default: return db.Product.orderBy('name')
+      }
+    }
+    if (filtered) {
+      // A search or the stock filter has to look at every product: once, in
+      // table order, then sort and count what matched.
+      const rows = (await db.Product.filter(matches).toArray()).sort(ORDER[sort ?? 'NAME'])
+      return { products: connection(rows, offset, size, Math.max(known, rows.length)) }
+    }
+    const page = await ordered().offset(offset).limit(size).toArray()
+    return { products: connection(page, 0, size, known || await db.Product.count(), offset) }
   },
 
   prefetch: {

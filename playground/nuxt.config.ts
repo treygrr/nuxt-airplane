@@ -6,6 +6,7 @@ export default defineNuxtConfig({
   // named by their file alone: <OfflineSwitch>, not <SyncOfflineSwitch>.
   components: [{ path: '~/components', pathPrefix: false }],
   devtools: { enabled: true },
+  css: ['~/assets/css/main.css'],
   compatibilityDate: 'latest',
   nitro: {
     // Lets server/api/graphql.ts read the SDL at runtime.
@@ -25,13 +26,8 @@ export default defineNuxtConfig({
     // Operations go out as a SHA-256 hash; Apollo Server supports this
     // (automatic persisted queries) out of the box and asks for the text once.
     persistedQueries: 'automatic',
-    codegen: {
-      // Dates come over the wire as ISO strings. ID is restated because this
-      // object replaces the module's own mapping (FINDINGS.md, 2).
-      scalars: { ID: { input: 'string', output: 'string' }, DateTime: 'string' },
-      // Enums as string unions, so they are declared once (FINDINGS.md, 3).
-      enumsAsTypes: true,
-    },
+    // Dates come over the wire as ISO strings.
+    codegen: { scalars: { DateTime: 'string' } },
   },
   vuetify: {
     moduleOptions: {
@@ -52,9 +48,41 @@ export default defineNuxtConfig({
       theme: {
         defaultTheme: 'light',
         themes: {
-          light: { colors: { primary: '#c2410c', secondary: '#334155' } },
-          dark: { colors: { primary: '#fb923c', secondary: '#94a3b8' } },
+          light: {
+            colors: {
+              'primary': '#e2581b',
+              'secondary': '#1f2937',
+              'background': '#f6f7f9',
+              'surface': '#ffffff',
+              'surface-light': '#f1f3f6',
+              'info': '#2563eb',
+              'success': '#15803d',
+              'warning': '#b45309',
+              'error': '#dc2626',
+            },
+          },
+          dark: {
+            colors: {
+              'primary': '#fb8a4c',
+              'secondary': '#cbd5e1',
+              'background': '#0d1117',
+              'surface': '#151b24',
+              'surface-light': '#1d2530',
+            },
+          },
         },
+      },
+      // One look for the whole shop: rounded corners, quiet cards, outlined fields.
+      defaults: {
+        VBtn: { rounded: 'lg' },
+        VCard: { rounded: 'lg' },
+        VChip: { rounded: 'lg' },
+        VTextField: { variant: 'outlined', density: 'comfortable' },
+        VTextarea: { variant: 'outlined' },
+        VSelect: { variant: 'outlined' },
+        VAutocomplete: { variant: 'outlined' },
+        VNumberInput: { variant: 'outlined' },
+        VSwitch: { color: 'primary' },
       },
     },
   },

@@ -1,8 +1,11 @@
 <script setup lang="ts">
-import { mdiAlertCircleOutline, mdiCloudCheckOutline, mdiCloudOffOutline, mdiCloudSyncOutline } from '@mdi/js'
+import { mdiAlertCircleOutline, mdiCloudCheckOutline, mdiCloudOffOutline, mdiCloudSyncOutline, mdiFormatListChecks } from '@mdi/js'
 
-// The connection and the queue at a glance, with the work-offline switch in its menu.
+// The connection and the queue at a glance, with the work-offline switch in
+// its menu and the way to the full queue.
 const sync = useSync()
+const drawer = useQueueDrawer()
+const menu = ref(false)
 
 const failed = computed(() => sync.pending.value.filter(m => m.status === 'failed').length)
 const waiting = computed(() => sync.pending.value.length)
@@ -17,7 +20,10 @@ const state = computed(() => {
 </script>
 
 <template>
-  <v-menu :close-on-content-click="false">
+  <v-menu
+    v-model="menu"
+    :close-on-content-click="false"
+  >
     <template #activator="{ props }">
       <v-chip
         v-bind="props"
@@ -53,7 +59,19 @@ const state = computed(() => {
           {{ sync.lastError.value }}
         </div>
         <OfflineSwitch class="mt-2" />
+        <OfflineCatalogSwitch />
       </v-card-text>
+      <v-card-actions>
+        <v-btn
+          :prepend-icon="mdiFormatListChecks"
+          color="primary"
+          variant="tonal"
+          block
+          @click="menu = false; drawer = true"
+        >
+          See the queue
+        </v-btn>
+      </v-card-actions>
     </v-card>
   </v-menu>
 </template>
