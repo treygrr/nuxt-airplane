@@ -72,7 +72,7 @@ const editing = ref(false)
             :prepend-icon="mdiCartArrowDown"
             title="Fill all to max"
             :subtitle="site.tracksInventory ? 'Cart what every item needs' : 'Needs inventory tracking'"
-            :disabled="!site.tracksInventory"
+            :disabled="!site.tracksInventory || fillToMax.loading.value"
             @click="fillToMax.mutate({ siteId: site.id })"
           />
         </v-list>

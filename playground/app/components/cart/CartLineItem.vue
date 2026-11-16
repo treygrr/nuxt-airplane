@@ -3,7 +3,7 @@ import { mdiDeleteOutline } from '@mdi/js'
 
 // One line of the cart: what it is, how many, what they cost. Each step of
 // the quantity queues a change; the steps of one line fold into one.
-const props = defineProps<{ line: NuxtAirplaneStores['CartLine'], pending?: boolean }>()
+const props = defineProps<{ line: NuxtAirplaneStores['CartLine'], pending?: boolean, busy?: boolean }>()
 const emit = defineEmits<{ quantity: [quantity: number], remove: [] }>()
 
 function setQuantity(quantity: number) {
@@ -54,6 +54,8 @@ function setQuantity(quantity: number) {
           :prepend-icon="mdiDeleteOutline"
           variant="text"
           size="small"
+          :loading="busy"
+          :disabled="busy"
           @click="emit('remove')"
         >
           Remove

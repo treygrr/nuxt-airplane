@@ -54,6 +54,8 @@ const pending = usePendingRows('CartLine')
           v-if="lines.length"
           variant="text"
           size="small"
+          :loading="clear.loading.value"
+          :disabled="clear.loading.value"
           @click="clear.mutate({})"
         >
           Empty the cart
@@ -90,6 +92,7 @@ const pending = usePendingRows('CartLine')
               <CartLineItem
                 :line="line"
                 :pending="pending.has(line.id)"
+                :busy="removeLine.loading.value"
                 @quantity="setQuantity.mutate({ lineId: line.id, quantity: $event })"
                 @remove="removeLine.mutate({ lineId: line.id })"
               />

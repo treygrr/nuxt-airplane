@@ -2,7 +2,7 @@
 import type { Address } from '~/composables/useAccount'
 
 // An address, as a card that can be chosen (at checkout) or managed (in the account).
-defineProps<{ address: Address, selected?: boolean, pending?: boolean, manage?: boolean }>()
+defineProps<{ address: Address, selected?: boolean, pending?: boolean, manage?: boolean, busy?: boolean }>()
 defineEmits<{ edit: [], delete: [], default: [] }>()
 </script>
 
@@ -47,6 +47,7 @@ defineEmits<{ edit: [], delete: [], default: [] }>()
         v-if="!address.isDefault"
         size="small"
         variant="text"
+        :disabled="busy"
         @click="$emit('default')"
       >
         Make default
@@ -55,6 +56,8 @@ defineEmits<{ edit: [], delete: [], default: [] }>()
         size="small"
         variant="text"
         color="error"
+        :loading="busy"
+        :disabled="busy"
         @click="$emit('delete')"
       >
         Delete

@@ -3,7 +3,7 @@ import { mdiCartArrowRight, mdiClose } from '@mdi/js'
 
 // One saved product: its picture, price, a note, and moving it to the cart.
 // The note is saved as it is typed; the versions of one note fold into one.
-const props = defineProps<{ item: NuxtAirplaneStores['WishlistItem'], pending?: boolean }>()
+const props = defineProps<{ item: NuxtAirplaneStores['WishlistItem'], pending?: boolean, busy?: boolean }>()
 const emit = defineEmits<{ note: [note: string], move: [], remove: [] }>()
 
 const note = ref(props.item.note)
@@ -48,6 +48,8 @@ function typed(value: string) {
           variant="text"
           size="small"
           aria-label="Remove from the list"
+          :loading="busy"
+          :disabled="busy"
           @click="emit('remove')"
         />
       </div>
@@ -64,6 +66,8 @@ function typed(value: string) {
           color="primary"
           variant="tonal"
           height="40"
+          :loading="busy"
+          :disabled="busy"
           @click="emit('move')"
         >
           Move to cart

@@ -84,6 +84,7 @@ function saveName(name: string) {
         <SiteCard
           :site="site"
           :pending="pending.has(site.id)"
+          :busy="inventory.archiveSite.loading.value || inventory.unarchiveSite.loading.value || inventory.deleteSite.loading.value"
           @rename="naming = site"
           @archive="inventory.archiveSite.mutate({ id: site.id })"
           @unarchive="inventory.unarchiveSite.mutate({ id: site.id })"

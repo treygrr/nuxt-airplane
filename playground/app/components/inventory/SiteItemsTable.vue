@@ -212,6 +212,8 @@ const headers = computed(() => [
               variant="text"
               size="small"
               :aria-label="`Actions for ${item.productName}`"
+              :loading="removeItem.loading.value"
+              :disabled="removeItem.loading.value"
             />
           </template>
           <v-list density="compact">
