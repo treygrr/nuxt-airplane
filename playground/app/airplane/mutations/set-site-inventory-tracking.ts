@@ -1,4 +1,4 @@
-// Turning tracking off empties the site's restock cart, here as on the server.
+// Tracking turns a site's min and max on or off. Its restock cart stays either way.
 
 export default defineMutationHandler('SetSiteInventoryTracking', {
   async describe({ db, variables }) {
@@ -7,8 +7,6 @@ export default defineMutationHandler('SetSiteInventoryTracking', {
   },
   async apply({ db, variables }) {
     await db.Site.update(variables.id, { tracksInventory: variables.enabled })
-    if (!variables.enabled) await db.SiteCartLine.where('siteId').equals(variables.id).delete()
   },
   reconcile: ({ db }, result) => db.Site.put(result.setSiteInventoryTracking),
-  refetch: ['GetSiteCartLines'],
 })

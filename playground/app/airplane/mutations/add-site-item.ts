@@ -27,6 +27,7 @@ export default defineMutationHandler('AddSiteItem', {
       max: variables.max ?? 0,
       boxQuantity: variant.boxQuantity ?? null,
       minOrderQuantity: variant.minOrderQuantity ?? null,
+      imageUrl: product.imageUrl,
     })
     await db.Site.where('id').equals(variables.siteId).modify((site) => {
       site.itemCount++

@@ -122,6 +122,7 @@ export function siteItemView(site: Site, variantId: string) {
     max: levels.max,
     boxQuantity: variant.boxQuantity,
     minOrderQuantity: variant.minOrderQuantity,
+    imageUrl: imageUrl(product.id),
   }
 }
 

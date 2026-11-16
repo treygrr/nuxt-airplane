@@ -37,8 +37,8 @@ test('adds a product in the modal, restocks it from the cart in whole boxes', as
   const box = variant.boxQuantity!
   await page.goto('/inventory/site-1')
   await ready(page)
-  // A site that tracks inventory has a restock cart.
-  await expect(page.getByRole('link', { name: 'Restock cart' })).toBeVisible()
+  // The site tracks levels: its table has min and max.
+  await expect(page.getByRole('columnheader', { name: 'Min' })).toBeVisible()
 
   // Step 1: the product. Step 2: its levels.
   await page.getByRole('button', { name: 'Add product' }).click()
@@ -85,7 +85,7 @@ test('restocks offline: the counts go up at once and reach the server in order',
   await page.goto('/inventory/site-1')
   await ready(page)
   const firstRow = page.locator('.v-data-table tbody tr').first()
-  await expect(firstRow.locator('.v-chip', { hasText: /Below min|In range|Over max/ })).toBeVisible()
+  await expect(firstRow.locator('.preview')).toHaveClass(/level-(low|ok|over)/)
   const before = await siteItems(request, 'site-1')
   await pagesLoaded(page)
 
@@ -122,7 +122,7 @@ test('restocks offline: the counts go up at once and reach the server in order',
   }
 })
 
-test('a site opts out of tracking: its levels and cart go', async ({ page, request }) => {
+test('a site opts out of tracking: its levels go, its cart stays', async ({ page, request }) => {
   await page.goto('/inventory/site-1')
   await ready(page)
   await page.locator('.v-data-table tbody tr').first().getByRole('button', { name: /restock cart/ }).click()
@@ -134,27 +134,47 @@ test('a site opts out of tracking: its levels and cart go', async ({ page, reque
   const dialog = page.getByRole('dialog')
   await dialog.getByLabel('Name').fill('North Warehouse (old)')
   await dialog.getByLabel('Track inventory levels').click()
-  await expect(dialog.getByText('Turning tracking off empties this site\'s restock cart.')).toBeVisible()
   await dialog.getByRole('button', { name: 'Save' }).click()
   await expect(page.getByRole('heading', { name: 'North Warehouse (old)' })).toBeVisible()
   await expect(page.getByRole('columnheader', { name: 'Min' })).toHaveCount(0)
-  await expect(page.getByRole('link', { name: 'Restock cart' })).toHaveCount(0)
-  await expect.poll(async () => (await serverQuery<{ siteCartLines: unknown[] }>(request, '{ siteCartLines(siteId: "site-1") { id } }')).siteCartLines).toHaveLength(0)
+  await expect(page.getByRole('link', { name: /Restock cart/ })).toBeVisible()
+  await expect(page.locator('.v-data-table tbody tr .preview[class*="level-"]')).toHaveCount(0)
+  await drained(page)
+  expect((await serverQuery<{ siteCartLines: unknown[] }>(request, '{ siteCartLines(siteId: "site-1") { id } }')).siteCartLines).toHaveLength(1)
   // Two changes to different fields of the site: they may land in either order.
   await expect.poll(async () => (await serverQuery<{ site: { name: string, tracksInventory: boolean } }>(request, '{ site(id: "site-1") { name tracksInventory } }')).site)
     .toEqual({ name: 'North Warehouse (old)', tracksInventory: false })
 
-  // A site that does not track has no cart to add to.
-  await page.goto('/inventory/site-2')
-  await expect(page.getByRole('columnheader', { name: 'On hand' })).toBeVisible()
-  await expect(page.getByRole('button', { name: /restock cart/ })).toHaveCount(0)
+  // Without levels, a row offers the least that may be ordered, and adds it.
+  const row = page.locator('.v-data-table tbody tr').nth(1)
+  const least = Number(await row.locator('td input').inputValue())
+  expect(least).toBeGreaterThan(0)
+  await row.getByRole('button', { name: /restock cart/ }).click()
+  await expect.poll(async () => (await serverQuery<{ siteCartLines: { quantity: number }[] }>(request, '{ siteCartLines(siteId: "site-1") { quantity } }')).siteCartLines.map(l => l.quantity)).toContain(least)
+})
+
+test('sorts by a column picked from the menu, either way', async ({ page }) => {
+  await page.goto('/inventory/site-1')
+  await ready(page)
+  const rows = page.locator('.v-data-table tbody tr')
+  const onHand = async () => Promise.all((await rows.all()).slice(0, 10).map(async r => Number((await r.locator('td').nth(2).textContent() ?? '').replace(/,/g, ''))))
+  const sorted = (xs: number[], dir: 1 | -1) => xs.every((x, i) => !i || dir * (x - xs[i - 1]!) >= 0)
+
+  await page.locator('.v-select', { hasText: 'Sort by' }).click()
+  await page.getByRole('option', { name: 'On hand' }).click()
+  await expect.poll(async () => sorted(await onHand(), 1)).toBe(true)
+  await page.getByRole('button', { name: 'Sorted ascending' }).click()
+  await expect.poll(async () => sorted(await onHand(), -1)).toBe(true)
+
+  // Each picture is ringed in its level's colour.
+  await expect(rows.first().locator('.preview')).toHaveClass(/level-(low|ok|over)/)
 })
 
 test('each row offers what it needs to fill up, and its menu adjusts the count', async ({ page, request }) => {
   await page.goto('/inventory/site-1')
   await ready(page)
   const row = page.locator('.v-data-table tbody tr').first()
-  await expect(row.locator('.v-chip', { hasText: /Below min|In range|Over max/ })).toBeVisible()
+  await expect(row.locator('.preview')).toHaveClass(/level-(low|ok|over)/)
 
   // On hand is shown, not edited, in the table.
   const onHand = Number((await row.locator('td').nth(2).textContent() ?? '').replace(/,/g, ''))

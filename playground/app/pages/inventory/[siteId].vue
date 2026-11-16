@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { mdiArrowLeft, mdiCartArrowDown, mdiCartOutline, mdiChevronDown, mdiPencilOutline, mdiPlus } from '@mdi/js'
 
-// One site: what it holds, adding products, and, where it tracks inventory,
-// the levels its items are kept between and its restock cart.
+// One site: what it holds, adding products, its restock cart, and, where it
+// tracks inventory, the levels its items are kept between.
 const route = useRoute()
 const siteId = computed(() => String(route.params.siteId))
 const { data, loading } = useSite(siteId)
@@ -78,7 +78,6 @@ const editing = ref(false)
         </v-list>
       </v-menu>
       <v-btn
-        v-if="site.tracksInventory"
         :prepend-icon="mdiCartOutline"
         to="/cart?view=inventory"
         variant="tonal"
@@ -106,7 +105,7 @@ const editing = ref(false)
     />
     <template v-if="site">
       <v-alert
-        v-if="site.tracksInventory && lines.length"
+        v-if="lines.length"
         type="info"
         variant="tonal"
         density="compact"

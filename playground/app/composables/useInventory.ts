@@ -2,6 +2,7 @@
 // hold and their restock carts goes through here, so each has one home.
 
 import type { MaybeRefOrGetter } from 'vue'
+import type { SiteItemSort } from '#shared/siteItemSort'
 
 export function useSites(filters: MaybeRefOrGetter<{ archived?: boolean | null, search?: string | null }>) {
   return useQuery('GetSites', () => toValue(filters))
@@ -12,7 +13,7 @@ export function useSite(id: MaybeRefOrGetter<string>) {
 }
 
 /** A page of a site's items: `first` of them, after `after`. */
-export function useSiteItems(vars: MaybeRefOrGetter<{ siteId: string, search?: string | null, first: number, after?: string | null }>) {
+export function useSiteItems(vars: MaybeRefOrGetter<{ siteId: string, search?: string | null, first: number, after?: string | null, sort?: SiteItemSort | null, descending?: boolean | null }>) {
   return useQuery('GetSiteItems', () => toValue(vars))
 }
 

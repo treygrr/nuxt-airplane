@@ -21,6 +21,7 @@ fragment SiteItemFields on SiteItem {
   max
   boxQuantity
   minOrderQuantity
+  imageUrl
 }
 
 fragment SiteCartLineFields on SiteCartLine {
@@ -49,8 +50,8 @@ query GetSite($id: ID!) {
   }
 }
 
-query GetSiteItems($siteId: ID!, $first: Int, $after: String, $search: String) {
-  siteItems(siteId: $siteId, first: $first, after: $after, search: $search) {
+query GetSiteItems($siteId: ID!, $first: Int, $after: String, $search: String, $sort: SiteItemSort, $descending: Boolean) {
+  siteItems(siteId: $siteId, first: $first, after: $after, search: $search, sort: $sort, descending: $descending) {
     edges {
       cursor
       node {

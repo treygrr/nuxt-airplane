@@ -1,6 +1,6 @@
 <script setup lang="ts">
 // Edits a site: its name, and whether it tracks inventory. Only what changed
-// is sent. Turning tracking off empties the site's restock cart, so it says so.
+// is sent.
 const props = defineProps<{ site: { id: string, name: string, tracksInventory: boolean } | null }>()
 const emit = defineEmits<{ close: [] }>()
 
@@ -43,16 +43,8 @@ function save() {
           v-model="tracking"
           label="Track inventory levels"
           color="primary"
-          hint="Keeps a min and max for each item, and a restock cart"
+          hint="Keeps a min and max for each item"
           persistent-hint
-        />
-        <v-alert
-          v-if="site.tracksInventory && !tracking"
-          type="warning"
-          variant="tonal"
-          density="compact"
-          class="mt-4"
-          text="Turning tracking off empties this site's restock cart."
         />
       </v-card-text>
       <v-card-actions>

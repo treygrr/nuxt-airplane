@@ -233,6 +233,18 @@ type SiteItem {
   max: Int!
   boxQuantity: Int
   minOrderQuantity: Int
+  imageUrl: String!
+}
+
+"How a site's items are listed. Ties go by product name."
+enum SiteItemSort {
+  NAME
+  SKU
+  ON_HAND
+  MIN
+  MAX
+  "How full an item is against its max."
+  LEVEL
 }
 
 "An item in a site's restock cart. Its id is the site's and the variant's together, like the item's."
@@ -322,7 +334,7 @@ type Query {
   sites(archived: Boolean, search: String): [Site!]!
   site(id: ID!): Site
   "What a site holds, by product name."
-  siteItems(siteId: ID!, first: Int = 50, after: String, search: String): SiteItemConnection!
+  siteItems(siteId: ID!, first: Int = 50, after: String, search: String, sort: SiteItemSort, descending: Boolean): SiteItemConnection!
   "What the restock carts hold: one site's, or every site's."
   siteCartLines(siteId: ID): [SiteCartLine!]!
 
@@ -371,14 +383,14 @@ type Mutation {
   unarchiveSite(id: ID!): Site!
   "Only a site that holds nothing can be deleted."
   deleteSite(id: ID!): ID!
-  "Turning tracking off empties the site's restock cart."
+  "Min and max are kept only while a site tracks inventory. Its restock cart stays either way."
   setSiteInventoryTracking(id: ID!, enabled: Boolean!): Site!
   addSiteItem(siteId: ID!, variantId: ID!, onHand: Int = 0, min: Int = 0, max: Int = 0): SiteItem!
   updateSiteItemOnHand(siteId: ID!, variantId: ID!, onHand: Int!): SiteItem!
   updateSiteItemLevels(siteId: ID!, variantId: ID!, min: Int!, max: Int!): SiteItem!
   "Also takes it out of the site's restock cart."
   removeSiteItem(siteId: ID!, variantId: ID!): ID!
-  "Adds to the line when the item is in the cart already. Only at a site that tracks inventory."
+  "Adds to the line when the item is in the cart already."
   addSiteCartLine(siteId: ID!, variantId: ID!, quantity: Int!): SiteCartLine!
   setSiteCartLineQuantity(siteId: ID!, variantId: ID!, quantity: Int!): SiteCartLine!
   removeSiteCartLine(siteId: ID!, variantId: ID!): ID!

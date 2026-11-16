@@ -3,6 +3,7 @@
 // variant's stock in the shop is what the active sites hold of it, so every
 // change to what a site holds changes what the shop can sell.
 
+import { type SiteItemSort, siteItemOrder } from '#shared/siteItemSort'
 import { catalogChanged, fail, mutation, nextId, store, type RequestContext } from '../../utils/lab'
 import { findVariant, fitRestock, paginate, restockProblem, siteCartLineView, siteItemId, siteItemView, siteView } from '../../utils/shop'
 import type { Site } from '../../utils/seed'
@@ -45,12 +46,12 @@ export const inventory = {
       const site = store().sites.find(s => s.id === id)
       return site ? siteView(site) : null
     },
-    siteItems: (_: unknown, { siteId, first, after, search }: { siteId: string, first?: number | null, after?: string | null, search?: string | null }) => {
+    siteItems: (_: unknown, { siteId, first, after, search, sort, descending }: { siteId: string, first?: number | null, after?: string | null, search?: string | null, sort?: SiteItemSort | null, descending?: boolean | null }) => {
       const site = findSite(siteId)
       const q = search?.trim().toLowerCase()
       const items = [...site.items.keys()].map(variantId => siteItemView(site, variantId))
         .filter(item => !q || item.productName.toLowerCase().includes(q) || item.sku.toLowerCase().includes(q))
-        .sort((a, b) => a.productName.localeCompare(b.productName) || a.variantName.localeCompare(b.variantName))
+        .sort(siteItemOrder(sort, descending))
       return paginate(items, first ?? 50, after)
     },
     siteCartLines: (_: unknown, { siteId }: { siteId?: string | null }) =>
@@ -102,7 +103,6 @@ export const inventory = {
       mutation(ctx, 'setSiteInventoryTracking', `Site:${id}`, () => {
         const site = findSite(id)
         site.tracksInventory = enabled
-        if (!enabled) site.cart.clear()
         return siteView(site)
       }),
 
@@ -151,7 +151,6 @@ export const inventory = {
     addSiteCartLine: (_: unknown, { siteId, variantId, quantity }: { siteId: string, variantId: string, quantity: number }, ctx: RequestContext) =>
       mutation(ctx, 'addSiteCartLine', `SiteCartLine:${siteId}~${variantId}`, () => {
         const site = findSite(siteId)
-        tracking(site)
         holding(site, variantId)
         const line = site.cart.get(variantId)
         checkRestock(variantId, (line?.quantity ?? 0) + quantity)
@@ -195,7 +194,6 @@ export const inventory = {
     checkOutSiteCart: (_: unknown, { siteId }: { siteId: string }, ctx: RequestContext) =>
       mutation(ctx, 'checkOutSiteCart', `SiteCart:${siteId}`, () => {
         const site = findSite(siteId)
-        tracking(site)
         if (!site.cart.size) fail('EMPTY_CART', `${site.name}'s restock cart is empty`)
         const restocked = [...site.cart]
         for (const [variantId, line] of restocked) site.items.set(variantId, (site.items.get(variantId) ?? 0) + line.quantity)
