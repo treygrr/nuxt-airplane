@@ -1395,6 +1395,49 @@ describe('merging queued edits', () => {
     expect(await client.db.base.count()).toBe(0)
   })
 
+  it('finds the edit to fold into behind a long queue of other things, and links by what was created', async () => {
+    const client = createClient(server, { mutationHandlers: { ...createHandlers, RenameSite: (merging as Record<string, object>).RenameSite } as unknown as MutationHandlers })
+    await client.fetchQuery('GetSites', undefined)
+    client.goOffline()
+    const first = await client.enqueue('RenameSite', { id: 's1', name: 'A' })
+    const created = await client.enqueue('CreateSite', { name: 'New' })
+    for (let n = 0; n < 60; n++) await client.enqueue('CreateSite', { name: `Filler ${n}` })
+    const tmp = (await sites(client.db).toArray()).find(s => s.name === 'New')!.id
+    const edit = await client.enqueue('RenameSite', { id: tmp, name: 'Newer' })
+    const again = await client.enqueue('RenameSite', { id: 's1', name: 'B' })
+
+    // The rename of s1 folds into the first one, 62 rows back; the edit of the new site depends on its create alone.
+    expect(again).toMatchObject({ id: first.id, variables: { id: 's1', name: 'B' } })
+    expect((await client.db.mutations.get(edit.id))!.dependsOn).toEqual([created.id])
+    expect(await client.db.mutations.count()).toBe(63)
+    // What the indexes are built from is kept with the rows a mutation changed.
+    expect(await client.db.mutations.get(first.id)).toMatchObject({ keys: [['Site', 's1']], rows: [expect.stringContaining('s1')], unkeyed: 0 })
+  })
+
+  it('queues mutations in the order they were called, and a failed one takes no other with it', async () => {
+    const handlers = {
+      ...createHandlers,
+      // Slow to describe: without an order kept, the rename below would be applied first.
+      CreateSite: { ...(createHandlers as Record<string, object>).CreateSite, describe: async ({ db }: Ctx<unknown>) => `Create site ${(await sites(db).count()) + (await sites(db).count())}` },
+      RenameSite: {
+        apply: async ({ db, variables }: Ctx<{ id: string, name: string }>) => {
+          if (!await sites(db).where('name').equals('New').count() && variables.name === 'needs New') throw new Error('nothing to rename yet')
+          await sites(db).update(variables.id, { name: variables.name })
+        },
+      },
+    } as unknown as MutationHandlers
+    const client = createClient(server, { mutationHandlers: handlers, stores: { stores: { Site: 'name' } } })
+    await client.fetchQuery('GetSites', undefined)
+    client.goOffline()
+    // Not awaited one by one, as a click handler would fire them.
+    const throws = client.enqueue('RenameSite', { id: 's1', name: 'needs New' })
+    const create = client.enqueue('CreateSite', { name: 'New' })
+    const rename = client.enqueue('RenameSite', { id: 's2', name: 'needs New' })
+    await expect(throws).rejects.toThrow('nothing to rename yet')
+    await Promise.all([create, rename])
+    expect((await client.db.mutations.orderBy('createdAt').toArray()).map(m => m.document)).toEqual(['CreateSite', 'RenameSite'])
+  })
+
   it('puts the row back as the server has it when a merged edit is rolled back', async () => {
     const client = createClient(server, { mutationHandlers: merging })
     await client.fetchQuery('GetSites', undefined)

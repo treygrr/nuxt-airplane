@@ -4,7 +4,7 @@
 // tables is the engine's (`engine.ts`), called directly or, when the engine
 // runs in a web worker, with a message.
 
-import { liveQuery } from 'dexie'
+import { Dexie, liveQuery } from 'dexie'
 import { reactive, computed, shallowRef, readonly } from 'vue'
 import { isQuotaError } from './db'
 import { cacheKeyOf, createEngine, openDatabase, type AirplaneEngineOptions } from './engine'
@@ -139,10 +139,59 @@ export function createAirplaneClient(options: AirplaneClientOptions) {
 
   const synced = computed(() => !state.syncing && state.pending.length === 0)
 
-  // Keep the pending list live from the outbox table.
-  liveQuery(() => db.mutations.orderBy('createdAt').toArray())
-    // A database closed under it (sign-out, a test) ends the list; nothing to report.
-    .subscribe({ next: rows => (state.pending = rows), error: () => {} })
+  // Keep the pending list live from the outbox table. It is the whole queue,
+  // so reading it costs more the longer the queue is, and a read holds up the
+  // next write. After each read the list rests ten times as long as the read
+  // took: a short queue shows every change at once, and a long one being
+  // filled or drained spends a tenth of its time on the list, not all of it.
+  /** The longest the list goes unread while the outbox changes, however long the queue. */
+  const LIST_REST_MAX = 2000
+  let listed = 0
+  let rest = 0
+  let listing = false
+  /** The outbox changed while the list was being read. */
+  let stale = false
+  let listLater: ReturnType<typeof setTimeout> | undefined
+  async function list() {
+    if (listing) {
+      stale = true
+      return
+    }
+    const wait = listed + rest - Date.now()
+    if (wait > 0) {
+      listLater ??= setTimeout(() => {
+        listLater = undefined
+        void list()
+      }, wait)
+      // Never the reason a process stays alive (Node, tests).
+      ;(listLater as { unref?: () => void }).unref?.()
+      return
+    }
+    listing = true
+    let started = Date.now()
+    try {
+      // The read is what is timed, not the database opening before the first one.
+      await opened
+      started = Date.now()
+      state.pending = await queued()
+    }
+    catch {
+      // A database closed under it (sign-out, a test) ends the list; nothing to report.
+    }
+    listed = Date.now()
+    rest = Math.min((listed - started) * 10, LIST_REST_MAX)
+    listing = false
+    if (stale) {
+      stale = false
+      void list()
+    }
+  }
+  // Every write to the outbox, from this tab, its worker or another tab.
+  const outbox = `idb://${db.name}/mutations/`
+  Dexie.on('storagemutated', (parts) => {
+    if (Object.keys(parts).some(part => part.startsWith(outbox))) void list()
+  })
+  void list()
 
   if (typeof window !== 'undefined') {
     window.addEventListener('online', () => {

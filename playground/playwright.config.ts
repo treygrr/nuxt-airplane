@@ -8,10 +8,14 @@
 //
 //   npm run test:e2e                      every browser
 //   npm run test:e2e -- --project=firefox one of them
+//   npm run test:e2e:stress               the shop at scale, on its own
+//
+// E2E_PORT moves the server off 3100 when something else holds it.
 
 import { defineConfig, devices } from '@playwright/test'
 
-const PORT = 3100
+const PORT = Number(process.env.E2E_PORT) || 3100
+const STRESS = '**/stress.e2e.ts'
 
 export default defineConfig({
   testDir: './e2e',
@@ -29,9 +33,11 @@ export default defineConfig({
     screenshot: 'only-on-failure',
   },
   projects: [
-    { name: 'chromium', use: { ...devices['Desktop Chrome'] } },
-    { name: 'firefox', use: { ...devices['Desktop Firefox'] } },
-    { name: 'webkit', use: { ...devices['Desktop Safari'] } },
+    { name: 'chromium', use: { ...devices['Desktop Chrome'] }, testIgnore: STRESS },
+    { name: 'firefox', use: { ...devices['Desktop Firefox'] }, testIgnore: STRESS },
+    { name: 'webkit', use: { ...devices['Desktop Safari'] }, testIgnore: STRESS },
+    // The shop at scale, on its own: `npm run test:e2e:stress`.
+    ...(process.env.STRESS ? [{ name: 'stress', use: { ...devices['Desktop Chrome'] }, testMatch: STRESS, retries: 0 }] : []),
   ],
   webServer: {
     // Built from the repository root, as CI builds the playground.

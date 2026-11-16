@@ -4,7 +4,10 @@ import type { AirplaneDexie } from './types'
 
 export const MODULE_STORES = {
   queries: '&key, document, updatedAt',
-  mutations: '++id, status, createdAt',
+  // Past the queue's order, the indexes answer what queuing and sending ask of
+  // it without reading it all: the rows a mutation changed, what it created
+  // and wrote, the placeholders it minted, and whether it changed nothing.
+  mutations: '++id, status, createdAt, document, unkeyed, *rows, *creates, *writes, *tempIds',
   meta: '&key',
   base: '[table+key]',
 }

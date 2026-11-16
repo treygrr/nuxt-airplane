@@ -90,6 +90,7 @@ declare global {
     db: Record<string, { count: () => Promise<number>, toArray: () => Promise<Record<string, unknown>[]> }>
     enqueue: (name: string, variables: Record<string, unknown>) => Promise<{ id: number }>
     fetchQuery: (name: string, variables?: Record<string, unknown>) => Promise<unknown>
+    watchQuery: (name: string, variables?: Record<string, unknown>) => { snapshot: { value: { data: unknown } }, unsubscribe: () => void }
     goOffline: () => void
     goOnline: () => void
     sync: () => Promise<void>

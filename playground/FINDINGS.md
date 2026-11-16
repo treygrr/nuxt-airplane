@@ -127,3 +127,43 @@ Open, for the docs: the module's docs could say plainly that offline data is hal
 - A `resolveId(id)` on the client: the server's id for a temp id, or the id itself. Pages call it when their row goes missing.
 - A composable, `useResolvedId(id)`, that returns a ref which moves to the server's id when it is resolved. Pages watch it and replace the route.
 - Both: the composable built on the client method.
+
+## 11. Queueing a change costs more the longer the queue is
+
+**Done:** with the 50,000-product catalog, queued on-hand counts for different items at one site, offline, and timed each (`e2e/stress.e2e.ts`).
+
+**Happened:** the first took 6 ms, the 400th 38 ms, the 1,000th about 100 ms. A thousand took 52 s to queue and 2,000 took 209 s: four times as long for twice as many. Draining a thousand, with the server answering at once, took 60 s.
+
+**Expected:** a change costs about the same whether it is the first in the queue or the thousandth. A stock take of a few thousand items offline is the case this module is for.
+
+**Cause:** certain for queueing. Every `enqueue` reads the whole outbox at least twice: `mergeTarget` walks it for a mutation to fold into, and `linksOf` walks it for what the new one depends on (`src/runtime/engine.ts`); a third read happens when there is a merge. The client's live `pending` list reads it all again after every change (`src/runtime/client.ts`). Reading a queue of 1,200 takes 28 ms, which accounts for the rest. Likely the same for draining, not measured apart: `sendable` and `acknowledge` read the whole outbox for every mutation sent.
+
+**Open, for a decision:**
+
+- Index what the walks look for. `linksOf` asks which rows minted a placeholder, created a row, or wrote a piece: multi-entry indexes on `tempIds`, `creates` and `writes` answer that without reading the rest. `mergeTarget` could read only the rows of the same document, newest first, which helps a mixed queue but not a thousand of one kind.
+- Keep the queue in memory in the tab that owns it, refreshed when another tab writes, and answer all of these from it. Fastest, and the most to get wrong across tabs.
+- Give `merge` a key (the row it is about), so the fold is a lookup rather than a walk.
+
+Status: fixed in the module, with the first option and one thing more.
+
+- The outbox is indexed on what the walks look for (`document`, the rows a mutation changed, what it created and wrote, its placeholders, and whether it changed nothing). `enqueue` and `acknowledge` no longer read the queue. A mutation to fold into is looked for among those that changed a row the new one changed too, which narrows `merge`: two mutations of one document that share no row are no longer offered to it.
+- The indexes alone took a thousand from 52 s to 33 s. The rest was the live `pending` list: read in full after every change, and each read held up the next write. It now rests ten times as long as its last read took, two seconds at most.
+
+Measured after: a change costs 3.9 ms into an empty queue and 3.0 ms into one of 400; a thousand queue in 3.7 s (was 52 s) and drain in 33 s (was 60 s), which is about 33 ms a change whatever the length. `queueing a change costs the same however long the queue is` holds that in the stress suite.
+
+Left as it is: resolving a placeholder still rewrites the whole queue (`rewriteQueue`), so a long queue of creates pays for its length once per create.
+
+## 12. Two mutations fired together could be applied out of order, and a failed one could take the other with it
+
+**Done:** added a product to a site with "restock now" ticked. The dialog calls `addItem.mutate(...)` and `addToCart.mutate(...)` one after the other without awaiting the first. Seen once queueing had been made faster (finding 11): the e2e scenario for it failed.
+
+**Happened:** the cart line was applied before the item it is for, threw, and the item's own mutation vanished from the outbox. The item showed on the page and never reached the server.
+
+**Expected:** the two are applied in the order they were called, and a mutation whose `apply` throws leaves every other one alone.
+
+**Cause:** certain, and two things.
+
+- Nothing kept the order. Each `enqueue` did its reads (`describe`, the search for a mutation to fold into) and then opened its transaction, so whichever had less to read went first. It had held by luck.
+- After an `apply` throws, `enqueue` deletes the outbox row it had added, by id, in case the transaction committed anyway. But the transaction had aborted, and IndexedDB hands the id of an aborted row to the next one added: the delete removed the other mutation's row.
+
+Status: fixed in the module. Mutations are queued one at a time in call order, and the clean-up deletes a row only if it carries the failed mutation's own idempotency key.

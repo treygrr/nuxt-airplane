@@ -1,6 +1,6 @@
 {
   "name": "@treygrr/nuxt-airplane",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "description": "Airplane mode for your GraphQL app: typed composables from your .gql files, an IndexedDB cache and a mutation queue that lands when you are back online.",
   "keywords": [
     "nuxt",
@@ -56,7 +56,8 @@
     "test:types": "vue-tsc --noEmit && cd playground && vue-tsc --noEmit",
     "docs:dev": "nuxt dev docs",
     "docs:build": "nuxt build docs",
-    "test:e2e": "playwright test -c playground/playwright.config.ts"
+    "test:e2e": "playwright test -c playground/playwright.config.ts",
+    "test:e2e:stress": "STRESS=1 playwright test -c playground/playwright.config.ts --project=stress"
   },
   "dependencies": {
     "@graphql-codegen/core": "^6.2.2",

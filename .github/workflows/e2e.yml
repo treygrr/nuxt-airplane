@@ -10,6 +10,10 @@ on:
       browsers:
         description: Projects to run, space-separated (chromium firefox webkit)
         default: chromium firefox webkit
+      stress:
+        description: Also run the stress suite (50,000 products, long queues) in Chromium
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -34,6 +38,9 @@ jobs:
       - run: npm run test:e2e -- $(printf -- '--project=%s ' $BROWSERS)
         env:
           BROWSERS: ${{ inputs.browsers }}
+      - if: inputs.stress
+        run: npx playwright install --with-deps chromium && cd .. && npm run test:e2e:stress
+        working-directory: playground
       - uses: actions/upload-artifact@v7
         if: failure()
         with:

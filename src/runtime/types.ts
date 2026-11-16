@@ -102,6 +102,10 @@ export interface MutationRow {
   attempts?: number
   /** The rows `apply` changed, as `[table, key]`: what goes back to the server's version when it is taken off. */
   keys?: [string, IndexableType][]
+  /** `keys` as one string each, which IndexedDB can index: how the mutations that changed a row are found. */
+  rows?: string[]
+  /** `1` while `keys` is empty: a mutation that could be about anything. Indexed, so those are found without reading the queue. */
+  unkeyed?: 0 | 1
   /**
    * Ids handed out by `tempId()` while `apply` ran, in call order. A re-apply
    * (rebase) hands out the same ones so the local rows keep their ids. Each
@@ -210,8 +214,10 @@ export interface MutationHandler<N extends MutationName = MutationName> {
    * waiting, so ten quantity changes of one cart line reach the server as
    * one. Receives the variables of both and returns those of the single
    * mutation that stands for them, or nothing when they are not about the
-   * same thing. Must be pure. Only a mutation that has never been sent is
-   * merged into, and only when nothing queued in between touched the same rows.
+   * same thing. Must be pure. The earlier one is looked for among the
+   * mutations that changed a row this one changed too. Only a mutation that
+   * has never been sent is merged into, and only when nothing queued in
+   * between touched the same rows.
    */
   merge?: (earlier: MutationVariables<N>, later: MutationVariables<N>) => MutationVariables<N> | null | undefined | false
   /** Queries to refetch after the mutation has been sent. Defaults to every active query. */

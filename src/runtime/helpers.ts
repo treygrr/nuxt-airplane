@@ -145,6 +145,14 @@ export function mergeStores(entities: Record<string, EntityInfo>, user: Record<s
 /** A row's identity, from the `[table, key]` pair an outbox row or a fetch record lists. */
 export const sameRow = ([table, key]: [string, IndexableType]) => rowKey(table, key)
 
+/** The rows a mutation changed as an outbox row keeps them: the pairs, and what the indexes are built from. */
+export function keyed(keys: [string, IndexableType][]): Pick<MutationRow, 'keys' | 'rows' | 'unkeyed'> {
+  return { keys, rows: keys.map(sameRow), unkeyed: keys.length ? 0 : 1 }
+}
+
+/** Whether `a` comes before `b` in the queue. */
+export const queuedBefore = (a: MutationRow, b: MutationRow) => a.createdAt < b.createdAt || (a.createdAt === b.createdAt && a.id < b.id)
+
 /** The outbox, oldest first: the order mutations are applied and sent in. */
 export function queuedRows(db: AirplaneDexie) {
   return db.mutations.orderBy('createdAt').toArray()
