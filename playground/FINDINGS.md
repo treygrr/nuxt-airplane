@@ -127,3 +127,21 @@ Open, for the docs: the module's docs could say plainly that offline data is hal
 - A `resolveId(id)` on the client: the server's id for a temp id, or the id itself. Pages call it when their row goes missing.
 - A composable, `useResolvedId(id)`, that returns a ref which moves to the server's id when it is resolved. Pages watch it and replace the route.
 - Both: the composable built on the client method.
+
+## 11. Queueing a change costs more the longer the queue is
+
+**Done:** with the 50,000-product catalog, queued on-hand counts for different items at one site, offline, and timed each (`e2e/stress.e2e.ts`).
+
+**Happened:** the first took 6 ms, the 400th 38 ms, the 1,000th about 100 ms. A thousand took 52 s to queue and 2,000 took 209 s: four times as long for twice as many. Draining a thousand, with the server answering at once, took 60 s.
+
+**Expected:** a change costs about the same whether it is the first in the queue or the thousandth. A stock take of a few thousand items offline is the case this module is for.
+
+**Cause:** certain for queueing. Every `enqueue` reads the whole outbox at least twice: `mergeTarget` walks it for a mutation to fold into, and `linksOf` walks it for what the new one depends on (`src/runtime/engine.ts`); a third read happens when there is a merge. The client's live `pending` list reads it all again after every change (`src/runtime/client.ts`). Reading a queue of 1,200 takes 28 ms, which accounts for the rest. Likely the same for draining, not measured apart: `sendable` and `acknowledge` read the whole outbox for every mutation sent.
+
+**Open, for a decision:**
+
+- Index what the walks look for. `linksOf` asks which rows minted a placeholder, created a row, or wrote a piece: multi-entry indexes on `tempIds`, `creates` and `writes` answer that without reading the rest. `mergeTarget` could read only the rows of the same document, newest first, which helps a mixed queue but not a thousand of one kind.
+- Keep the queue in memory in the tab that owns it, refreshed when another tab writes, and answer all of these from it. Fastest, and the most to get wrong across tabs.
+- Give `merge` a key (the row it is about), so the fold is a lookup rather than a walk.
+
+Status: not changed. `queueing a change costs the same however long the queue is` is marked as failing in the stress suite; it passes, and says so, once the module is changed.
