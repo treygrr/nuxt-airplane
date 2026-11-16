@@ -55,6 +55,11 @@ const perks = [
     <AddToCart
       v-if="variant"
       :variant="variant"
+      class="mb-3"
+    />
+    <SaveToList
+      :product-id="product.id"
+      :variant-id="variantId"
       class="mb-6"
     />
     <v-divider class="mb-4" />
