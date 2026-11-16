@@ -109,3 +109,21 @@ Open, for the docs: the module's docs could say plainly that offline data is hal
 **Cause:** certain. The server remembered a key only once its first attempt had finished, so a retry arriving during that attempt ran as well. The client did exactly what it should: same keys, every time.
 
 **Fixed, in the playground's server:** a key whose first attempt is still running is waited on, and the retry gets that attempt's answer. Real servers that take idempotency keys need the same; the module's security and sync docs could say so where they introduce the keys.
+
+## 10. A page opened by a temp id has nothing to follow when the id is resolved
+
+**Done:** made a wishlist offline, opened it (`/wishlists/tmp-…`), then went online.
+
+**Happened:** the list synced, its row took the server's id, and the open page showed "List not found". Anything that keeps a temp id outside the database (a URL, a component's state, a bookmark) is left holding an id that no longer exists.
+
+**Expected:** a way to learn what a temp id became, so the page can follow it.
+
+**Cause:** certain. The engine keeps the temp-to-server map in its `meta` table under `tempIds` (`readTempIdMap` in `src/runtime/helpers.ts`), and nothing public exposes it or announces a resolution.
+
+**Worked around, in the playground:** the list page reads `meta.tempIds` itself when its list disappears and replaces the route (`app/pages/wishlists/[id].vue`). That leans on the module's bookkeeping, which is not an API.
+
+**Open, for a decision:**
+
+- A `resolveId(id)` on the client: the server's id for a temp id, or the id itself. Pages call it when their row goes missing.
+- A composable, `useResolvedId(id)`, that returns a ref which moves to the server's id when it is resolved. Pages watch it and replace the route.
+- Both: the composable built on the client method.

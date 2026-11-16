@@ -1,18 +1,12 @@
 <script setup lang="ts">
 import { mdiHeartOutline, mdiPlus } from '@mdi/js'
 
-// The customer's lists of saved products.
+// The customer's lists of saved products, each a card that opens the list.
 useHead({ title: 'Wishlists · Toolshed' })
 const wishlists = useWishlists()
 const { lists, loading } = wishlists
 const pendingLists = usePendingRows('Wishlist')
-const pendingItems = usePendingRows('WishlistItem')
-
-const naming = ref<{ id?: string, name?: string } | null>(null)
-function saveName(name: string) {
-  if (naming.value?.id) void wishlists.rename.mutate({ id: naming.value.id, name })
-  else void wishlists.create.mutate({ name })
-}
+const creating = ref(false)
 </script>
 
 <template>
@@ -24,7 +18,7 @@ function saveName(name: string) {
       <v-btn
         :prepend-icon="mdiPlus"
         color="primary"
-        @click="naming = {}"
+        @click="creating = true"
       >
         New list
       </v-btn>
@@ -39,31 +33,26 @@ function saveName(name: string) {
       title="No lists yet"
       text="Make a list for the next project and save tools to it."
     />
-    <div
-      v-else
-      class="d-flex flex-column ga-4"
-    >
-      <WishlistCard
+    <v-row v-else>
+      <v-col
         v-for="list in lists"
         :key="list.id"
-        :list="list"
-        :pending-list="pendingLists.has(list.id)"
-        :pending-items="pendingItems"
-        @rename="naming = list"
-        @delete="wishlists.remove.mutate({ id: list.id })"
-        @note="(itemId, note) => wishlists.setNote.mutate({ itemId, note })"
-        @move="itemId => wishlists.moveToCart.mutate({ itemId, quantity: 1 })"
-        @remove="itemId => wishlists.removeItem.mutate({ itemId })"
-      />
-    </div>
+        cols="6"
+        sm="4"
+        md="3"
+      >
+        <WishlistPreviewCard
+          :list="list"
+          :pending="pendingLists.has(list.id)"
+        />
+      </v-col>
+    </v-row>
     <TextPromptDialog
-      :model-value="!!naming"
-      :title="naming?.id ? 'Rename list' : 'New list'"
+      v-model="creating"
+      title="New list"
       label="Name"
-      :value="naming?.name"
-      :action="naming?.id ? 'Rename' : 'Create'"
-      @update:model-value="!$event && (naming = null)"
-      @submit="saveName"
+      action="Create"
+      @submit="name => wishlists.create.mutate({ name })"
     />
   </div>
 </template>
