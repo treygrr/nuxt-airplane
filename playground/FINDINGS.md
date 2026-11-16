@@ -20,6 +20,8 @@ options and leaves the choice open.
 - Keep it in the database's `meta` table, so it survives reloads and is shared by the tabs. Tabs already share the outbox, so one tab going online while another holds offline would be odd.
 - Keep it per tab, in memory, as now, and document that.
 
+**Seen again, across tabs:** with "Work offline" on in one tab and ten changes queued there, a second tab opened on the shop sent all ten at once. A tab drains whatever queue it finds when it starts, and the queue is shared while the switch is not. So in practice "Work offline" holds only until the shopper opens the shop in another tab, or reloads. That makes the first option (keep it in the database, shared by the tabs) look like the right one.
+
 Status: not changed. The switch in the app bar is left as it is.
 
 ## 2. `codegen.scalars` replaced the module's `ID` mapping
