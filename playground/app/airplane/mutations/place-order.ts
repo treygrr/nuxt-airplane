@@ -1,6 +1,6 @@
-// Sent with \`queue: false\`: the queue drains first, then the order goes out
+// Sent with `queue: false`: the queue drains first, then the order goes out
 // and the page waits for the answer. Nothing is applied before the server
-// says yes, so there is no \`apply\`.
+// says yes, so there is no `apply`.
 
 export default defineMutationHandler('PlaceOrder', {
   async reconcile({ db }, result) {
