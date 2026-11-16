@@ -60,8 +60,8 @@
     "test:e2e:stress": "STRESS=1 playwright test -c playground/playwright.config.ts --project=stress"
   },
   "dependencies": {
-    "@graphql-codegen/core": "^6.2.2",
-    "@graphql-codegen/typescript-operations": "^6.2.0",
+    "@graphql-codegen/core": "^7.0.0",
+    "@graphql-codegen/typescript-operations": "^7.0.1",
     "@nuxt/kit": "^4.6.3",
     "dexie": "^4.4.7",
     "ohash": "^2.0.12",
