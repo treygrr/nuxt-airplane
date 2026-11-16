@@ -4,7 +4,7 @@
 // change to what a site holds changes what the shop can sell.
 
 import { catalogChanged, fail, mutation, nextId, store, type RequestContext } from '../../utils/lab'
-import { findVariant, paginate, restockProblem, siteCartLineView, siteItemId, siteItemView, siteView } from '../../utils/shop'
+import { findVariant, fitRestock, paginate, restockProblem, siteCartLineView, siteItemId, siteItemView, siteView } from '../../utils/shop'
 import type { Site } from '../../utils/seed'
 
 const findSite = (id: string) => store().sites.find(s => s.id === id) ?? fail('NOT_FOUND', `No site ${id}`)
@@ -174,6 +174,22 @@ export const inventory = {
         const site = findSite(siteId)
         if (!site.cart.delete(variantId)) fail('NOT_FOUND', `${variantId} is not in ${site.name}'s restock cart`)
         return siteItemId(siteId, variantId)
+      }),
+
+    fillSiteCartToMax: (_: unknown, { siteId }: { siteId: string }, ctx: RequestContext) =>
+      mutation(ctx, 'fillSiteCartToMax', `SiteCart:${siteId}`, () => {
+        const site = findSite(siteId)
+        tracking(site)
+        const now = new Date().toISOString()
+        for (const [variantId, onHand] of site.items) {
+          const line = site.cart.get(variantId)
+          const short = (site.levels.get(variantId)?.max ?? 0) - onHand - (line?.quantity ?? 0)
+          if (short <= 0) continue
+          const quantity = fitRestock(findVariant(variantId).variant, short)
+          if (line) line.quantity += quantity
+          else site.cart.set(variantId, { quantity, addedAt: now })
+        }
+        return [...site.cart.keys()].map(variantId => siteCartLineView(site, variantId))
       }),
 
     checkOutSiteCart: (_: unknown, { siteId }: { siteId: string }, ctx: RequestContext) =>

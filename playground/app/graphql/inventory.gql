@@ -153,3 +153,9 @@ mutation CheckOutSiteCart($siteId: ID!) {
     }
   }
 }
+
+mutation FillSiteCartToMax($siteId: ID!) {
+  fillSiteCartToMax(siteId: $siteId) {
+    ...SiteCartLineFields
+  }
+}

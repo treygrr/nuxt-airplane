@@ -143,6 +143,13 @@ export function siteCartLineView(site: Site, variantId: string) {
   }
 }
 
+/** The smallest quantity at least `wanted` that the variant may be restocked in. */
+export function fitRestock(variant: Variant, wanted: number) {
+  let quantity = Math.max(1, Math.ceil(wanted), variant.minOrderQuantity ?? 1)
+  if (variant.boxQuantity) quantity = Math.ceil(quantity / variant.boxQuantity) * variant.boxQuantity
+  return quantity
+}
+
 /** Why a restock quantity of a variant is not allowed, or null when it is. */
 export function restockProblem(variant: Variant, quantity: number): string | null {
   if (!Number.isInteger(quantity) || quantity < 1) return 'A restock quantity must be 1 or more'

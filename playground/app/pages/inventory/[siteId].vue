@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { mdiArrowLeft, mdiCartOutline, mdiPlus } from '@mdi/js'
+import { mdiArrowLeft, mdiCartArrowDown, mdiCartOutline, mdiChevronDown, mdiPencilOutline, mdiPlus } from '@mdi/js'
 
 // One site: what it holds, adding products, and, where it tracks inventory,
 // the levels its items are kept between and its restock cart.
@@ -11,8 +11,9 @@ useHead({ title: () => `${site.value?.name ?? 'Site'} · Toolshed` })
 
 const { lines } = useSiteCartLines(siteId)
 const cartUnits = computed(() => lines.value.reduce((sum, line) => sum + line.quantity, 0))
-const { setTracking } = useInventory()
+const { fillToMax } = useInventory()
 const adding = ref(false)
+const editing = ref(false)
 </script>
 
 <template>
@@ -50,14 +51,32 @@ const adding = ref(false)
           </template>
         </div>
       </div>
-      <v-switch
-        :model-value="site.tracksInventory"
-        label="Track inventory levels"
-        color="primary"
-        density="compact"
-        hide-details
-        @update:model-value="setTracking.mutate({ id: site.id, enabled: !!$event })"
-      />
+      <v-menu location="bottom end">
+        <template #activator="{ props: menu }">
+          <v-btn
+            v-bind="menu"
+            :append-icon="mdiChevronDown"
+            variant="outlined"
+          >
+            Site options
+          </v-btn>
+        </template>
+        <v-list density="compact">
+          <v-list-item
+            :prepend-icon="mdiPencilOutline"
+            title="Edit site"
+            subtitle="Name, inventory tracking"
+            @click="editing = true"
+          />
+          <v-list-item
+            :prepend-icon="mdiCartArrowDown"
+            title="Fill all to max"
+            :subtitle="site.tracksInventory ? 'Cart what every item needs' : 'Needs inventory tracking'"
+            :disabled="!site.tracksInventory"
+            @click="fillToMax.mutate({ siteId: site.id })"
+          />
+        </v-list>
+      </v-menu>
       <v-btn
         v-if="site.tracksInventory"
         :prepend-icon="mdiCartOutline"
@@ -98,6 +117,10 @@ const adding = ref(false)
       <SiteItemsTable
         :site-id="siteId"
         :tracking="site.tracksInventory"
+      />
+      <EditSiteDialog
+        :site="editing ? site : null"
+        @close="editing = false"
       />
       <AddSiteItemDialog
         v-model="adding"

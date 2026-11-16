@@ -384,6 +384,8 @@ type Mutation {
   removeSiteCartLine(siteId: ID!, variantId: ID!): ID!
   "Adds each line's quantity to what the site holds, and empties the cart."
   checkOutSiteCart(siteId: ID!): SiteCartCheckout!
+  "Puts in the cart what each item needs to reach its max, beyond what is in the cart already, in quantities that may be ordered. Returns the whole cart."
+  fillSiteCartToMax(siteId: ID!): [SiteCartLine!]!
 
   "Asks to be told when a variant is back. Changes nothing the client keeps."
   notifyBackInStock(variantId: ID!): Boolean!

@@ -41,5 +41,6 @@ export function useInventory() {
     setCartQuantity: useMutation('SetSiteCartLineQuantity'),
     removeFromCart: useMutation('RemoveSiteCartLine'),
     checkOut: useMutation('CheckOutSiteCart'),
+    fillToMax: useMutation('FillSiteCartToMax'),
   }
 }

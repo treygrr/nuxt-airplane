@@ -89,10 +89,13 @@ test('restocks offline: the counts go up at once and reach the server in order',
   await pagesLoaded(page)
 
   await context.setOffline(true)
-  // Two items into the cart, the first one twice: one change for it.
+  // Two items into the cart, the first one twice (what it needs, then a
+  // typed quantity on top): one change for it.
   const rows = page.locator('.v-data-table tbody tr')
   await rows.nth(0).getByRole('button', { name: /restock cart/ }).click()
   await rows.nth(1).getByRole('button', { name: /restock cart/ }).click()
+  await expect(rows.nth(0).locator('[data-test="in-cart"]')).toHaveText(/\d+/)
+  await rows.nth(0).locator('td input').fill('5')
   await rows.nth(0).getByRole('button', { name: /restock cart/ }).click()
   await expect.poll(async () => (await queue(page)).map(m => m.document)).toEqual(['AddSiteCartLine', 'AddSiteCartLine'])
 
@@ -124,13 +127,76 @@ test('a site opts out of tracking: its levels and cart go', async ({ page, reque
   await page.locator('.v-data-table tbody tr').first().getByRole('button', { name: /restock cart/ }).click()
   await expect.poll(async () => (await serverQuery<{ siteCartLines: unknown[] }>(request, '{ siteCartLines(siteId: "site-1") { id } }')).siteCartLines).toHaveLength(1)
 
-  await page.getByLabel('Track inventory levels').click()
+  // Site options → Edit site: the name and tracking, together.
+  await page.getByRole('button', { name: 'Site options' }).click()
+  await page.getByText('Edit site').click()
+  const dialog = page.getByRole('dialog')
+  await dialog.getByLabel('Name').fill('North Warehouse (old)')
+  await dialog.getByLabel('Track inventory levels').click()
+  await expect(dialog.getByText('Turning tracking off empties this site\'s restock cart.')).toBeVisible()
+  await dialog.getByRole('button', { name: 'Save' }).click()
+  await expect(page.getByRole('heading', { name: 'North Warehouse (old)' })).toBeVisible()
   await expect(page.getByRole('columnheader', { name: 'Min' })).toHaveCount(0)
   await expect(page.getByRole('link', { name: 'Restock cart' })).toHaveCount(0)
   await expect.poll(async () => (await serverQuery<{ siteCartLines: unknown[] }>(request, '{ siteCartLines(siteId: "site-1") { id } }')).siteCartLines).toHaveLength(0)
+  expect((await serverQuery<{ site: { name: string, tracksInventory: boolean } }>(request, '{ site(id: "site-1") { name tracksInventory } }')).site).toEqual({ name: 'North Warehouse (old)', tracksInventory: false })
 
   // A site that does not track has no cart to add to.
   await page.goto('/inventory/site-2')
   await expect(page.getByRole('columnheader', { name: 'On hand' })).toBeVisible()
   await expect(page.getByRole('button', { name: /restock cart/ })).toHaveCount(0)
+})
+
+test('each row offers what it needs to fill up, and its menu adjusts the count', async ({ page, request }) => {
+  await page.goto('/inventory/site-1')
+  await ready(page)
+  const row = page.locator('.v-data-table tbody tr').first()
+  await expect(row.locator('.v-chip', { hasText: /Below min|In range|Over max/ })).toBeVisible()
+
+  // On hand is shown, not edited, in the table.
+  const onHand = Number((await row.locator('td').nth(2).textContent() ?? '').replace(/,/g, ''))
+  await expect(row.locator('td').nth(2).locator('input')).toHaveCount(0)
+
+  // The restock field holds what fills the item to its max; Add puts that in the cart.
+  const max = Number(await row.locator('td').nth(4).textContent() ?? '')
+  const wanted = Number(await row.locator('td input').inputValue())
+  expect(wanted).toBeGreaterThanOrEqual(max - onHand)
+  await row.getByRole('button', { name: /restock cart/ }).click()
+  await expect(row.locator('[data-test="in-cart"]')).toHaveText(String(wanted))
+  await expect(row.locator('td input')).toHaveValue('0')
+  await expect(row.getByRole('button', { name: /restock cart/ })).toHaveAttribute('aria-disabled', 'true')
+
+  // Adjusting on hand is in the row's menu.
+  await row.getByRole('button', { name: /Actions for/ }).click()
+  await page.getByRole('menuitem', { name: 'Adjust on hand' }).or(page.getByText('Adjust on hand')).first().click()
+  const dialog = page.getByRole('dialog')
+  await dialog.getByLabel('On hand').fill(String(onHand + 7))
+  await expect(dialog.getByText(`+7 from ${onHand}`)).toBeVisible()
+  await dialog.getByRole('button', { name: 'Save' }).click()
+  await expect(row.locator('td').nth(2)).toHaveText((onHand + 7).toLocaleString('en-US'))
+  await expect.poll(async () => (await serverQuery<{ siteCartLines: { quantity: number }[] }>(request, '{ siteCartLines(siteId: "site-1") { quantity } }')).siteCartLines.map(l => l.quantity)).toEqual([wanted])
+})
+
+test('fill all to max carts what every item at the site needs, in quantities that may be ordered', async ({ page, request }) => {
+  await page.goto('/inventory/site-1')
+  await ready(page)
+  await expect(page.locator('.v-data-table tbody tr').first()).toBeVisible()
+  const held = [...(await siteItems(request, 'site-1')).values()]
+  const short = held.filter(i => i.max > i.onHand)
+
+  await page.getByRole('button', { name: 'Site options' }).click()
+  await page.getByText('Fill all to max').click()
+  // Every item short of its max, across every page, not just the one shown.
+  await expect.poll(async () => (await serverQuery<{ siteCartLines: unknown[] }>(request, '{ siteCartLines(siteId: "site-1") { id } }')).siteCartLines.length, { timeout: 15_000 }).toBe(short.length)
+  await drained(page)
+
+  const { siteCartLines } = await serverQuery<{ siteCartLines: { variantId: string, quantity: number }[] }>(request, '{ siteCartLines(siteId: "site-1") { variantId quantity } }')
+  for (const line of siteCartLines) {
+    const item = held.find(i => i.variantId === line.variantId)!
+    expect(item.onHand + line.quantity).toBeGreaterThanOrEqual(item.max)
+    if (item.boxQuantity) expect(line.quantity % item.boxQuantity).toBe(0)
+    if (item.minOrderQuantity) expect(line.quantity).toBeGreaterThanOrEqual(item.minOrderQuantity)
+  }
+  // The table's restock fields now have nothing left to add.
+  await expect(page.locator('.v-data-table tbody tr').first().locator('td input')).toHaveValue('0')
 })
