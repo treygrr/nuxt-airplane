@@ -109,14 +109,13 @@ test('queues 1,000 changes offline and lands every one, once', async ({ page, re
   await ready(page)
   const queued = await queueCounts(page, 1000)
   expect(queued.counts).toHaveLength(1000)
-  // Far more than it should take: see the next test.
-  measured('queueing 1,000 changes', queued.ms, 180_000)
+  measured('queueing 1,000 changes', queued.ms, 30_000)
   expect(await page.evaluate(() => client().db.mutations.count())).toBe(1000)
 
   const started = Date.now()
   await page.evaluate(() => client().goOnline())
   await drained(page, 300_000)
-  measured('draining 1,000 changes', Date.now() - started, 180_000)
+  measured('draining 1,000 changes', Date.now() - started, 150_000)
 
   const server = await serverCounts(request, 'site-1')
   expect(queued.counts.filter(c => server.get(c.variantId) !== c.onHand)).toEqual([])
@@ -126,10 +125,6 @@ test('queues 1,000 changes offline and lands every one, once', async ({ page, re
 })
 
 test('queueing a change costs the same however long the queue is', async ({ page }) => {
-  // It does not yet: every change queued reads the whole queue, so the
-  // 400th costs several times the first (FINDINGS.md, 11). Marked as failing
-  // until the module is changed; this test then passes and says so.
-  test.fail()
   await page.goto('/inventory')
   await ready(page)
   const queued = await queueCounts(page, 400)

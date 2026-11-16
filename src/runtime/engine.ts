@@ -9,7 +9,7 @@ import { Dexie } from 'dexie'
 import { hash } from 'ohash'
 import { BOOKKEEPING_TABLES, MODULE_STORES, createDb, describeChanges, putRow, quietly, record, thingPath, track, type RowChange } from './db'
 import type { IndexableType } from 'dexie'
-import { TEMP_IDS_KEY, QUERY_TABLES_KEY, humanize, mergeStores, newTempId, queryKey, queuedRows, readQueryTableMap, readTempIdMap, requeueStuckRows, sameRow, substituteTempIds, uuid } from './helpers'
+import { TEMP_IDS_KEY, QUERY_TABLES_KEY, humanize, keyed, mergeStores, newTempId, queryKey, queuedBefore, queuedRows, readQueryTableMap, readTempIdMap, requeueStuckRows, sameRow, substituteTempIds, uuid } from './helpers'
 import type {
   AirplaneDexie,
   AirplaneEngine,
@@ -146,7 +146,7 @@ export function createEngine(options: AirplaneEngineOptions, { db, opened }: { d
     const store = () => h.store!({ db, variables: variables as never }, data as never)
     await quietly(db, async () => {
       // A queued mutation that found nothing to change may find its row in this response.
-      let again = (await queued()).some(m => !m.keys?.length && mutationHandler(m.document)?.apply)
+      let again = (await db.mutations.where('unkeyed').equals(1).toArray()).some(m => mutationHandler(m.document)?.apply)
       const brought = track()
       // No row has a server version set aside: there is no second layer to keep apart.
       if (!await db.base.count()) await store()
@@ -237,7 +237,7 @@ export function createEngine(options: AirplaneEngineOptions, { db, opened }: { d
   async function applyMutation(row: MutationRow, { tolerant = false } = {}): Promise<{ touched: Set<string>, wrote: Set<string> }> {
     const h = mutationHandler(row.document)
     if (!h?.apply) {
-      if (row.keys?.length) await db.mutations.update(row.id, { keys: [], creates: [], writes: [] })
+      if (row.keys?.length) await db.mutations.update(row.id, { ...keyed([]), creates: [], writes: [] })
       return { touched: new Set(), wrote: new Set() }
     }
     // Ids minted on the first apply are handed out again each time, in the
@@ -255,7 +255,7 @@ export function createEngine(options: AirplaneEngineOptions, { db, opened }: { d
     }
     await keepBase(changes)
     const { created, touched, wrote } = describeChanges(changes)
-    await db.mutations.update(row.id, { tempIds, keys: changes.map(c => [c.table, c.key]), creates: [...created], writes: [...wrote] })
+    await db.mutations.update(row.id, { tempIds, ...keyed(changes.map(c => [c.table, c.key])), creates: [...created], writes: [...wrote] })
     return { touched, wrote }
   }
 
@@ -310,6 +310,13 @@ export function createEngine(options: AirplaneEngineOptions, { db, opened }: { d
     })
   }
 
+  /** The other queued mutations that changed a row `row` changed too, oldest first. */
+  async function sharers(row: MutationRow) {
+    if (!row.rows?.length) return []
+    const found = await db.mutations.where('rows').anyOf(row.rows).distinct().toArray()
+    return found.filter(m => m.id !== row.id).sort((a, b) => (queuedBefore(a, b) ? -1 : 1))
+  }
+
   /** Whether any of `rows` changed a row that `row` changed too. */
   function sharesRows(row: MutationRow, rows: MutationRow[]) {
     const mine = new Set(row.keys?.map(sameRow))
@@ -325,15 +332,15 @@ export function createEngine(options: AirplaneEngineOptions, { db, opened }: { d
    */
   function acknowledge(id: number) {
     return quietly(db, async () => {
-      const rows = await queued()
-      const row = rows.find(m => m.id === id)
+      const row = await db.mutations.get(id)
       if (!row) return
-      const rest = rows.filter(m => m.id !== id)
       await db.mutations.delete(id)
-      if (!sharesRows(row, rest)) {
+      // The usual case, and what a long queue rests on: found by index, the queue is not read.
+      if (!(await sharers(row)).length) {
         if (row.keys?.length) await db.base.bulkDelete(row.keys)
         return
       }
+      const rest = await queued()
       await lower()
       const h = mutationHandler(row.document)
       const ids = [...(row.tempIds ?? [])]
@@ -383,7 +390,7 @@ export function createEngine(options: AirplaneEngineOptions, { db, opened }: { d
       const { value, replaced } = substituteTempIds(row.variables, ids)
       if (replaced) row.variables = value
       if (row.tempIds?.includes(tempId)) row.tempIds = row.tempIds.map(t => (t === tempId ? id : t))
-      if (row.keys) row.keys = row.keys.map(([table, key]) => [table, key === tempId ? id : key])
+      if (row.keys) Object.assign(row, keyed(row.keys.map(([table, key]) => [table, key === tempId ? id : key])))
       if (row.creates) row.creates = row.creates.map(path => rekeyThing(path, tempId, id))
       if (row.writes) row.writes = row.writes.map(path => rekeyThing(path, tempId, id))
     })
@@ -444,13 +451,11 @@ export function createEngine(options: AirplaneEngineOptions, { db, opened }: { d
    */
   async function linksOf(id: number, variables: unknown, { touched, wrote }: { touched: Set<string>, wrote: Set<string> }) {
     const { unresolved } = substituteTempIds(variables, await readTempIds())
-    const earlier = (await queued()).filter(row => row.id !== id)
-    const dependsOn = earlier
-      .filter(row => row.tempIds?.some(t => unresolved.includes(t)) || row.creates?.some(c => touched.has(c)))
-      .map(row => row.id)
-    const after = earlier
-      .filter(row => !dependsOn.includes(row.id) && row.writes?.some(w => wrote.has(w)))
-      .map(row => row.id)
+    // By index: a queue of thousands is not read to link one more to it.
+    const ids = async (index: 'tempIds' | 'creates' | 'writes', values: Iterable<string>) =>
+      (await db.mutations.where(index).anyOf([...values]).distinct().primaryKeys()).filter(found => found !== id)
+    const dependsOn = [...new Set([...await ids('tempIds', unresolved), ...await ids('creates', touched)])].sort((a, b) => a - b)
+    const after = (await ids('writes', wrote)).filter(found => !dependsOn.includes(found)).sort((a, b) => a - b)
     return { dependsOn, after }
   }
 
@@ -461,79 +466,115 @@ export function createEngine(options: AirplaneEngineOptions, { db, opened }: { d
     return humanize(name)
   }
 
-  /**
-   * The queued mutation a new one of the same document could be folded into,
-   * newest first, and the variables of the two as one. Only a mutation that
-   * has never been sent: the server may have seen one that was, and would
-   * take a changed version of it for a retry.
-   */
-  async function mergeTarget(name: string, variables: unknown) {
-    const merge = mutationHandler(name)?.merge as ((a: unknown, b: unknown) => unknown) | undefined
-    if (!merge) return
-    for (const row of (await queued()).reverse()) {
-      if (row.document !== name || row.status !== 'pending' || row.attempts) continue
-      const merged = merge(row.variables, variables)
-      if (merged) return { id: row.id, variables: row.variables, merged, description: await describeMutation(name, merged) }
-    }
-  }
-
   const union = <T>(a: T[] = [], b: T[] = []) => [...new Set([...a, ...b])]
 
   /**
-   * Folds the mutation just queued into `target`, if that still holds: the
-   * target is as it was found, the new one minted nothing, and nothing
-   * queued between the two has to do with the new one. Its effect is on the
-   * tables already, so the target only takes over its variables and what it
-   * changed. Resolves with the merged row, or nothing when the two stay apart.
+   * Folds the mutation just queued into an earlier one of the same document,
+   * if its `merge` takes the two as one. Its effect is on the tables already,
+   * so the earlier one only takes over the variables and what it changed.
+   * Resolves with the merged row, or nothing when the two stay apart.
+   *
+   * The earlier one is looked for among the mutations that changed a row the
+   * new one changed too, newest first: two changes to the same thing share
+   * its row, and those are found by index however long the queue is. A
+   * mutation that changed nothing is looked for among those of its document.
+   * Only a mutation that has never been sent is merged into: the server may
+   * have seen one that was, and would take a changed version of it for a
+   * retry. And only when nothing queued between the two has to do with the
+   * new one, and the new one minted nothing.
    */
-  async function mergeInto(target: NonNullable<Awaited<ReturnType<typeof mergeTarget>>>, row: MutationRow) {
-    const rows = await queued()
-    const into = rows.find(m => m.id === target.id)
-    if (!into || into.status !== 'pending' || into.attempts || row.tempIds?.length || hash(into.variables) !== hash(target.variables)) return
-    const between = rows.slice(rows.indexOf(into) + 1).filter(m => m.id !== row.id)
-    const tied = (m: MutationRow) => !m.keys?.length || row.dependsOn?.includes(m.id) || row.after?.includes(m.id) || sharesRows(row, [m])
-    if (between.some(tied)) return
-    const others = (ids?: number[]) => ids?.filter(id => id !== into.id)
+  async function fold(row: MutationRow) {
+    const merge = mutationHandler(row.document)?.merge as ((a: unknown, b: unknown) => unknown) | undefined
+    if (!merge || row.tempIds?.length) return
+    const shared = await sharers(row)
+    const candidates = row.rows?.length
+      ? shared
+      : (await db.mutations.where('document').equals(row.document).sortBy('createdAt')).filter(m => m.id !== row.id)
+    let into: MutationRow | undefined
+    let merged: unknown
+    for (const m of candidates.reverse()) {
+      if (m.document !== row.document || m.status !== 'pending' || m.attempts) continue
+      merged = merge(m.variables, row.variables)
+      if (!merged) continue
+      into = m
+      break
+    }
+    if (!into) return
+    // Between the two: anything that shares a row with the new one, is linked
+    // to it, or could be about anything.
+    const target = into
+    const between = (m: MutationRow) => m.id !== row.id && m.id !== target.id && queuedBefore(target, m)
+    if (shared.some(between)) return
+    const links = [...(row.dependsOn ?? []), ...(row.after ?? [])]
+    if ((await db.mutations.bulkGet(links)).some(m => m && between(m))) return
+    if ((await db.mutations.where('unkeyed').equals(1).toArray()).some(between)) return
+    const others = (ids?: number[]) => ids?.filter(id => id !== target.id)
     await db.mutations.delete(row.id)
-    await db.mutations.update(into.id, {
-      variables: target.merged,
-      description: target.description,
-      keys: [...new Map([...(into.keys ?? []), ...(row.keys ?? [])].map(k => [sameRow(k), k])).values()],
-      creates: union(into.creates, row.creates),
-      writes: union(into.writes, row.writes),
-      dependsOn: union(into.dependsOn, others(row.dependsOn)),
-      after: union(into.after, others(row.after)),
+    await db.mutations.update(target.id, {
+      variables: merged,
+      ...keyed([...new Map([...(target.keys ?? []), ...(row.keys ?? [])].map(k => [sameRow(k), k])).values()]),
+      creates: union(target.creates, row.creates),
+      writes: union(target.writes, row.writes),
+      dependsOn: union(target.dependsOn, others(row.dependsOn)),
+      after: union(target.after, others(row.after)),
     })
-    return (await db.mutations.get(into.id))!
+    return (await db.mutations.get(target.id))!
   }
 
-  async function enqueueLocal(name: string, input: unknown) {
+  /** The last mutation being queued: the next one waits for it. */
+  let queuing: Promise<unknown> = Promise.resolve()
+
+  /**
+   * Mutations are queued, and applied, in the order they were called, one at
+   * a time: two fired without awaiting the first (add an item, then put it in
+   * a cart) land as written, whichever is quicker to describe.
+   */
+  function enqueueLocal(name: string, input: unknown) {
+    const row = queuing.then(() => enqueueNext(name, input))
+    queuing = row.catch(() => {})
+    return row
+  }
+
+  async function enqueueNext(name: string, input: unknown) {
     if (document(name).kind !== 'mutation') throw new Error(`[nuxt-airplane] "${name}" is not a mutation`)
     await ready()
     // A placeholder the server has already named is its real id from the start.
     const named = substituteTempIds(input, await readTempIds()).value
     const description = await describeMutation(name, named)
-    const target = await mergeTarget(name, named)
     // One transaction: the mutation is queued with its effect applied and its
     // dependencies known, or not at all if `apply` throws, and no rebase can
     // find it half-queued.
     let queuedAs: number | undefined
-    return db.transaction('rw', db.tables, async () => {
+    const idempotencyKey = uuid()
+    let folded = false
+    const row = await db.transaction('rw', db.tables, async () => {
       const variables = substituteTempIds(named, await readTempIds()).value
       // The queue is ordered by this, so it must not step back with the clock.
       const createdAt = Math.max(Date.now(), (await db.mutations.orderBy('createdAt').last())?.createdAt ?? 0)
-      const id = queuedAs = await db.mutations.add({ document: name, variables, description, status: 'pending', createdAt, idempotencyKey: uuid() } as MutationRow)
+      const id = queuedAs = await db.mutations.add({ document: name, variables, description, status: 'pending', createdAt, idempotencyKey, unkeyed: 1 } as MutationRow)
       const did = await applyMutation((await db.mutations.get(id))!)
       await db.mutations.update(id, await linksOf(id, variables, did))
       const row = (await db.mutations.get(id))!
-      return (target && await mergeInto(target, row)) || row
+      const into = await fold(row)
+      folded = !!into
+      return into ?? row
     }).catch(async (error) => {
       // An abort removes the row. An `apply` that awaited something other
       // than a Dexie operation made the transaction commit instead, row
-      // included: the caller is told it failed, so it must not be sent.
-      if (queuedAs !== undefined) await db.mutations.delete(queuedAs)
+      // included: the caller is told it failed, so it must not be sent. By
+      // its key as well as its id: IndexedDB hands the id of an aborted row
+      // to the next one, which is another mutation and stays.
+      if (queuedAs !== undefined) await db.mutations.where('id').equals(queuedAs).and(m => m.idempotencyKey === idempotencyKey).delete()
       throw error
     })
+    if (!folded) return row
+    // Said in words outside the transaction, as `describe` may await anything.
+    // Skipped if another change was folded in meanwhile: that one says it.
+    const said = await describeMutation(name, row.variables)
+    await db.mutations.where('id').equals(row.id).modify((m: MutationRow) => {
+      if (hash(m.variables) === hash(row.variables)) m.description = said
+    })
+    return (await db.mutations.get(row.id)) ?? row
   }
 
   /**
