@@ -1,0 +1,95 @@
+fragment CartLineFields on CartLine {
+  id
+  cartId
+  productId
+  variantId
+  productName
+  variantName
+  imageUrl
+  unitPrice
+  quantity
+  addedAt
+}
+
+fragment CouponFields on Coupon {
+  id
+  code
+  description
+  percentOff
+  minimumSubtotal
+}
+
+# The cart without its lines: the client keeps lines as rows of their own,
+# so two lines can change at once.
+fragment CartFields on Cart {
+  id
+  updatedAt
+  coupon {
+    ...CouponFields
+  }
+}
+
+fragment OrderSummaryFields on OrderSummary {
+  id
+  itemCount
+  subtotal
+  discount
+  shipping
+  tax
+  total
+}
+
+query GetCart {
+  cart {
+    ...CartFields
+    lines {
+      ...CartLineFields
+    }
+  }
+}
+
+query GetOrderSummary {
+  orderSummary {
+    ...OrderSummaryFields
+  }
+}
+
+query GetCoupons {
+  coupons {
+    ...CouponFields
+  }
+}
+
+mutation AddCartLine($variantId: ID!, $quantity: Int!) {
+  addCartLine(variantId: $variantId, quantity: $quantity) {
+    ...CartLineFields
+  }
+}
+
+mutation SetCartLineQuantity($lineId: ID!, $quantity: Int!) {
+  setCartLineQuantity(lineId: $lineId, quantity: $quantity) {
+    ...CartLineFields
+  }
+}
+
+mutation RemoveCartLine($lineId: ID!) {
+  removeCartLine(lineId: $lineId)
+}
+
+mutation ClearCart {
+  clearCart {
+    ...CartFields
+  }
+}
+
+mutation ApplyCoupon($code: String!) {
+  applyCoupon(code: $code) {
+    ...CartFields
+  }
+}
+
+mutation RemoveCoupon {
+  removeCoupon {
+    ...CartFields
+  }
+}

@@ -1,0 +1,38 @@
+fragment ReviewFields on Review {
+  id
+  productId
+  authorName
+  rating
+  title
+  body
+  createdAt
+  mine
+}
+
+query GetReviews($productId: ID!) {
+  reviews(productId: $productId) {
+    ...ReviewFields
+  }
+}
+
+query GetMyReviews {
+  myReviews {
+    ...ReviewFields
+  }
+}
+
+mutation CreateReview($productId: ID!, $rating: Int!, $title: String!, $body: String!) {
+  createReview(productId: $productId, rating: $rating, title: $title, body: $body) {
+    ...ReviewFields
+  }
+}
+
+mutation UpdateReview($id: ID!, $rating: Int, $title: String, $body: String) {
+  updateReview(id: $id, rating: $rating, title: $title, body: $body) {
+    ...ReviewFields
+  }
+}
+
+mutation DeleteReview($id: ID!) {
+  deleteReview(id: $id)
+}

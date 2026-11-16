@@ -1,5 +1,9 @@
 export default defineMutationHandler('UnarchiveSite', {
-  describe: async ({ db, variables }) => `Unarchive ${(await db.Site.get(variables.id))?.name ?? variables.id}`,
+  async describe({ db, variables }) {
+    return `Unarchive ${(await db.Site.get(variables.id))?.name ?? 'a site'}`
+  },
   apply: ({ db, variables }) => db.Site.update(variables.id, { archived: false }),
-  refetch: ['GetSites'],
+  reconcile: ({ db }, result) => db.Site.put(result.unarchiveSite),
+  // A site's stock is the shop's stock: the catalog's numbers change too.
+  refetch: ['GetSites', 'GetSite', 'GetSiteItems', 'GetProduct', 'GetProducts'],
 })

@@ -1,0 +1,65 @@
+fragment AddressFields on Address {
+  id
+  name
+  line1
+  line2
+  city
+  region
+  postalCode
+  country
+  isDefault
+}
+
+fragment CustomerFields on Customer {
+  id
+  name
+  email
+  phone
+  marketingOptIn
+}
+
+query GetMe {
+  me {
+    ...CustomerFields
+  }
+}
+
+query GetAddresses {
+  addresses {
+    ...AddressFields
+  }
+}
+
+mutation CreateAddress($input: AddressInput!) {
+  createAddress(input: $input) {
+    ...AddressFields
+  }
+}
+
+mutation UpdateAddress($id: ID!, $name: String, $line1: String, $line2: String, $city: String, $region: String, $postalCode: String, $country: String) {
+  updateAddress(id: $id, name: $name, line1: $line1, line2: $line2, city: $city, region: $region, postalCode: $postalCode, country: $country) {
+    ...AddressFields
+  }
+}
+
+mutation DeleteAddress($id: ID!) {
+  deleteAddress(id: $id)
+}
+
+mutation SetDefaultAddress($id: ID!) {
+  setDefaultAddress(id: $id) {
+    ...AddressFields
+  }
+}
+
+mutation UpdateProfile($name: String, $email: String, $phone: String) {
+  updateProfile(name: $name, email: $email, phone: $phone) {
+    ...CustomerFields
+  }
+}
+
+mutation SetMarketingOptIn($optIn: Boolean!) {
+  setMarketingOptIn(optIn: $optIn) {
+    ...CustomerFields
+  }
+}

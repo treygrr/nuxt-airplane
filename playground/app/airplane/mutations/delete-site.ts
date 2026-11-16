@@ -1,7 +1,9 @@
-// Deleting the row is enough: `GetSites` reads the table, so the site is gone
-// from the list at once.
 export default defineMutationHandler('DeleteSite', {
-  describe: async ({ db, variables }) => `Delete ${(await db.Site.get(variables.id))?.name ?? variables.id}`,
-  apply: ({ db, variables }) => db.Site.delete(variables.id),
-  refetch: ['GetSites'],
+  async describe({ db, variables }) {
+    return `Delete ${(await db.Site.get(variables.id))?.name ?? 'a site'}`
+  },
+  async apply({ db, variables }) {
+    await db.SiteItem.where('siteId').equals(variables.id).delete()
+    await db.Site.delete(variables.id)
+  },
 })

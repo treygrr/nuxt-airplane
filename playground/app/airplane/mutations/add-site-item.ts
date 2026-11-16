@@ -1,16 +1,35 @@
-// A site's items are stored on the site row, as the response has them.
-// Adding one means an entry there, named from the catalog in `db.Item`.
+// A site item's id is the site's and the variant's together, so the client
+// can name it without waiting for the server. Added to a site created
+// offline, that id carries the site's placeholder.
+
 export default defineMutationHandler('AddSiteItem', {
   async describe({ db, variables }) {
-    const [site, item] = await Promise.all([db.Site.get(variables.siteId), db.Item.get(variables.itemId)])
-    return `Add ${item?.name ?? variables.itemId} to ${site?.name ?? variables.siteId}`
+    const variant = await db.Variant.get(variables.variantId)
+    const product = variant && await db.Product.get(variant.productId)
+    const site = await db.Site.get(variables.siteId)
+    return `Stock ${product?.name ?? 'an item'} at ${site?.name ?? 'a site'}`
   },
   async apply({ db, variables }) {
-    const { siteId, itemId, onHand } = variables
-    const name = (await db.Item.get(itemId))?.name ?? itemId
-    await db.Site.update(siteId, (site) => {
-      site.items = [...site.items, { id: itemId, name, onHand: onHand ?? 0 }]
+    const variant = await db.Variant.get(variables.variantId)
+    const product = variant && await db.Product.get(variant.productId)
+    if (!variant || !product) throw new Error(`Variant ${variables.variantId} is not stored`)
+    const onHand = variables.onHand ?? 0
+    await db.SiteItem.put({
+      id: `${variables.siteId}~${variant.id}`,
+      siteId: variables.siteId,
+      variantId: variant.id,
+      productId: product.id,
+      productName: product.name,
+      variantName: variant.name,
+      sku: variant.sku,
+      onHand,
+    })
+    await db.Site.where('id').equals(variables.siteId).modify((site) => {
+      site.itemCount++
+      site.unitCount += onHand
     })
   },
-  refetch: ['GetSites'],
+  reconcile: ({ db }, result) => db.SiteItem.put(result.addSiteItem),
+  // A site's stock is the shop's stock: the catalog's numbers change too.
+  refetch: ['GetSites', 'GetSite', 'GetSiteItems', 'GetProduct', 'GetProducts'],
 })

@@ -1,0 +1,65 @@
+fragment WishlistItemFields on WishlistItem {
+  id
+  wishlistId
+  productId
+  variantId
+  productName
+  imageUrl
+  price
+  note
+  addedAt
+}
+
+# A list without its items: the client keeps items as rows of their own.
+fragment WishlistFields on Wishlist {
+  id
+  name
+  createdAt
+}
+
+query GetWishlists {
+  wishlists {
+    ...WishlistFields
+    items {
+      ...WishlistItemFields
+    }
+  }
+}
+
+mutation CreateWishlist($name: String!) {
+  createWishlist(name: $name) {
+    ...WishlistFields
+  }
+}
+
+mutation RenameWishlist($id: ID!, $name: String!) {
+  renameWishlist(id: $id, name: $name) {
+    ...WishlistFields
+  }
+}
+
+mutation DeleteWishlist($id: ID!) {
+  deleteWishlist(id: $id)
+}
+
+mutation AddWishlistItem($wishlistId: ID!, $productId: ID!, $variantId: ID, $note: String) {
+  addWishlistItem(wishlistId: $wishlistId, productId: $productId, variantId: $variantId, note: $note) {
+    ...WishlistItemFields
+  }
+}
+
+mutation SetWishlistItemNote($itemId: ID!, $note: String!) {
+  setWishlistItemNote(itemId: $itemId, note: $note) {
+    ...WishlistItemFields
+  }
+}
+
+mutation RemoveWishlistItem($itemId: ID!) {
+  removeWishlistItem(itemId: $itemId)
+}
+
+mutation MoveWishlistItemToCart($itemId: ID!, $quantity: Int) {
+  moveWishlistItemToCart(itemId: $itemId, quantity: $quantity) {
+    ...CartLineFields
+  }
+}
