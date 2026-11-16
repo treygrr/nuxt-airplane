@@ -10,8 +10,11 @@
   "dependencies": {
     "@apollo/server": "^5.5.1",
     "@as-integrations/h3": "^2.0.3",
-    "graphql": "^17.0.2",
+    "@mdi/js": "^7.4.47",
     "@treygrr/nuxt-airplane": "file:..",
-    "nuxt": "^4.6.3"
+    "graphql": "^17.0.2",
+    "nuxt": "^4.6.3",
+    "vuetify": "^4.3.3",
+    "vuetify-nuxt-module": "^1.0.0-rc.6"
   }
 }

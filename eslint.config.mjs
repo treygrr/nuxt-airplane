@@ -10,8 +10,10 @@ export default createConfigForNuxt({
     stylistic: true,
   },
   dirs: {
+    // Nuxt 4 keeps the app's sources under app/: pages and layouts there are routes, not components.
     src: [
       './playground',
+      './playground/app',
     ],
   },
 })
