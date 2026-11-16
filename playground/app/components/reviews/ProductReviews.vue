@@ -79,6 +79,7 @@ function save(review: { rating: number, title: string, body: string }) {
             :key="review.id"
             :review="review"
             :pending="pending.has(review.id)"
+            :busy="remove.loading.value"
             class="mb-3"
             @edit="editing = review.id"
             @delete="remove.mutate({ id: review.id })"

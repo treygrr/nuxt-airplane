@@ -57,6 +57,7 @@ function save(fields: Partial<AddressFields>) {
         <AddressCard
           :address="address"
           :pending="pending.has(address.id)"
+          :busy="setDefault.loading.value || remove.loading.value"
           manage
           @edit="edit(address)"
           @default="setDefault.mutate({ id: address.id })"

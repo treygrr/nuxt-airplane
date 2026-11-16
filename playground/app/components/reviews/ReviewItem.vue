@@ -5,6 +5,7 @@ import { mdiDeleteOutline, mdiPencilOutline } from '@mdi/js'
 defineProps<{
   review: { id: string, authorName: string, rating: number, title: string, body: string, createdAt: string, mine: boolean }
   pending?: boolean
+  busy?: boolean
 }>()
 defineEmits<{ edit: [], delete: [] }>()
 </script>
@@ -33,6 +34,8 @@ defineEmits<{ edit: [], delete: [] }>()
           variant="text"
           size="small"
           aria-label="Delete"
+          :loading="busy"
+          :disabled="busy"
           @click="$emit('delete')"
         />
       </template>

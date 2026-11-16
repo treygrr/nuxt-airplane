@@ -166,3 +166,19 @@ test('a product card adds a quantity to the cart without opening the product', a
   const { cart } = await serverQuery<Cart>(request, '{ cart { lines { variantName quantity } } }')
   expect(cart.lines.map(l => l.quantity)).toEqual([3])
 })
+
+test('a double-click on Remove queues one removal', async ({ page, context }) => {
+  await page.goto('/p/p-1')
+  await ready(page)
+  await page.getByRole('button', { name: 'Add to cart' }).click()
+  await drained(page)
+  await page.goto('/cart')
+  await ready(page)
+  await pagesLoaded(page)
+
+  await context.setOffline(true)
+  // The first click sets the mutation's loading, so the button is loading
+  // and disabled before the second click lands.
+  await page.getByRole('button', { name: 'Remove' }).first().dblclick()
+  await expect.poll(async () => (await queue(page)).map(m => m.document)).toEqual(['RemoveCartLine'])
+})

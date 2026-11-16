@@ -78,6 +78,8 @@ const headers = [
           variant="text"
           size="small"
           :aria-label="`Take ${item.productName} out of the cart`"
+          :loading="removeFromCart.loading.value"
+          :disabled="removeFromCart.loading.value"
           @click="removeFromCart.mutate({ siteId: item.siteId, variantId: item.variantId })"
         />
       </template>
@@ -88,6 +90,8 @@ const headers = [
       <v-btn
         color="primary"
         variant="flat"
+        :loading="checkOut.loading.value"
+        :disabled="checkOut.loading.value"
         @click="checkOut.mutate({ siteId: site.id })"
       >
         Check out · restock {{ units.toLocaleString() }}

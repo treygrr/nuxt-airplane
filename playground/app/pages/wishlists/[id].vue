@@ -74,6 +74,7 @@ async function remove(id: string) {
               :prepend-icon="mdiDeleteOutline"
               title="Delete the list"
               base-color="error"
+              :disabled="wishlists.remove.loading.value"
               @click="remove(list.id)"
             />
           </v-list>
@@ -98,6 +99,7 @@ async function remove(id: string) {
           <WishlistItemRow
             :item="item"
             :pending="pendingItems.has(item.id)"
+            :busy="wishlists.moveToCart.loading.value || wishlists.removeItem.loading.value"
             @note="wishlists.setNote.mutate({ itemId: item.id, note: $event })"
             @move="wishlists.moveToCart.mutate({ itemId: item.id, quantity: 1 })"
             @remove="wishlists.removeItem.mutate({ itemId: item.id })"

@@ -6,6 +6,8 @@ defineProps<{
   site: { id: string, name: string, archived: boolean, tracksInventory: boolean, itemCount: number, unitCount: number }
   /** A queued change has touched it and has not reached the server yet. */
   pending?: boolean
+  /** A change to it is being applied: its actions wait. */
+  busy?: boolean
 }>()
 defineEmits<{ rename: [], archive: [], unarchive: [], delete: [] }>()
 </script>
@@ -47,6 +49,8 @@ defineEmits<{ rename: [], archive: [], unarchive: [], delete: [] }>()
               variant="text"
               size="small"
               aria-label="Site actions"
+              :loading="busy"
+              :disabled="busy"
               @click.prevent
             />
           </template>
