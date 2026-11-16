@@ -23,6 +23,10 @@ export default defineMutationHandler('AddSiteItem', {
       variantName: variant.name,
       sku: variant.sku,
       onHand,
+      min: variables.min ?? 0,
+      max: variables.max ?? 0,
+      boxQuantity: variant.boxQuantity ?? null,
+      minOrderQuantity: variant.minOrderQuantity ?? null,
     })
     await db.Site.where('id').equals(variables.siteId).modify((site) => {
       site.itemCount++

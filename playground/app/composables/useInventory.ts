@@ -1,5 +1,5 @@
-// Inventory management: every query and mutation about sites and what they
-// hold goes through here, so each has one home.
+// Inventory management: every query and mutation about sites, what they
+// hold and their restock carts goes through here, so each has one home.
 
 import type { MaybeRefOrGetter } from 'vue'
 
@@ -11,9 +11,18 @@ export function useSite(id: MaybeRefOrGetter<string>) {
   return useQuery('GetSite', () => ({ id: toValue(id) }))
 }
 
-/** A site's items, `first` of them from the start: "load more" asks for more. */
-export function useSiteItems(vars: MaybeRefOrGetter<{ siteId: string, search?: string | null, first: number }>) {
+/** A page of a site's items: `first` of them, after `after`. */
+export function useSiteItems(vars: MaybeRefOrGetter<{ siteId: string, search?: string | null, first: number, after?: string | null }>) {
   return useQuery('GetSiteItems', () => toValue(vars))
+}
+
+/** What the restock carts hold: one site's, or, without a site, every site's. */
+export function useSiteCartLines(siteId?: MaybeRefOrGetter<string | null>) {
+  const query = useQuery('GetSiteCartLines', () => ({ siteId: toValue(siteId) ?? null }))
+  const lines = computed(() => query.data.value?.siteCartLines ?? [])
+  /** Lines by id, which is the item's id too. */
+  const byItem = computed(() => new Map(lines.value.map(line => [line.id, line])))
+  return { ...query, lines, byItem }
 }
 
 export function useInventory() {
@@ -23,8 +32,14 @@ export function useInventory() {
     archiveSite: useMutation('ArchiveSite'),
     unarchiveSite: useMutation('UnarchiveSite'),
     deleteSite: useMutation('DeleteSite'),
+    setTracking: useMutation('SetSiteInventoryTracking'),
     addItem: useMutation('AddSiteItem'),
     setOnHand: useMutation('UpdateSiteItemOnHand'),
+    setLevels: useMutation('UpdateSiteItemLevels'),
     removeItem: useMutation('RemoveSiteItem'),
+    addToCart: useMutation('AddSiteCartLine'),
+    setCartQuantity: useMutation('SetSiteCartLineQuantity'),
+    removeFromCart: useMutation('RemoveSiteCartLine'),
+    checkOut: useMutation('CheckOutSiteCart'),
   }
 }

@@ -5,6 +5,8 @@ fragment VariantFields on Variant {
   sku
   price
   stock
+  boxQuantity
+  minOrderQuantity
 }
 
 fragment ProductFields on Product {

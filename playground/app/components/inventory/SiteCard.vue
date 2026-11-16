@@ -3,7 +3,7 @@ import { mdiArchiveArrowDownOutline, mdiArchiveArrowUpOutline, mdiDeleteOutline,
 
 // One site in the list: its counts, and what can be done to it.
 defineProps<{
-  site: { id: string, name: string, archived: boolean, itemCount: number, unitCount: number }
+  site: { id: string, name: string, archived: boolean, tracksInventory: boolean, itemCount: number, unitCount: number }
   /** A queued change has touched it and has not reached the server yet. */
   pending?: boolean
 }>()
@@ -24,6 +24,14 @@ defineEmits<{ rename: [], archive: [], unarchive: [], delete: [] }>()
           size="x-small"
         >
           Archived
+        </v-chip>
+        <v-chip
+          v-if="site.tracksInventory"
+          size="x-small"
+          color="primary"
+          variant="tonal"
+        >
+          Tracks levels
         </v-chip>
         <PendingChip v-if="pending" />
       </v-card-title>
