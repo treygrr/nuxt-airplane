@@ -1,15 +1,17 @@
 <script setup lang="ts">
-import { mdiCartPlus } from '@mdi/js'
-
-// A product in a grid: picture, brand, name, rating, price, stock, and a
-// button that puts its first variant in stock in the cart.
+// A product in a grid: picture, brand and stock, name, rating, price, and at
+// the bottom a quantity joined to the cart button, which puts that many of
+// its first variant in stock in the cart. The card opens the product; the
+// quantity and button do not.
 const props = defineProps<{
   product: { id: string, name: string, brand: string, price: number, rating: number, reviewCount: number, imageUrl: string, variants: { id: string, stock: number }[] }
+  inCart?: number
 }>()
-defineEmits<{ add: [variantId: string] }>()
+defineEmits<{ add: [variantId: string, quantity: number] }>()
 
 const stock = computed(() => props.product.variants.reduce((n, v) => n + v.stock, 0))
 const firstInStock = computed(() => props.product.variants.find(v => v.stock > 0))
+const quantity = ref(1)
 </script>
 
 <template>
@@ -28,8 +30,11 @@ const firstInStock = computed(() => props.product.variants.find(v => v.stock > 0
       cover
     />
     <div class="pa-4 d-flex flex-column flex-grow-1">
-      <div class="text-label-small text-uppercase text-medium-emphasis mb-1">
-        {{ product.brand }}
+      <div class="d-flex align-start ga-2 mb-1">
+        <div class="text-label-small text-uppercase text-medium-emphasis me-auto">
+          {{ product.brand }}
+        </div>
+        <StockBadge :stock="stock" />
       </div>
       <div
         class="text-body-medium font-weight-medium line-clamp-2 mb-2"
@@ -43,28 +48,37 @@ const firstInStock = computed(() => props.product.variants.find(v => v.stock > 0
         class="mb-3"
       />
       <v-spacer />
-      <div class="d-flex align-center ga-2">
-        <div class="me-auto">
-          <span
-            v-if="product.variants.length > 1"
-            class="text-body-small text-medium-emphasis"
-          >From </span>
-          <span class="text-title-large font-weight-bold">{{ formatMoney(product.price) }}</span>
-        </div>
-        <v-btn
-          v-if="firstInStock"
-          :icon="mdiCartPlus"
-          color="primary"
-          variant="tonal"
-          size="small"
-          aria-label="Add to cart"
-          @click.prevent="$emit('add', firstInStock.id)"
-        />
+      <div class="mb-3">
+        <span
+          v-if="product.variants.length > 1"
+          class="text-body-small text-medium-emphasis"
+        >From </span>
+        <span class="text-title-large font-weight-bold">{{ formatMoney(product.price) }}</span>
       </div>
-      <StockBadge
-        :stock="stock"
-        class="mt-2 align-self-start"
-      />
+      <!--
+        The card around it is a link. Its clicks must not follow it: they are
+        cancelled on the way down, since the number field's buttons stop them
+        before they could be cancelled on the way up.
+      -->
+      <div @click.capture.prevent>
+        <CartQuantityGroup
+          :can-add="!!firstInStock"
+          :in-cart="inCart"
+          :label="`Add ${product.name} to the cart`"
+          @add="firstInStock && $emit('add', firstInStock.id, quantity)"
+        >
+          <v-number-input
+            v-model="quantity"
+            :min="1"
+            :max="firstInStock?.stock ?? 1"
+            :disabled="!firstInStock"
+            :aria-label="`Quantity of ${product.name}`"
+            density="compact"
+            control-variant="split"
+            hide-details
+          />
+        </CartQuantityGroup>
+      </div>
     </div>
   </v-card>
 </template>

@@ -148,3 +148,21 @@ test('a list made offline opens from its card, and stays open when it syncs', as
   await expect(page).not.toHaveURL(/\/wishlists\/tmp-/)
   await expect(page.getByRole('heading', { name: 'Garage' })).toBeVisible()
 })
+
+test('a product card adds a quantity to the cart without opening the product', async ({ page, request }) => {
+  await page.goto('/c/cat-2')
+  await ready(page)
+  const card = page.locator('a.v-card', { has: page.getByRole('button', { name: /to the cart/, disabled: false }) }).first()
+  const name = (await card.getByRole('button', { name: /to the cart/ }).getAttribute('aria-label'))!.replace(/^Add | to the cart$/g, '')
+  const quantity = card.getByRole('textbox', { name: `Quantity of ${name}` })
+  await quantity.fill('2')
+  // The field's own buttons step it, and stay on the page: the card is a link.
+  await card.locator('.v-number-input button').last().click()
+  await expect(quantity).toHaveValue('3')
+  await card.getByRole('button', { name: `Add ${name} to the cart` }).click()
+  await expect(page).toHaveURL(/\/c\/cat-2$/)
+  await expect(card.locator('[data-test="in-cart"]')).toHaveText('3')
+  await drained(page)
+  const { cart } = await serverQuery<Cart>(request, '{ cart { lines { variantName quantity } } }')
+  expect(cart.lines.map(l => l.quantity)).toEqual([3])
+})

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { mdiCartPlus, mdiCounter, mdiDeleteOutline, mdiDotsVertical, mdiMagnify, mdiSortAscending, mdiSortDescending, mdiTuneVariant } from '@mdi/js'
+import { mdiCounter, mdiDeleteOutline, mdiDotsVertical, mdiMagnify, mdiSortAscending, mdiSortDescending, mdiTuneVariant } from '@mdi/js'
 import type { SiteItemSort } from '#shared/siteItemSort'
 import { encodeCursor } from '~/lib/airplane'
 import { LEVEL_STATUS, fitRestock, levelStatus, suggestedRestock } from '~/lib/restock'
@@ -187,13 +187,13 @@ const headers = computed(() => [
         <span class="font-weight-medium">{{ item.onHand.toLocaleString() }}</span>
       </template>
       <template #[`item.restock`]="{ item }">
-        <!--
-          One control: the quantity, joined to the cart button that adds it,
-          with what the cart holds of the item beside the icon. With nothing
-          to add the button is read-only rather than disabled, so the count
-          stays readable.
-        -->
-        <div class="restock-group d-flex">
+        <CartQuantityGroup
+          :can-add="!!amount(item)"
+          :in-cart="inCart(item)"
+          :label="`Add ${item.productName} to the restock cart`"
+          class="restock"
+          @add="restock(item)"
+        >
           <RestockQuantityInput
             :model-value="amount(item)"
             :rules="item"
@@ -201,26 +201,7 @@ const headers = computed(() => [
             :aria-label="`Restock quantity for ${item.productName}`"
             @update:model-value="typed.set(item.id, $event)"
           />
-          <v-btn
-            :readonly="!amount(item)"
-            :aria-disabled="!amount(item)"
-            :aria-label="`Add ${item.productName} to the restock cart`"
-            :variant="amount(item) ? 'flat' : 'tonal'"
-            color="primary"
-            height="40"
-            min-width="56"
-            rounded="0"
-            class="restock-group__cart px-3"
-            @click="restock(item)"
-          >
-            <v-icon :icon="mdiCartPlus" />
-            <span
-              v-if="inCart(item)"
-              class="ms-1"
-              data-test="in-cart"
-            >{{ inCart(item) }}</span>
-          </v-btn>
-        </div>
+        </CartQuantityGroup>
       </template>
       <template #[`item.actions`]="{ item }">
         <v-menu location="bottom end">
@@ -277,19 +258,8 @@ const headers = computed(() => [
 .preview.level-low { border-color: rgb(var(--v-theme-error)); }
 .preview.level-ok { border-color: rgb(var(--v-theme-success)); }
 .preview.level-over { border-color: rgb(var(--v-theme-warning)); }
-</style>
 
-<style scoped>
-/* The field and the button read as one control: square where they meet. */
-.restock-group {
+.restock {
   width: 220px;
-}
-.restock-group :deep(.v-field) {
-  border-start-end-radius: 0;
-  border-end-end-radius: 0;
-}
-.restock-group__cart {
-  border-start-end-radius: 4px !important;
-  border-end-end-radius: 4px !important;
 }
 </style>

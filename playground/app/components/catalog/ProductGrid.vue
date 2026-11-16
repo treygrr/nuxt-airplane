@@ -13,7 +13,13 @@ defineProps<{
 defineEmits<{ more: [] }>()
 
 // One cart for the whole grid, not one per card.
-const { add } = useCart()
+const { add, lines } = useCart()
+/** What the cart holds of each product, over all its variants. */
+const inCart = computed(() => {
+  const held = new Map<string, number>()
+  for (const line of lines.value) held.set(line.productId, (held.get(line.productId) ?? 0) + line.quantity)
+  return held
+})
 </script>
 
 <template>
@@ -45,7 +51,8 @@ const { add } = useCart()
       >
         <ProductCard
           :product="product"
-          @add="add($event)"
+          :in-cart="inCart.get(product.id)"
+          @add="(variantId, quantity) => add(variantId, quantity)"
         />
       </v-col>
     </v-row>
