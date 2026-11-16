@@ -1,12 +1,11 @@
-// A row created offline gets a placeholder id from `tempId()`. The user can
-// rename it or add items to it before the create has reached the server;
-// those mutations carry the placeholder, and the module replaces it with the
-// server's id before sending them, once `reconcile` has called `resolve`.
-// `resolve` also re-keys the row in `db.Site`.
+import { now } from '../../lib/airplane'
+
 export default defineMutationHandler('CreateSite', {
-  describe: ({ variables }) => `Create ${variables.name}`,
+  describe: ({ variables }) => `Create the site ${variables.name}`,
   apply: ({ db, variables, tempId }) =>
-    db.Site.put({ id: tempId(), name: variables.name, archived: false, items: [] }),
-  reconcile: ({ tempIds, resolve }, result) => resolve(tempIds[0]!, result.createSite.id),
-  refetch: ['GetSites'],
+    db.Site.put({ id: tempId(), name: variables.name, archived: false, createdAt: now(), itemCount: 0, unitCount: 0 }),
+  async reconcile({ db, tempIds, resolve }, result) {
+    await resolve(tempIds[0]!, result.createSite.id)
+    await db.Site.put(result.createSite)
+  },
 })

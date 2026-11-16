@@ -1,9 +1,9 @@
-// One file per mutation. There is no index file in this folder, so the module
-// imports each file directly. `describe` runs before `apply`, so it still
-// sees the old name on a rename or delete.
-
 export default defineMutationHandler('ArchiveSite', {
-  describe: async ({ db, variables }) => `Archive ${(await db.Site.get(variables.id))?.name ?? variables.id}`,
+  async describe({ db, variables }) {
+    return `Archive ${(await db.Site.get(variables.id))?.name ?? 'a site'}`
+  },
   apply: ({ db, variables }) => db.Site.update(variables.id, { archived: true }),
-  refetch: ['GetSites'],
+  reconcile: ({ db }, result) => db.Site.put(result.archiveSite),
+  // A site's stock is the shop's stock: the catalog's numbers change too.
+  refetch: ['GetSites', 'GetSite', 'GetSiteItems', 'GetProduct', 'GetProducts'],
 })

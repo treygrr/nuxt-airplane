@@ -1,5 +1,8 @@
 export default defineMutationHandler('RenameSite', {
-  describe: async ({ db, variables }) => `Rename ${(await db.Site.get(variables.id))?.name ?? variables.id} to ${variables.name}`,
+  async describe({ db, variables }) {
+    return `Rename ${(await db.Site.get(variables.id))?.name ?? 'a site'} to ${variables.name}`
+  },
   apply: ({ db, variables }) => db.Site.update(variables.id, { name: variables.name }),
-  refetch: ['GetSites'],
+  merge: (earlier, later) => earlier.id === later.id && later,
+  reconcile: ({ db }, result) => db.Site.put(result.renameSite),
 })

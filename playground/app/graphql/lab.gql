@@ -1,0 +1,20 @@
+# What the server saw of the client. The lab reads it from the network only:
+# no handler keeps it, so it shows nothing offline.
+query LabStats {
+  labStats {
+    products
+    requests
+    mutations
+    repeatedKeys
+    appliedTwice
+    overlaps
+    maxConcurrent
+    dropped
+    lostAnswers
+    unauthorized
+    rateLimited
+    unavailable
+    rejected
+    log
+  }
+}

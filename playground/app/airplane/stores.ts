@@ -1,10 +1,28 @@
-// Every type the queries select with an id already has a table, keyed on it:
-// `db.Site` and `db.Item`. This only adds the indexes the read handlers sort
-// or filter on. Row types come from the schema; nothing to declare.
+// Indexes for the inferred tables (the module keys each on its id), and one
+// table of the app's own.
 //
-// `archived` is a boolean, which IndexedDB cannot index, so the read handler
-// filters it in JavaScript (the module warns in dev if you try).
+// Booleans cannot be indexed in IndexedDB: `archived`, `mine` and `isDefault`
+// are filtered in the read handlers instead.
+
+declare global {
+  interface NuxtAirplaneStores {
+    /** How many results a listing has in all, as the server last said. */
+    Listing: { key: string, totalCount: number }
+  }
+}
+
 export default defineAirplaneStores({
-  Site: 'name',
-  Item: 'name',
+  Category: 'parentId',
+  Product: 'categoryId, name, price, rating, createdAt, reviewCount, [price+name]',
+  Variant: 'productId',
+  CartLine: 'addedAt, variantId',
+  Coupon: 'code',
+  Wishlist: 'createdAt',
+  WishlistItem: 'wishlistId, addedAt',
+  Address: 'name',
+  Order: 'placedAt',
+  Review: 'productId, createdAt',
+  Site: 'createdAt, name',
+  SiteItem: 'siteId, [siteId+productName]',
+  Listing: '&key',
 })

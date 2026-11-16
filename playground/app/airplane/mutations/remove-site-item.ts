@@ -1,11 +1,18 @@
 export default defineMutationHandler('RemoveSiteItem', {
   async describe({ db, variables }) {
-    const site = await db.Site.get(variables.siteId)
-    const item = site?.items.find(item => item.id === variables.itemId)
-    return `Remove ${item?.name ?? variables.itemId} from ${site?.name ?? variables.siteId}`
+    const item = await db.SiteItem.get(`${variables.siteId}~${variables.variantId}`)
+    return `Remove ${item?.productName ?? 'an item'} from a site`
   },
-  apply: ({ db, variables }) => db.Site.update(variables.siteId, (site) => {
-    site.items = site.items.filter(item => item.id !== variables.itemId)
-  }),
-  refetch: ['GetSites'],
+  async apply({ db, variables }) {
+    const id = `${variables.siteId}~${variables.variantId}`
+    const item = await db.SiteItem.get(id)
+    if (!item) return
+    await db.SiteItem.delete(id)
+    await db.Site.where('id').equals(variables.siteId).modify((site) => {
+      site.itemCount--
+      site.unitCount -= item.onHand
+    })
+  },
+  // A site's stock is the shop's stock: the catalog's numbers change too.
+  refetch: ['GetSites', 'GetSite', 'GetSiteItems', 'GetProduct', 'GetProducts'],
 })

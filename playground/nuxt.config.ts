@@ -25,6 +25,13 @@ export default defineNuxtConfig({
     // Operations go out as a SHA-256 hash; Apollo Server supports this
     // (automatic persisted queries) out of the box and asks for the text once.
     persistedQueries: 'automatic',
+    codegen: {
+      // Dates come over the wire as ISO strings. ID is restated because this
+      // object replaces the module's own mapping (FINDINGS.md, 2).
+      scalars: { ID: { input: 'string', output: 'string' }, DateTime: 'string' },
+      // Enums as string unions, so they are declared once (FINDINGS.md, 3).
+      enumsAsTypes: true,
+    },
   },
   vuetify: {
     moduleOptions: {
