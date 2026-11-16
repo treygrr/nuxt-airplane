@@ -8,11 +8,13 @@ export default defineMutationHandler('RemoveSiteItem', {
     const item = await db.SiteItem.get(id)
     if (!item) return
     await db.SiteItem.delete(id)
+    // Out of the site's restock cart too, as on the server.
+    await db.SiteCartLine.delete(id)
     await db.Site.where('id').equals(variables.siteId).modify((site) => {
       site.itemCount--
       site.unitCount -= item.onHand
     })
   },
   // A site's stock is the shop's stock: the catalog's numbers change too.
-  refetch: ['GetSites', 'GetSite', 'GetSiteItems', 'GetProduct', 'GetProducts'],
+  refetch: ['GetSites', 'GetSite', 'GetSiteItems', 'GetSiteCartLines', 'GetProduct', 'GetProducts'],
 })

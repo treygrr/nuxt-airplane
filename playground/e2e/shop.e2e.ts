@@ -25,7 +25,11 @@ test('browses, searches and opens products offline, once the catalog is kept', a
   await expect(page.getByRole('heading', { name: 'Results for “level”' })).toBeVisible()
   await expect(page.getByText('78 products')).toBeVisible()
 
-  await page.locator('a[href^="/p/"]').first().click()
+  // The results may still be settling: click until the product opens.
+  await expect(async () => {
+    await page.locator('main a[href^="/p/"]').first().click({ timeout: 2000 })
+    await expect(page).toHaveURL(/\/p\//, { timeout: 2000 })
+  }).toPass()
   await expect(page.getByRole('button', { name: 'Add to cart' })).toBeVisible()
 })
 

@@ -3,6 +3,7 @@ fragment SiteFields on Site {
   name
   archived
   createdAt
+  tracksInventory
   itemCount
   unitCount
 }
@@ -16,6 +17,24 @@ fragment SiteItemFields on SiteItem {
   variantName
   sku
   onHand
+  min
+  max
+  boxQuantity
+  minOrderQuantity
+}
+
+fragment SiteCartLineFields on SiteCartLine {
+  id
+  siteId
+  variantId
+  productId
+  productName
+  variantName
+  sku
+  quantity
+  addedAt
+  boxQuantity
+  minOrderQuantity
 }
 
 query GetSites($archived: Boolean, $search: String) {
@@ -74,8 +93,20 @@ mutation DeleteSite($id: ID!) {
   deleteSite(id: $id)
 }
 
-mutation AddSiteItem($siteId: ID!, $variantId: ID!, $onHand: Int) {
-  addSiteItem(siteId: $siteId, variantId: $variantId, onHand: $onHand) {
+query GetSiteCartLines($siteId: ID) {
+  siteCartLines(siteId: $siteId) {
+    ...SiteCartLineFields
+  }
+}
+
+mutation SetSiteInventoryTracking($id: ID!, $enabled: Boolean!) {
+  setSiteInventoryTracking(id: $id, enabled: $enabled) {
+    ...SiteFields
+  }
+}
+
+mutation AddSiteItem($siteId: ID!, $variantId: ID!, $onHand: Int, $min: Int, $max: Int) {
+  addSiteItem(siteId: $siteId, variantId: $variantId, onHand: $onHand, min: $min, max: $max) {
     ...SiteItemFields
   }
 }
@@ -88,4 +119,37 @@ mutation UpdateSiteItemOnHand($siteId: ID!, $variantId: ID!, $onHand: Int!) {
 
 mutation RemoveSiteItem($siteId: ID!, $variantId: ID!) {
   removeSiteItem(siteId: $siteId, variantId: $variantId)
+}
+
+mutation UpdateSiteItemLevels($siteId: ID!, $variantId: ID!, $min: Int!, $max: Int!) {
+  updateSiteItemLevels(siteId: $siteId, variantId: $variantId, min: $min, max: $max) {
+    ...SiteItemFields
+  }
+}
+
+mutation AddSiteCartLine($siteId: ID!, $variantId: ID!, $quantity: Int!) {
+  addSiteCartLine(siteId: $siteId, variantId: $variantId, quantity: $quantity) {
+    ...SiteCartLineFields
+  }
+}
+
+mutation SetSiteCartLineQuantity($siteId: ID!, $variantId: ID!, $quantity: Int!) {
+  setSiteCartLineQuantity(siteId: $siteId, variantId: $variantId, quantity: $quantity) {
+    ...SiteCartLineFields
+  }
+}
+
+mutation RemoveSiteCartLine($siteId: ID!, $variantId: ID!) {
+  removeSiteCartLine(siteId: $siteId, variantId: $variantId)
+}
+
+mutation CheckOutSiteCart($siteId: ID!) {
+  checkOutSiteCart(siteId: $siteId) {
+    site {
+      ...SiteFields
+    }
+    items {
+      ...SiteItemFields
+    }
+  }
 }

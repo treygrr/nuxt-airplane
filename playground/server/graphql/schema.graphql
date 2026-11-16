@@ -32,6 +32,10 @@ type Variant {
   price: Int!
   "What the active sites hold of it."
   stock: Int!
+  "Restocked only in whole boxes of this many, when set."
+  boxQuantity: Int
+  "Restocked no fewer than this many at a time, when set."
+  minOrderQuantity: Int
 }
 
 type Product {
@@ -205,6 +209,8 @@ type Site {
   name: String!
   archived: Boolean!
   createdAt: DateTime!
+  "Keeps min and max levels for its items, and restocks them from a cart."
+  tracksInventory: Boolean!
   "How many different variants it holds."
   itemCount: Int!
   "How many units it holds in all."
@@ -221,6 +227,33 @@ type SiteItem {
   variantName: String!
   sku: String!
   onHand: Int!
+  "Restock when on hand falls below this. Kept only where the site tracks inventory."
+  min: Int!
+  "Restock up to this."
+  max: Int!
+  boxQuantity: Int
+  minOrderQuantity: Int
+}
+
+"An item in a site's restock cart. Its id is the site's and the variant's together, like the item's."
+type SiteCartLine {
+  id: ID!
+  siteId: ID!
+  variantId: ID!
+  productId: ID!
+  productName: String!
+  variantName: String!
+  sku: String!
+  quantity: Int!
+  addedAt: DateTime!
+  boxQuantity: Int
+  minOrderQuantity: Int
+}
+
+"A restock cart checked out: the site, and the items it restocked as they are now."
+type SiteCartCheckout {
+  site: Site!
+  items: [SiteItem!]!
 }
 
 type SiteItemEdge {
@@ -290,6 +323,8 @@ type Query {
   site(id: ID!): Site
   "What a site holds, by product name."
   siteItems(siteId: ID!, first: Int = 50, after: String, search: String): SiteItemConnection!
+  "What the restock carts hold: one site's, or every site's."
+  siteCartLines(siteId: ID): [SiteCartLine!]!
 
   "Name completions for the search box. A client is not expected to keep these."
   searchSuggestions(query: String!): [String!]!
@@ -336,9 +371,19 @@ type Mutation {
   unarchiveSite(id: ID!): Site!
   "Only a site that holds nothing can be deleted."
   deleteSite(id: ID!): ID!
-  addSiteItem(siteId: ID!, variantId: ID!, onHand: Int = 0): SiteItem!
+  "Turning tracking off empties the site's restock cart."
+  setSiteInventoryTracking(id: ID!, enabled: Boolean!): Site!
+  addSiteItem(siteId: ID!, variantId: ID!, onHand: Int = 0, min: Int = 0, max: Int = 0): SiteItem!
   updateSiteItemOnHand(siteId: ID!, variantId: ID!, onHand: Int!): SiteItem!
+  updateSiteItemLevels(siteId: ID!, variantId: ID!, min: Int!, max: Int!): SiteItem!
+  "Also takes it out of the site's restock cart."
   removeSiteItem(siteId: ID!, variantId: ID!): ID!
+  "Adds to the line when the item is in the cart already. Only at a site that tracks inventory."
+  addSiteCartLine(siteId: ID!, variantId: ID!, quantity: Int!): SiteCartLine!
+  setSiteCartLineQuantity(siteId: ID!, variantId: ID!, quantity: Int!): SiteCartLine!
+  removeSiteCartLine(siteId: ID!, variantId: ID!): ID!
+  "Adds each line's quantity to what the site holds, and empties the cart."
+  checkOutSiteCart(siteId: ID!): SiteCartCheckout!
 
   "Asks to be told when a variant is back. Changes nothing the client keeps."
   notifyBackInStock(variantId: ID!): Boolean!

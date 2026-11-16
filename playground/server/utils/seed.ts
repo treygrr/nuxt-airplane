@@ -13,9 +13,36 @@ export const DEFAULT_PRODUCTS = 2000
 export const STRESS_PRODUCTS = 50_000
 
 export interface Category { id: string, name: string, slug: string, parentId: string | null }
-export interface Variant { id: string, productId: string, name: string, sku: string, price: number }
-/** A warehouse. `items` is what it holds: on-hand count by variant id. */
-export interface Site { id: string, name: string, archived: boolean, createdAt: string, items: Map<string, number> }
+export interface Variant {
+  id: string
+  productId: string
+  name: string
+  sku: string
+  price: number
+  /** Restocked only in whole boxes of this many, when set. */
+  boxQuantity: number | null
+  /** Restocked no fewer than this many at a time, when set. */
+  minOrderQuantity: number | null
+}
+/** The level a tracked site keeps an item between: restock when it falls below `min`, up to `max`. */
+export interface Levels { min: number, max: number }
+/** A line in a site's restock cart. */
+export interface SiteCartLine { quantity: number, addedAt: string }
+/**
+ * A warehouse. `items` is what it holds: on-hand count by variant id. A site
+ * that tracks inventory keeps `levels` for its items and a restock `cart`;
+ * checking the cart out adds its quantities to what the site holds.
+ */
+export interface Site {
+  id: string
+  name: string
+  archived: boolean
+  createdAt: string
+  tracksInventory: boolean
+  items: Map<string, number>
+  levels: Map<string, Levels>
+  cart: Map<string, SiteCartLine>
+}
 export interface Product {
   id: string
   name: string
@@ -113,6 +140,10 @@ const NOUNS: Record<string, string[]> = {
 }
 
 const SITES = ['North Warehouse', 'South Depot', 'East Yard', 'West Storage', 'Downtown Store']
+/** The sites, by number, that track inventory levels. */
+const TRACKING_SITES = [1, 3]
+const BOX_QUANTITIES = [6, 10, 12, 24, 25, 50]
+const MIN_ORDER_QUANTITIES = [5, 10, 20]
 const BRANDS = ['Ironclad', 'Northfield', 'Kestrel', 'Bramble & Co', 'Torque Works', 'Granite', 'Sparrow', 'Halvard', 'Redline', 'Copperleaf', 'Atlas Forge', 'Wexley']
 const QUALITIES = ['', 'Pro', 'Compact', 'Heavy-Duty', 'Lightweight', 'Contractor', 'Precision', 'Cordless', 'Max', 'Classic']
 const PACKS = [['Single'], ['Single', '2-Pack'], ['Small', 'Medium', 'Large'], ['Bare Tool', 'Kit with Battery', 'Kit with 2 Batteries'], ['25 ft', '35 ft'], ['100 ct', '250 ct', '1000 ct']]
@@ -179,19 +210,49 @@ export function createSeed(productCount = DEFAULT_PRODUCTS): Seed {
         name: option,
         sku: `${brand.slice(0, 3).toUpperCase()}-${model}-${k + 1}`,
         price: base + k * Math.max(100, Math.round(base * 0.4 / 100) * 100),
+        boxQuantity: null,
+        minOrderQuantity: null,
       })),
     })
   }
 
   // Each variant is kept at one or two sites; about one in twelve is at none,
   // and so out of stock.
-  const sites: Site[] = SITES.map((name, i) => ({ id: `site-${i + 1}`, name, archived: false, createdAt: iso((400 - i * 30) * DAY), items: new Map() }))
+  const sites: Site[] = SITES.map((name, i) => ({
+    id: `site-${i + 1}`,
+    name,
+    archived: false,
+    createdAt: iso((400 - i * 30) * DAY),
+    // Two of them keep levels and restock from carts; the rest only count.
+    tracksInventory: TRACKING_SITES.includes(i + 1),
+    items: new Map(),
+    levels: new Map(),
+    cart: new Map(),
+  }))
   for (const product of products) {
     for (const variant of product.variants) {
       if (r.next() < 0.08) continue
       const first = r.int(0, sites.length - 1)
       sites[first]!.items.set(variant.id, r.int(1, 60))
       if (r.next() < 0.4) sites[(first + r.int(1, sites.length - 1)) % sites.length]!.items.set(variant.id, r.int(1, 40))
+    }
+  }
+
+  // Ordering rules and levels from a generator of their own, so the rest of
+  // the data is the same as it was before they existed.
+  const o = random(1729)
+  for (const product of products) {
+    for (const variant of product.variants) {
+      // About one in ten comes in boxes, and about one in twelve has a minimum order.
+      if (o.next() < 0.1) variant.boxQuantity = o.pick(BOX_QUANTITIES)
+      if (o.next() < 0.08) variant.minOrderQuantity = variant.boxQuantity ? variant.boxQuantity * o.int(2, 4) : o.pick(MIN_ORDER_QUANTITIES)
+    }
+  }
+  for (const site of sites) {
+    for (const [variantId, onHand] of site.items) {
+      // Around what it holds, so some items start below their minimum.
+      const min = Math.max(1, Math.round(onHand * (0.3 + o.next() * 0.9)))
+      site.levels.set(variantId, { min, max: min + o.int(10, 60) })
     }
   }
 

@@ -101,14 +101,54 @@ export function productView(p: Product) {
 export function siteView(site: Site) {
   let units = 0
   for (const n of site.items.values()) units += n
-  return { id: site.id, name: site.name, archived: site.archived, createdAt: site.createdAt, itemCount: site.items.size, unitCount: units }
+  return { id: site.id, name: site.name, archived: site.archived, createdAt: site.createdAt, tracksInventory: site.tracksInventory, itemCount: site.items.size, unitCount: units }
 }
 
 export const siteItemId = (siteId: string, variantId: string) => `${siteId}~${variantId}`
 
-export function siteItemView(siteId: string, variantId: string, onHand: number) {
+export function siteItemView(site: Site, variantId: string) {
   const { product, variant } = findVariant(variantId)
-  return { id: siteItemId(siteId, variantId), siteId, variantId, productId: product.id, productName: product.name, variantName: variant.name, sku: variant.sku, onHand }
+  const levels = site.levels.get(variantId) ?? { min: 0, max: 0 }
+  return {
+    id: siteItemId(site.id, variantId),
+    siteId: site.id,
+    variantId,
+    productId: product.id,
+    productName: product.name,
+    variantName: variant.name,
+    sku: variant.sku,
+    onHand: site.items.get(variantId) ?? 0,
+    min: levels.min,
+    max: levels.max,
+    boxQuantity: variant.boxQuantity,
+    minOrderQuantity: variant.minOrderQuantity,
+  }
+}
+
+export function siteCartLineView(site: Site, variantId: string) {
+  const { product, variant } = findVariant(variantId)
+  const line = site.cart.get(variantId)!
+  return {
+    id: siteItemId(site.id, variantId),
+    siteId: site.id,
+    variantId,
+    productId: product.id,
+    productName: product.name,
+    variantName: variant.name,
+    sku: variant.sku,
+    quantity: line.quantity,
+    addedAt: line.addedAt,
+    boxQuantity: variant.boxQuantity,
+    minOrderQuantity: variant.minOrderQuantity,
+  }
+}
+
+/** Why a restock quantity of a variant is not allowed, or null when it is. */
+export function restockProblem(variant: Variant, quantity: number): string | null {
+  if (!Number.isInteger(quantity) || quantity < 1) return 'A restock quantity must be 1 or more'
+  if (variant.boxQuantity && quantity % variant.boxQuantity) return `${variant.sku} comes in boxes of ${variant.boxQuantity}`
+  if (variant.minOrderQuantity && quantity < variant.minOrderQuantity) return `${variant.sku} is ordered ${variant.minOrderQuantity} or more at a time`
+  return null
 }
 
 export function cartLineView(line: { id: string, variantId: string, quantity: number, addedAt: string }) {

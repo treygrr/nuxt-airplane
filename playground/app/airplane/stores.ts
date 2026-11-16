@@ -24,5 +24,6 @@ export default defineAirplaneStores({
   Review: 'productId, createdAt',
   Site: 'createdAt, name',
   SiteItem: 'siteId, [siteId+productName]',
+  SiteCartLine: 'siteId, addedAt',
   Listing: '&key',
 })
