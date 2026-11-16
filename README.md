@@ -40,7 +40,7 @@ export default defineNuxtConfig({
 | `handlers.generate` | `false` | Scaffold a handler file with empty hooks for every operation without one. |
 | `database.name` | `nuxt-airplane` | IndexedDB database name. |
 | `database.cacheKey` | – | Deploy key (git SHA, build id). A change wipes cached data on next load, outbox kept; a hash of your documents is always mixed in. `NUXT_PUBLIC_AIRPLANE_CACHE_KEY` overrides it. |
-| `codegen` | `{}` | Extra config for the `typescript` / `typescript-operations` codegen plugins. |
+| `codegen` | `{}` | Extra config for the `typescript-operations` codegen plugin. `scalars` adds to the module's `ID` mapping. |
 
 ## Operations
 

@@ -236,6 +236,57 @@ describe('generateTypes', () => {
     expect(out).toMatch(/id: number/)
   })
 
+  describe('with custom scalars and enums', () => {
+    const SDL2 = `
+      scalar DateTime
+      enum Status { OPEN CLOSED }
+      type Site { id: ID!, name: String!, status: Status!, createdAt: DateTime! }
+      input SiteInput { name: String!, status: Status! }
+      type Query { sites: [Site!]! }
+      type Mutation { createSite(input: SiteInput!): Site!, closeSite(id: ID!): Site! }
+    `
+    async function generate(config: Record<string, unknown> = {}) {
+      const dir = await tempDir()
+      await writeFile(join(dir, 'ops.gql'), `
+        query GetSites { sites { id name status createdAt } }
+        mutation CreateSite($input: SiteInput!) { createSite(input: $input) { id name status createdAt } }
+        mutation CloseSite($id: ID!) { closeSite(id: $id) { id status } }
+      `)
+      const schema = buildSchema(SDL2)
+      return generateTypes(schema, await loadDocuments(['*.gql'], dir, log(), schema), config)
+    }
+
+    it('adds the scalars it is given to its own ID mapping', async () => {
+      const out = await generate({ scalars: { DateTime: 'string' } })
+      expect(out).toMatch(/export type CloseSiteMutationVariables = Exact<\{\s*id: string;\s*\}>/)
+      expect(out).toContain('DateTime: { input: string; output: string; }')
+      expect(out).toMatch(/createdAt\??: Scalars\['DateTime'\]\['output'\]/)
+    })
+
+    it('maps a scalar it is not given to any, as codegen does', async () => {
+      expect(await generate()).toContain('DateTime: { input: any; output: any; }')
+    })
+
+    it('declares each enum and input type once, enums as string unions', async () => {
+      const out = await generate()
+      expect(out.match(/export (type|enum) Status\b/g)).toEqual(['export type Status'])
+      expect(out.match(/export (type|interface) SiteInput\b/g)).toHaveLength(1)
+      expect(out).toContain('status: Status')
+    })
+
+    it('type-checks with library checks on', async () => {
+      const ts = await import('typescript')
+      const dir = await tempDir()
+      const file = join(dir, 'nuxt-airplane.d.ts')
+      await writeFile(file, await generate({ scalars: { DateTime: 'string' } }))
+      // A row is written with a plain string for the enum, as a handler would.
+      await writeFile(join(dir, 'use.ts'), `const row: NuxtAirplaneStores['Site'] = { id: 's1', name: 'North', status: 'CLOSED', createdAt: '2026-01-01' }\nexport default row\n`)
+      const program = ts.createProgram([file, join(dir, 'use.ts')], { noEmit: true, strict: true, skipLibCheck: false, types: [] })
+      const problems = ts.getPreEmitDiagnostics(program).map(d => ts.flattenDiagnosticMessageText(d.messageText, '\n'))
+      expect(problems).toEqual([])
+    })
+  })
+
   it('falls back to untyped maps without a schema', async () => {
     const out = await generateTypes(null, await docs())
     expect(out).toContain('[name: string]: { result: any, variables: any }')
