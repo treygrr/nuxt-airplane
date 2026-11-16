@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { mdiAccountOutline, mdiCartOutline, mdiFlaskOutline, mdiHeartOutline, mdiHistory, mdiHomeOutline, mdiMagnify, mdiPackageVariantClosed } from '@mdi/js'
+import { mdiAccountOutline, mdiCartOutline, mdiFlaskOutline, mdiHeartOutline, mdiHomeOutline, mdiMagnify, mdiPackageVariantClosed, mdiWarehouse } from '@mdi/js'
 
 const open = defineModel<boolean | null>({ default: null })
 
@@ -11,15 +11,20 @@ const shop = [
   { title: 'Orders', icon: mdiPackageVariantClosed, to: '/orders' },
   { title: 'Account', icon: mdiAccountOutline, to: '/account' },
 ]
+// Inventory management: the warehouses (sites) and what each holds. A
+// separate area of the app from the shop, on the same server.
+const inventory = [
+  { title: 'Sites', icon: mdiWarehouse, to: '/inventory' },
+]
 const tools = [
   { title: 'Lab', icon: mdiFlaskOutline, to: '/dev' },
-  { title: 'Legacy demo', icon: mdiHistory, to: '/legacy' },
 ]
 </script>
 
 <template>
   <v-navigation-drawer v-model="open">
     <v-list nav>
+      <v-list-subheader>Shop</v-list-subheader>
       <v-list-item
         v-for="item in shop"
         :key="item.to"
@@ -27,6 +32,17 @@ const tools = [
         :prepend-icon="item.icon"
         :title="item.title"
         :exact="item.to === '/'"
+      />
+    </v-list>
+    <v-divider />
+    <v-list nav>
+      <v-list-subheader>Inventory</v-list-subheader>
+      <v-list-item
+        v-for="item in inventory"
+        :key="item.to"
+        :to="item.to"
+        :prepend-icon="item.icon"
+        :title="item.title"
       />
     </v-list>
     <v-divider />

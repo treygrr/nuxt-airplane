@@ -1,6 +1,7 @@
 <script setup lang="ts">
-// The sites-and-items demo the playground started as. It stays until the
-// shop's own server replaces this schema.
+// Inventory management: warehouses (sites) and what each holds. This is the
+// demo the playground started as; it is rebuilt on the shop's server and
+// Vuetify components in a later step.
 const showArchived = ref(false)
 const search = ref('')
 // Filtering is a query variable: the server applies it to the response and
