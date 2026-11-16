@@ -1,4 +1,4 @@
-// No \`apply\`: nothing the client keeps changes. The module cannot tell what
+// No `apply`: nothing the client keeps changes. The module cannot tell what
 // such a mutation touches, so it sends it on its own, after everything
 // queued before it, and refetches every mounted query once it is through.
 
