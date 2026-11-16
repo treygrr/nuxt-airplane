@@ -9,6 +9,8 @@ const drawer = ref(false)
     <PromoStrip />
     <AppBar @toggle-nav="drawer = !drawer" />
     <AppNavDrawer v-model="drawer" />
+    <QueueDrawer />
+    <FailureSnackbar />
     <v-main>
       <v-container
         class="py-6 py-md-8"
