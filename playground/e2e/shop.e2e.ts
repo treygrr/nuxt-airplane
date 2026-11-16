@@ -129,3 +129,22 @@ test('scenario 15: checkout sends the order after the queue, and not offline', a
   await expect(page.getByRole('button', { name: 'Place order' })).toBeDisabled()
   await expect(page.getByText('You are offline. Placing an order needs a connection')).toBeVisible()
 })
+
+test('a list made offline opens from its card, and stays open when it syncs', async ({ page, context }) => {
+  await page.goto('/wishlists')
+  await ready(page)
+  await pagesLoaded(page)
+  await context.setOffline(true)
+  await page.getByRole('button', { name: 'New list' }).click()
+  await page.getByRole('dialog').getByLabel('Name').fill('Garage')
+  await page.getByRole('dialog').getByRole('button', { name: 'Create' }).click()
+
+  await page.locator('a.v-card', { hasText: 'Garage' }).click()
+  await expect(page).toHaveURL(/\/wishlists\/tmp-/)
+  await expect(page.getByRole('heading', { name: 'Garage' })).toBeVisible()
+
+  await context.setOffline(false)
+  await drained(page)
+  await expect(page).not.toHaveURL(/\/wishlists\/tmp-/)
+  await expect(page.getByRole('heading', { name: 'Garage' })).toBeVisible()
+})
