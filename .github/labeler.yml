@@ -1,0 +1,24 @@
+# Area labels applied by the `pr` workflow (actions/labeler) from changed paths.
+module:
+  - changed-files:
+      - any-glob-to-any-file: ['src/**']
+
+docs:
+  - changed-files:
+      - any-glob-to-any-file: ['docs/**', 'README.md', 'CONTRIBUTING.md']
+
+playground:
+  - changed-files:
+      - any-glob-to-any-file: ['playground/**']
+
+tests:
+  - changed-files:
+      - any-glob-to-any-file: ['test/**']
+
+ci:
+  - changed-files:
+      - any-glob-to-any-file: ['.github/**']
+
+dependencies:
+  - changed-files:
+      - any-glob-to-any-file: ['package.json', 'package-lock.json', '**/package.json']

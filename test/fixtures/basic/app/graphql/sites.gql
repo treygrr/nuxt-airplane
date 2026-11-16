@@ -1,0 +1,17 @@
+fragment SiteFields on Site {
+  id
+  name
+  archived
+}
+
+query GetSites {
+  sites {
+    ...SiteFields
+  }
+}
+
+mutation ArchiveSite($id: ID!) {
+  archiveSite(id: $id) {
+    ...SiteFields
+  }
+}

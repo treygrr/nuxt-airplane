@@ -1,0 +1,162 @@
+fragment SiteFields on Site {
+  id
+  name
+  archived
+  createdAt
+  tracksInventory
+  itemCount
+  unitCount
+}
+
+fragment SiteItemFields on SiteItem {
+  id
+  siteId
+  variantId
+  productId
+  productName
+  variantName
+  sku
+  onHand
+  min
+  max
+  boxQuantity
+  minOrderQuantity
+  imageUrl
+}
+
+fragment SiteCartLineFields on SiteCartLine {
+  id
+  siteId
+  variantId
+  productId
+  productName
+  variantName
+  sku
+  quantity
+  addedAt
+  boxQuantity
+  minOrderQuantity
+}
+
+query GetSites($archived: Boolean, $search: String) {
+  sites(archived: $archived, search: $search) {
+    ...SiteFields
+  }
+}
+
+query GetSite($id: ID!) {
+  site(id: $id) {
+    ...SiteFields
+  }
+}
+
+query GetSiteItems($siteId: ID!, $first: Int, $after: String, $search: String, $sort: SiteItemSort, $descending: Boolean) {
+  siteItems(siteId: $siteId, first: $first, after: $after, search: $search, sort: $sort, descending: $descending) {
+    edges {
+      cursor
+      node {
+        ...SiteItemFields
+      }
+    }
+    pageInfo {
+      hasNextPage
+      endCursor
+    }
+    totalCount
+  }
+}
+
+mutation CreateSite($name: String!) {
+  createSite(name: $name) {
+    ...SiteFields
+  }
+}
+
+mutation RenameSite($id: ID!, $name: String!) {
+  renameSite(id: $id, name: $name) {
+    ...SiteFields
+  }
+}
+
+mutation ArchiveSite($id: ID!) {
+  archiveSite(id: $id) {
+    ...SiteFields
+  }
+}
+
+mutation UnarchiveSite($id: ID!) {
+  unarchiveSite(id: $id) {
+    ...SiteFields
+  }
+}
+
+mutation DeleteSite($id: ID!) {
+  deleteSite(id: $id)
+}
+
+query GetSiteCartLines($siteId: ID) {
+  siteCartLines(siteId: $siteId) {
+    ...SiteCartLineFields
+  }
+}
+
+mutation SetSiteInventoryTracking($id: ID!, $enabled: Boolean!) {
+  setSiteInventoryTracking(id: $id, enabled: $enabled) {
+    ...SiteFields
+  }
+}
+
+mutation AddSiteItem($siteId: ID!, $variantId: ID!, $onHand: Int, $min: Int, $max: Int) {
+  addSiteItem(siteId: $siteId, variantId: $variantId, onHand: $onHand, min: $min, max: $max) {
+    ...SiteItemFields
+  }
+}
+
+mutation UpdateSiteItemOnHand($siteId: ID!, $variantId: ID!, $onHand: Int!) {
+  updateSiteItemOnHand(siteId: $siteId, variantId: $variantId, onHand: $onHand) {
+    ...SiteItemFields
+  }
+}
+
+mutation RemoveSiteItem($siteId: ID!, $variantId: ID!) {
+  removeSiteItem(siteId: $siteId, variantId: $variantId)
+}
+
+mutation UpdateSiteItemLevels($siteId: ID!, $variantId: ID!, $min: Int!, $max: Int!) {
+  updateSiteItemLevels(siteId: $siteId, variantId: $variantId, min: $min, max: $max) {
+    ...SiteItemFields
+  }
+}
+
+mutation AddSiteCartLine($siteId: ID!, $variantId: ID!, $quantity: Int!) {
+  addSiteCartLine(siteId: $siteId, variantId: $variantId, quantity: $quantity) {
+    ...SiteCartLineFields
+  }
+}
+
+mutation SetSiteCartLineQuantity($siteId: ID!, $variantId: ID!, $quantity: Int!) {
+  setSiteCartLineQuantity(siteId: $siteId, variantId: $variantId, quantity: $quantity) {
+    ...SiteCartLineFields
+  }
+}
+
+mutation RemoveSiteCartLine($siteId: ID!, $variantId: ID!) {
+  removeSiteCartLine(siteId: $siteId, variantId: $variantId)
+}
+
+mutation CheckOutSiteCart($siteId: ID!) {
+  checkOutSiteCart(siteId: $siteId) {
+    site {
+      ...SiteFields
+    }
+    items {
+      ...SiteItemFields
+    }
+  }
+}
+
+mutation FillSiteCartToMax($siteId: ID!) {
+  fillSiteCartToMax(siteId: $siteId) {
+    ...SiteCartLineFields
+  }
+}

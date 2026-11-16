@@ -1,0 +1,72 @@
+fragment VariantFields on Variant {
+  id
+  productId
+  name
+  sku
+  price
+  stock
+  boxQuantity
+  minOrderQuantity
+}
+
+fragment ProductFields on Product {
+  id
+  name
+  brand
+  description
+  categoryId
+  price
+  rating
+  reviewCount
+  imageUrl
+  createdAt
+  variants {
+    ...VariantFields
+  }
+}
+
+query GetCategories {
+  categories {
+    id
+    name
+    slug
+    parentId
+    productCount
+  }
+}
+
+query GetProducts($first: Int, $after: String, $categoryId: ID, $search: String, $sort: ProductSort, $inStockOnly: Boolean) {
+  products(first: $first, after: $after, categoryId: $categoryId, search: $search, sort: $sort, inStockOnly: $inStockOnly) {
+    edges {
+      cursor
+      node {
+        ...ProductFields
+      }
+    }
+    pageInfo {
+      hasNextPage
+      endCursor
+    }
+    totalCount
+  }
+}
+
+query GetFeaturedProducts {
+  featuredProducts {
+    ...ProductFields
+  }
+}
+
+query GetProduct($id: ID!) {
+  product(id: $id) {
+    ...ProductFields
+  }
+}
+
+query GetSearchSuggestions($query: String!) {
+  searchSuggestions(query: $query)
+}
+
+mutation NotifyBackInStock($variantId: ID!) {
+  notifyBackInStock(variantId: $variantId)
+}

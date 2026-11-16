@@ -1,0 +1,404 @@
+"""
+Toolshed: a hardware store, with two sides.
+
+The shop: one signed-in customer, a catalog of a few thousand products (or
+tens of thousands with the stress seed), and the usual cart, wishlists,
+addresses, orders and reviews.
+
+Inventory management: sites (warehouses) and how many of each product variant
+each holds. A variant's stock in the shop is what the active sites hold of
+it, and an order takes it from them.
+
+Money is in cents. Every thing has an `id`, so the client gives each type a
+table. Every mutation changes one thing: a cart line, not the cart.
+"""
+scalar DateTime
+
+type Category {
+  id: ID!
+  name: String!
+  slug: String!
+  "Null for a top-level category."
+  parentId: ID
+  "How many products sit in it, children included."
+  productCount: Int!
+}
+
+type Variant {
+  id: ID!
+  productId: ID!
+  name: String!
+  sku: String!
+  price: Int!
+  "What the active sites hold of it."
+  stock: Int!
+  "Restocked only in whole boxes of this many, when set."
+  boxQuantity: Int
+  "Restocked no fewer than this many at a time, when set."
+  minOrderQuantity: Int
+}
+
+type Product {
+  id: ID!
+  name: String!
+  brand: String!
+  description: String!
+  categoryId: ID!
+  "The cheapest variant's price."
+  price: Int!
+  rating: Float!
+  reviewCount: Int!
+  imageUrl: String!
+  createdAt: DateTime!
+  variants: [Variant!]!
+}
+
+type PageInfo {
+  hasNextPage: Boolean!
+  endCursor: String
+}
+
+type ProductEdge {
+  cursor: String!
+  node: Product!
+}
+
+type ProductConnection {
+  edges: [ProductEdge!]!
+  pageInfo: PageInfo!
+  totalCount: Int!
+}
+
+enum ProductSort {
+  NAME
+  PRICE_ASC
+  PRICE_DESC
+  RATING
+  NEWEST
+}
+
+type CartLine {
+  id: ID!
+  cartId: ID!
+  productId: ID!
+  variantId: ID!
+  productName: String!
+  variantName: String!
+  imageUrl: String!
+  unitPrice: Int!
+  quantity: Int!
+  addedAt: DateTime!
+}
+
+type Coupon {
+  id: ID!
+  code: String!
+  description: String!
+  percentOff: Int!
+  "Smallest subtotal it applies to."
+  minimumSubtotal: Int!
+}
+
+type Cart {
+  id: ID!
+  lines: [CartLine!]!
+  coupon: Coupon
+  updatedAt: DateTime!
+}
+
+"What the cart comes to. Its own type, so a client keeps it apart from the lines."
+type OrderSummary {
+  id: ID!
+  itemCount: Int!
+  subtotal: Int!
+  discount: Int!
+  shipping: Int!
+  tax: Int!
+  total: Int!
+}
+
+type WishlistItem {
+  id: ID!
+  wishlistId: ID!
+  productId: ID!
+  variantId: ID
+  productName: String!
+  imageUrl: String!
+  price: Int!
+  note: String!
+  addedAt: DateTime!
+}
+
+type Wishlist {
+  id: ID!
+  name: String!
+  createdAt: DateTime!
+  items: [WishlistItem!]!
+}
+
+type Address {
+  id: ID!
+  name: String!
+  line1: String!
+  line2: String!
+  city: String!
+  region: String!
+  postalCode: String!
+  country: String!
+  isDefault: Boolean!
+}
+
+enum OrderStatus {
+  PLACED
+  PACKED
+  SHIPPED
+  DELIVERED
+  CANCELLED
+}
+
+type OrderLine {
+  id: ID!
+  orderId: ID!
+  productId: ID!
+  variantId: ID!
+  productName: String!
+  variantName: String!
+  unitPrice: Int!
+  quantity: Int!
+}
+
+type Order {
+  id: ID!
+  number: String!
+  "Moves on by itself as time passes: placed, packed, shipped, delivered."
+  status: OrderStatus!
+  placedAt: DateTime!
+  note: String!
+  shipTo: String!
+  subtotal: Int!
+  discount: Int!
+  shipping: Int!
+  tax: Int!
+  total: Int!
+  lines: [OrderLine!]!
+}
+
+type Review {
+  id: ID!
+  productId: ID!
+  authorName: String!
+  rating: Int!
+  title: String!
+  body: String!
+  createdAt: DateTime!
+  "Written by the signed-in customer."
+  mine: Boolean!
+}
+
+type Customer {
+  id: ID!
+  name: String!
+  email: String!
+  phone: String!
+  marketingOptIn: Boolean!
+}
+
+"A warehouse."
+type Site {
+  id: ID!
+  name: String!
+  archived: Boolean!
+  createdAt: DateTime!
+  "Keeps min and max levels for its items, and restocks them from a cart."
+  tracksInventory: Boolean!
+  "How many different variants it holds."
+  itemCount: Int!
+  "How many units it holds in all."
+  unitCount: Int!
+}
+
+"One variant held at one site. Its id is the site's and the variant's together."
+type SiteItem {
+  id: ID!
+  siteId: ID!
+  variantId: ID!
+  productId: ID!
+  productName: String!
+  variantName: String!
+  sku: String!
+  onHand: Int!
+  "Restock when on hand falls below this. Kept only where the site tracks inventory."
+  min: Int!
+  "Restock up to this."
+  max: Int!
+  boxQuantity: Int
+  minOrderQuantity: Int
+  imageUrl: String!
+}
+
+"How a site's items are listed. Ties go by product name."
+enum SiteItemSort {
+  NAME
+  SKU
+  ON_HAND
+  MIN
+  MAX
+  "How full an item is against its max."
+  LEVEL
+}
+
+"An item in a site's restock cart. Its id is the site's and the variant's together, like the item's."
+type SiteCartLine {
+  id: ID!
+  siteId: ID!
+  variantId: ID!
+  productId: ID!
+  productName: String!
+  variantName: String!
+  sku: String!
+  quantity: Int!
+  addedAt: DateTime!
+  boxQuantity: Int
+  minOrderQuantity: Int
+}
+
+"A restock cart checked out: the site, and the items it restocked as they are now."
+type SiteCartCheckout {
+  site: Site!
+  items: [SiteItem!]!
+}
+
+type SiteItemEdge {
+  cursor: String!
+  node: SiteItem!
+}
+
+type SiteItemConnection {
+  edges: [SiteItemEdge!]!
+  pageInfo: PageInfo!
+  totalCount: Int!
+}
+
+"What the server saw of the client. Not affected by chaos."
+type LabStats {
+  products: Int!
+  requests: Int!
+  mutations: Int!
+  "Mutations answered from the idempotency cache: a retry of one already applied."
+  repeatedKeys: Int!
+  "Mutations applied a second time under a key seen before (only while keys are ignored)."
+  appliedTwice: Int!
+  "Two mutations on the same thing in progress at the same time."
+  overlaps: Int!
+  "Most mutations in progress at once."
+  maxConcurrent: Int!
+  dropped: Int!
+  lostAnswers: Int!
+  unauthorized: Int!
+  rateLimited: Int!
+  unavailable: Int!
+  rejected: Int!
+  "Every mutation received, oldest first, as JSON lines."
+  log: [String!]!
+}
+
+input AddressInput {
+  name: String!
+  line1: String!
+  line2: String
+  city: String!
+  region: String!
+  postalCode: String!
+  country: String!
+}
+
+type Query {
+  categories: [Category!]!
+  products(first: Int = 24, after: String, categoryId: ID, search: String, sort: ProductSort = NAME, inStockOnly: Boolean): ProductConnection!
+  featuredProducts: [Product!]!
+  product(id: ID!): Product
+  reviews(productId: ID!): [Review!]!
+  myReviews: [Review!]!
+
+  cart: Cart!
+  orderSummary: OrderSummary!
+  coupons: [Coupon!]!
+
+  wishlists: [Wishlist!]!
+  addresses: [Address!]!
+  orders: [Order!]!
+  order(id: ID!): Order
+  me: Customer!
+
+  "Sites, oldest first. Archived ones only when asked for."
+  sites(archived: Boolean, search: String): [Site!]!
+  site(id: ID!): Site
+  "What a site holds, by product name."
+  siteItems(siteId: ID!, first: Int = 50, after: String, search: String, sort: SiteItemSort, descending: Boolean): SiteItemConnection!
+  "What the restock carts hold: one site's, or every site's."
+  siteCartLines(siteId: ID): [SiteCartLine!]!
+
+  "Name completions for the search box. A client is not expected to keep these."
+  searchSuggestions(query: String!): [String!]!
+  labStats: LabStats!
+}
+
+type Mutation {
+  addCartLine(variantId: ID!, quantity: Int!): CartLine!
+  setCartLineQuantity(lineId: ID!, quantity: Int!): CartLine!
+  removeCartLine(lineId: ID!): ID!
+  clearCart: Cart!
+  applyCoupon(code: String!): Cart!
+  removeCoupon: Cart!
+
+  createWishlist(name: String!): Wishlist!
+  renameWishlist(id: ID!, name: String!): Wishlist!
+  deleteWishlist(id: ID!): ID!
+  addWishlistItem(wishlistId: ID!, productId: ID!, variantId: ID, note: String): WishlistItem!
+  setWishlistItemNote(itemId: ID!, note: String!): WishlistItem!
+  removeWishlistItem(itemId: ID!): ID!
+  "Takes the item off its list and puts the product in the cart."
+  moveWishlistItemToCart(itemId: ID!, quantity: Int = 1): CartLine!
+
+  createAddress(input: AddressInput!): Address!
+  updateAddress(id: ID!, name: String, line1: String, line2: String, city: String, region: String, postalCode: String, country: String): Address!
+  deleteAddress(id: ID!): ID!
+  setDefaultAddress(id: ID!): Address!
+
+  createReview(productId: ID!, rating: Int!, title: String!, body: String!): Review!
+  updateReview(id: ID!, rating: Int, title: String, body: String): Review!
+  deleteReview(id: ID!): ID!
+
+  updateProfile(name: String, email: String, phone: String): Customer!
+  setMarketingOptIn(optIn: Boolean!): Customer!
+
+  "Places an order for everything in the cart and empties it."
+  placeOrder(addressId: ID!, note: String): Order!
+  cancelOrder(id: ID!): Order!
+
+  createSite(name: String!): Site!
+  renameSite(id: ID!, name: String!): Site!
+  "An archived site's stock does not count towards what the shop can sell."
+  archiveSite(id: ID!): Site!
+  unarchiveSite(id: ID!): Site!
+  "Only a site that holds nothing can be deleted."
+  deleteSite(id: ID!): ID!
+  "Min and max are kept only while a site tracks inventory. Its restock cart stays either way."
+  setSiteInventoryTracking(id: ID!, enabled: Boolean!): Site!
+  addSiteItem(siteId: ID!, variantId: ID!, onHand: Int = 0, min: Int = 0, max: Int = 0): SiteItem!
+  updateSiteItemOnHand(siteId: ID!, variantId: ID!, onHand: Int!): SiteItem!
+  updateSiteItemLevels(siteId: ID!, variantId: ID!, min: Int!, max: Int!): SiteItem!
+  "Also takes it out of the site's restock cart."
+  removeSiteItem(siteId: ID!, variantId: ID!): ID!
+  "Adds to the line when the item is in the cart already."
+  addSiteCartLine(siteId: ID!, variantId: ID!, quantity: Int!): SiteCartLine!
+  setSiteCartLineQuantity(siteId: ID!, variantId: ID!, quantity: Int!): SiteCartLine!
+  removeSiteCartLine(siteId: ID!, variantId: ID!): ID!
+  "Adds each line's quantity to what the site holds, and empties the cart."
+  checkOutSiteCart(siteId: ID!): SiteCartCheckout!
+  "Puts in the cart what each item needs to reach its max, beyond what is in the cart already, in quantities that may be ordered. Returns the whole cart."
+  fillSiteCartToMax(siteId: ID!): [SiteCartLine!]!
+
+  "Asks to be told when a variant is back. Changes nothing the client keeps."
+  notifyBackInStock(variantId: ID!): Boolean!
+}

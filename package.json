@@ -1,0 +1,98 @@
+{
+  "name": "@treygrr/nuxt-airplane",
+  "version": "0.6.0",
+  "description": "Airplane mode for your GraphQL app: typed composables from your .gql files, an IndexedDB cache and a mutation queue that lands when you are back online.",
+  "keywords": [
+    "nuxt",
+    "nuxt-module",
+    "graphql",
+    "offline",
+    "offline-first",
+    "dexie",
+    "indexeddb",
+    "sync"
+  ],
+  "repository": "treygrr/nuxt-airplane",
+  "homepage": "https://github.com/treygrr/nuxt-airplane#readme",
+  "bugs": "https://github.com/treygrr/nuxt-airplane/issues",
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": "^20.19.0 || >=22.12.0"
+  },
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/types.d.mts",
+      "import": "./dist/module.mjs"
+    }
+  },
+  "main": "./dist/module.mjs",
+  "typesVersions": {
+    "*": {
+      ".": [
+        "./dist/types.d.mts"
+      ]
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "workspaces": [
+    "playground",
+    "docs"
+  ],
+  "scripts": {
+    "prepack": "nuxt-module-build build",
+    "dev": "npm run dev:prepare && nuxt dev playground",
+    "dev:build": "nuxt build playground",
+    "dev:prepare": "nuxt-module-build build --stub && nuxt-module-build prepare && nuxt prepare playground",
+    "release": "npm run lint && npm run test && npm run prepack && changelogen --release && npm publish && git push --follow-tags",
+    "lint": "eslint .",
+    "test": "vitest run",
+    "test:watch": "vitest watch",
+    "test:types": "vue-tsc --noEmit && cd playground && vue-tsc --noEmit",
+    "docs:dev": "nuxt dev docs",
+    "docs:build": "nuxt build docs",
+    "test:e2e": "playwright test -c playground/playwright.config.ts"
+  },
+  "dependencies": {
+    "@graphql-codegen/core": "^6.2.2",
+    "@graphql-codegen/typescript-operations": "^6.2.0",
+    "@nuxt/kit": "^4.6.3",
+    "dexie": "^4.4.7",
+    "ohash": "^2.0.12",
+    "tinyglobby": "^0.2.17"
+  },
+  "peerDependencies": {
+    "graphql": "^16.8.0 || ^17.0.0"
+  },
+  "devDependencies": {
+    "@nuxt/devtools": "^4.1.0",
+    "@nuxt/eslint-config": "^1.17.0",
+    "@nuxt/module-builder": "^1.0.3",
+    "@nuxt/schema": "^4.6.3",
+    "@nuxt/test-utils": "^4.3.3",
+    "@types/node": "latest",
+    "changelogen": "^0.6.2",
+    "eslint": "^10.12.0",
+    "fake-indexeddb": "^6.2.7",
+    "graphql": "^17.0.2",
+    "nuxt": "^4.6.3",
+    "typescript": "6.0.3",
+    "vitest": "^5.0.3",
+    "vue-tsc": "^3.3.12"
+  },
+  "overrides": {
+    "minimatch": "^11.0.1",
+    "eslint-plugin-import-x": {
+      "minimatch": "^10.2.6"
+    },
+    "glob": "^14.0.2",
+    "@nuxt/content": {
+      "zod": "^4.6.7"
+    }
+  }
+}

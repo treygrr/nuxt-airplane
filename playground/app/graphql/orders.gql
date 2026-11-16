@@ -1,0 +1,47 @@
+fragment OrderFields on Order {
+  id
+  number
+  status
+  placedAt
+  note
+  shipTo
+  subtotal
+  discount
+  shipping
+  tax
+  total
+  lines {
+    id
+    orderId
+    productId
+    variantId
+    productName
+    variantName
+    unitPrice
+    quantity
+  }
+}
+
+query GetOrders {
+  orders {
+    ...OrderFields
+  }
+}
+
+query GetOrder($id: ID!) {
+  order(id: $id) {
+    ...OrderFields
+  }
+}
+
+mutation PlaceOrder($addressId: ID!, $note: String) {
+  placeOrder(addressId: $addressId, note: $note) {
+    ...OrderFields
+  }
+}
+
+mutation CancelOrder($id: ID!) {
+  cancelOrder(id: $id) {
+    ...OrderFields
+  }
+}
