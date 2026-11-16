@@ -32,7 +32,7 @@ Status: not changed. The switch in the app bar is left as it is.
 
 **Cause:** certain. The module spread the user's codegen config over its own, and `scalars` replaced its `ID` entry.
 
-Status: fixed in the module, #61. Until it is merged, `nuxt.config.ts` restates `ID`.
+Status: fixed in the module, #61. The playground's workaround is gone.
 
 ## 3. Enums and input types were declared twice in the generated types
 
@@ -42,7 +42,7 @@ Status: fixed in the module, #61. Until it is merged, `nuxt.config.ts` restates 
 
 **Cause:** certain. The module ran both the `typescript` and `typescript-operations` codegen plugins, and since v6 the second declares the enums and input types the operations use itself.
 
-Status: fixed in the module, #61, which runs the operations plugin alone. Until it is merged, `nuxt.config.ts` sets `enumsAsTypes: true`, which makes both declarations unions.
+Status: fixed in the module, #61, which runs the operations plugin alone. The playground's workaround is gone.
 
 ## 4. A file without a default export in the handlers directory stopped the app
 
@@ -73,3 +73,15 @@ Open, for the docs: the sync guide's "Side by side" section could say this in a 
 **Happened:** in dev the request hung until the client's own 30 second timeout. Nuxt's dev server proxies each request to Nitro, and the browser's connection outlives the one Nitro closes.
 
 Status: the playground's server answers `502` with no body in dev instead, which the client treats the same way (stays queued, retries later). A production build closes the connection for real; that was checked, and the client sees a socket error after 44 ms. Not a module issue.
+
+## 7. A `read` that loads a whole table blocks the page while the catalog is fetched
+
+**Done:** with the 50,000-product catalog, opened the home page, whose "New arrivals" row reads the products and starts the background walk of every page.
+
+**Happened:** 382 long tasks on the main thread over the walk, 68 s of them in all, the longest 374 ms; a 100 ms timer fired up to 900 ms late. The handlers that write ran in the worker as intended.
+
+**Cause:** certain, and in the app. `GetProducts`' `read` loaded every product and sorted it in JavaScript. A `read` runs on the page, in a live query, and runs again whenever a table it read changes. During the walk that is once per page, 255 times, each time over a bigger table.
+
+**Fix, in the app:** the unfiltered listing walks an index in the sort order and stops at the page (`orderBy('[price+name]').offset(n).limit(24)`), so it reads a few rows and is only woken by writes in that range. The same walk then had 3 long tasks (232 ms in all, the longest 92 ms); the timer was late by 2 ms at the 95th percentile. Offline, the first page by name or price answers in about 10 ms from 50,000 rows; a search the server never saw takes about 0.8 s, since it has to look at every product.
+
+Open, for the docs: the query handler guide could say this outright, since nothing about `read` hints that its cost is paid again on every write to the tables it touches.

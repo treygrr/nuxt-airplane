@@ -5,7 +5,8 @@ import { findProduct } from '../../../utils/shop'
 const COLORS = ['#c2410c', '#0f766e', '#1d4ed8', '#7c3aed', '#be123c', '#4d7c0f', '#a16207', '#334155']
 
 export default defineEventHandler((event) => {
-  const id = getRouterParam(event, 'id')?.replace(/\.svg$/, '') ?? ''
+  // The route is /img/p/<id>.svg: the parameter is the whole file name.
+  const id = getRouterParam(event, 'file')?.replace(/\.svg$/, '') ?? ''
   const product = findProduct(id)
   const words = (product?.name ?? '?').split(' ').filter(w => /^[A-Z]/.test(w))
   const initials = (words.slice(1, 3).map(w => w[0]).join('') || '?').toUpperCase()

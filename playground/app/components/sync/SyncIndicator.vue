@@ -53,6 +53,7 @@ const state = computed(() => {
           {{ sync.lastError.value }}
         </div>
         <OfflineSwitch class="mt-2" />
+        <OfflineCatalogSwitch />
       </v-card-text>
     </v-card>
   </v-menu>
