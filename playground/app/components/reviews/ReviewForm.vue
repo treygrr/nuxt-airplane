@@ -46,10 +46,7 @@ function submit() {
     </v-card-text>
     <v-card-actions>
       <v-spacer />
-      <v-btn
-        v-if="initial"
-        @click="$emit('cancel')"
-      >
+      <v-btn @click="$emit('cancel')">
         Cancel
       </v-btn>
       <v-btn

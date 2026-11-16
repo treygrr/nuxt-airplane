@@ -1,6 +1,6 @@
 <script setup lang="ts">
-// A product: pictures, variants with their price and stock, the cart, and
-// reviews. Every page visited leaves a fetch record behind for eviction.
+// A product: its picture and description, the purchase panel, and reviews.
+// Every page visited leaves a fetch record behind, for eviction to drop first.
 const route = useRoute()
 const id = computed(() => String(route.params.id))
 const { product, loading } = useProduct(id)
@@ -9,8 +9,7 @@ const category = computed(() => (product.value ? byId(product.value.categoryId) 
 useHead({ title: () => `${product.value?.name ?? 'Product'} · Toolshed` })
 
 const variantId = ref<string | null>(null)
-watch(product, p => (variantId.value = p?.variants.find(v => v.id === variantId.value)?.id ?? p?.variants[0]?.id ?? null), { immediate: true })
-const variant = computed(() => product.value?.variants.find(v => v.id === variantId.value))
+watch(product, p => (variantId.value = p?.variants.find(v => v.id === variantId.value)?.id ?? p?.variants.find(v => v.stock > 0)?.id ?? p?.variants[0]?.id ?? null), { immediate: true })
 </script>
 
 <template>
@@ -27,64 +26,46 @@ const variant = computed(() => product.value?.variants.find(v => v.id === varian
     <template v-else>
       <v-breadcrumbs
         :items="[{ title: 'Home', to: '/' }, ...(category ? [{ title: category.name, to: `/c/${category.id}` }] : []), { title: product.name, disabled: true }]"
-        class="px-0"
+        class="px-0 pt-0"
       />
       <v-row>
         <v-col
           cols="12"
-          md="6"
+          md="7"
         >
           <v-img
             :src="product.imageUrl"
             :alt="product.name"
-            aspect-ratio="4/3"
-            rounded="lg"
+            :aspect-ratio="4 / 3"
+            rounded="xl"
+            class="border mb-6"
             cover
+          />
+          <ProductAbout
+            :description="product.description"
+            class="d-none d-md-block"
           />
         </v-col>
         <v-col
           cols="12"
-          md="6"
+          md="5"
         >
-          <div class="text-label-large text-medium-emphasis">
-            {{ product.brand }}
-          </div>
-          <h1 class="text-headline-small mb-1">
-            {{ product.name }}
-          </h1>
-          <RatingStars
-            :rating="product.rating"
-            :count="product.reviewCount"
-            class="mb-3"
+          <PurchasePanel
+            v-model:variant-id="variantId"
+            :product="product"
+            style="position: sticky; top: 140px"
           />
-          <div
-            v-if="variant"
-            class="d-flex align-center ga-3 mb-3"
-          >
-            <span class="text-headline-small">{{ formatMoney(variant.price) }}</span>
-            <StockBadge :stock="variant.stock" />
-            <span class="text-body-small text-medium-emphasis">SKU {{ variant.sku }}</span>
-          </div>
-          <VariantPicker
-            v-if="product.variants.length > 1"
-            v-model="variantId"
-            :variants="product.variants"
-            class="mb-3"
-          />
-          <AddToCart
-            v-if="variant"
-            :variant="variant"
-            class="mb-4"
-          />
-          <p class="text-body-medium">
-            {{ product.description }}
-          </p>
+        </v-col>
+        <!-- On a phone the description follows the purchase panel. -->
+        <v-col
+          cols="12"
+          class="d-md-none"
+        >
+          <ProductAbout :description="product.description" />
         </v-col>
       </v-row>
-      <ProductReviews
-        :product-id="product.id"
-        class="mt-8"
-      />
+      <v-divider class="my-10" />
+      <ProductReviews :product-id="product.id" />
     </template>
   </div>
 </template>

@@ -11,6 +11,9 @@ defineProps<{
   emptyText?: string
 }>()
 defineEmits<{ more: [] }>()
+
+// One cart for the whole grid, not one per card.
+const { add } = useCart()
 </script>
 
 <template>
@@ -40,7 +43,10 @@ defineEmits<{ more: [] }>()
         sm="4"
         lg="3"
       >
-        <ProductCard :product="product" />
+        <ProductCard
+          :product="product"
+          @add="add($event)"
+        />
       </v-col>
     </v-row>
     <div

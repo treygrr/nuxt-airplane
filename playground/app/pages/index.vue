@@ -1,32 +1,41 @@
 <script setup lang="ts">
-// The shop's front page: the categories, the best rated products and the
-// newest. The newest is the whole catalog, unfiltered: with "keep the
-// catalog offline" on, fetching it starts the background walk of every page.
-useHead({ title: 'Toolshed' })
-const { products, loading } = useFeaturedProducts()
+// The shop's front page. "New arrivals" is the whole catalog, unfiltered:
+// with "keep the catalog offline" on, fetching it starts the background walk
+// of every page.
+useHead({ title: 'Toolshed · Tools for every job' })
+const featured = useFeaturedProducts()
 const newest = useProducts({ sort: 'NEWEST', first: 8 })
 </script>
 
 <template>
   <div>
-    <h1 class="text-headline-medium mb-1">
-      Tools for every job
-    </h1>
-    <p class="text-body-large text-medium-emphasis mb-4">
-      Browse, fill your cart and check out. It all works with the network off.
-    </p>
-    <CategoryNav class="mb-6" />
-    <h2 class="text-title-large mb-3">
-      Best rated
-    </h2>
-    <ProductGrid
-      :products="products"
-      :loading="loading"
-      class="mb-8"
+    <HeroBanner class="mb-8" />
+    <ValueProps class="mb-12" />
+
+    <SectionHeader
+      title="Shop by category"
+      subtitle="Eight departments, thousands of tools"
     />
-    <h2 class="text-title-large mb-3">
-      New arrivals
-    </h2>
+    <CategoryTiles class="mb-12" />
+
+    <SectionHeader
+      title="Best rated"
+      subtitle="What the trades keep coming back for"
+      to="/search"
+    />
+    <ProductGrid
+      :products="featured.products.value.slice(0, 8)"
+      :loading="featured.loading.value"
+      class="mb-12"
+    />
+
+    <PromoBanner class="mb-12" />
+
+    <SectionHeader
+      title="New arrivals"
+      subtitle="Just landed on the shelves"
+      to="/search"
+    />
     <ProductGrid
       :products="newest.products.value"
       :loading="newest.loading.value"

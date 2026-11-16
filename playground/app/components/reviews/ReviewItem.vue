@@ -10,36 +10,40 @@ defineEmits<{ edit: [], delete: [] }>()
 </script>
 
 <template>
-  <v-list-item class="px-0">
-    <div class="d-flex align-center ga-2">
+  <v-card
+    border
+    flat
+    class="pa-5"
+  >
+    <div class="d-flex align-center flex-wrap ga-2 mb-2">
       <RatingStars :rating="review.rating" />
-      <span class="text-title-small">{{ review.title }}</span>
+      <span class="text-title-small font-weight-bold">{{ review.title }}</span>
       <PendingChip v-if="pending" />
+      <v-spacer />
+      <template v-if="review.mine">
+        <v-btn
+          :icon="mdiPencilOutline"
+          variant="text"
+          size="small"
+          aria-label="Edit"
+          @click="$emit('edit')"
+        />
+        <v-btn
+          :icon="mdiDeleteOutline"
+          variant="text"
+          size="small"
+          aria-label="Delete"
+          @click="$emit('delete')"
+        />
+      </template>
     </div>
-    <div class="text-body-medium my-1">
+    <p class="text-body-medium mb-3">
       {{ review.body }}
-    </div>
+    </p>
     <div class="text-body-small text-medium-emphasis">
-      {{ review.authorName }}, {{ formatDate(review.createdAt) }}
+      {{ review.authorName }}<template v-if="review.mine">
+        (you)
+      </template> · {{ formatDate(review.createdAt) }}
     </div>
-    <template
-      v-if="review.mine"
-      #append
-    >
-      <v-btn
-        :icon="mdiPencilOutline"
-        variant="text"
-        size="small"
-        aria-label="Edit"
-        @click="$emit('edit')"
-      />
-      <v-btn
-        :icon="mdiDeleteOutline"
-        variant="text"
-        size="small"
-        aria-label="Delete"
-        @click="$emit('delete')"
-      />
-    </template>
-  </v-list-item>
+  </v-card>
 </template>

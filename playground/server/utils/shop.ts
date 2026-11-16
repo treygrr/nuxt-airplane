@@ -39,7 +39,7 @@ export function findVariant(id: string) {
   return variants.get(id) ?? fail('NOT_FOUND', `No variant ${id}`)
 }
 
-export const imageUrl = (productId: string) => `/img/p/${productId}.svg`
+export const imageUrl = (productId: string) => `/img/product/${productId}.svg`
 
 // ---------------------------------------------------------------------------
 // Stock: what the active sites hold
