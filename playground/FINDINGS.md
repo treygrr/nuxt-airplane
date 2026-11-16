@@ -87,3 +87,25 @@ Status: the playground's server answers `502` with no body in dev instead, which
 **Fix, in the app:** the unfiltered listing walks an index in the sort order and stops at the page (`orderBy('[price+name]').offset(n).limit(24)`), so it reads a few rows and is only woken by writes in that range. The same walk then had 3 long tasks (232 ms in all, the longest 92 ms); the timer was late by 2 ms at the 95th percentile. Offline, the first page by name or price answers in about 10 ms from 50,000 rows; a search the server never saw takes about 0.8 s, since it has to look at every product.
 
 Open, for the docs: the query handler guide could say this outright, since nothing about `read` hints that its cost is paid again on every write to the tables it touches.
+
+## 8. Offline, a page never opened could not be opened at all
+
+**Done:** in the end-to-end tests, opened the shop online, let the catalog be fetched, went offline (the browser's own offline mode), and clicked a category.
+
+**Happened:** a blank page. The category's data was in the tables, but the page's code was not: Nuxt splits each page into its own file, fetched the first time the page opens, and offline that fetch fails.
+
+**Cause:** certain, and not the module's: it keeps data, not the app's code. An app that wants to be navigable offline needs its code kept too, which is a service worker's job.
+
+**In the playground:** a plugin downloads every page's code once the app is idle (`app/plugins/preload-pages.client.ts`). That lasts for the session; across a reload offline only a service worker helps.
+
+Open, for the docs: the module's docs could say plainly that offline data is half of working offline, and point at a service worker for the other half.
+
+## 9. The lab's idempotency let a retry through while the first attempt was still running (playground only)
+
+**Done:** closed a tab while 3 of its changes were being sent, with the server holding each for 400 ms, and opened another.
+
+**Happened:** in a production build, the new tab resent them before the first attempts had finished, and the server applied 4 of them twice. In dev it had not shown, since the timing differed.
+
+**Cause:** certain. The server remembered a key only once its first attempt had finished, so a retry arriving during that attempt ran as well. The client did exactly what it should: same keys, every time.
+
+**Fixed, in the playground's server:** a key whose first attempt is still running is waited on, and the retry gets that attempt's answer. Real servers that take idempotency keys need the same; the module's security and sync docs could say so where they introduce the keys.

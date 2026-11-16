@@ -131,6 +131,7 @@ export function reset({ products }: { products?: number } = {}) {
   Object.assign(stats, zero())
   log = []
   answered.clear()
+  running.clear()
   seen.clear()
   busy.clear()
   inFlight = 0
@@ -147,6 +148,13 @@ export interface RequestContext {
 
 /** First answers, by idempotency key. Only successes: a rejected mutation may be retried and go through. */
 const answered = new Map<string, unknown>()
+/**
+ * Mutations still running, by idempotency key. A retry can arrive while the
+ * first attempt is still at work, when the client gave up on it (a tab closed,
+ * a timeout): it waits for that attempt and gets its answer, as a careful
+ * server would, instead of applying the mutation a second time.
+ */
+const running = new Map<string, Promise<unknown>>()
 /** Every key a mutation was applied under. */
 const seen = new Set<string>()
 /** Things a mutation is working on right now, with how many. */
@@ -164,12 +172,28 @@ export async function mutation<T>(ctx: RequestContext, op: string, entity: strin
   stats.mutations++
   const key = ctx.idempotencyKey ?? null
 
+  if (key && chaos.honorIdempotency && running.has(key)) {
+    // Its first attempt is still at work: this one gets the same outcome.
+    const result = await running.get(key)!
+    stats.repeatedKeys++
+    record({ op, entity, key, outcome: 'repeated' })
+    return result as T
+  }
   if (key && chaos.honorIdempotency && answered.has(key)) {
     stats.repeatedKeys++
     record({ op, entity, key, outcome: 'repeated' })
     return answered.get(key) as T
   }
 
+  const attempt = apply(op, entity, key, run)
+  if (key && chaos.honorIdempotency) {
+    running.set(key, attempt)
+    void attempt.catch(() => {}).finally(() => running.delete(key))
+  }
+  return attempt
+}
+
+async function apply<T>(op: string, entity: string | null, key: string | null, run: () => T): Promise<T> {
   if ((chaos.rejectNext[op] ?? 0) > 0) {
     chaos.rejectNext[op]!--
     stats.rejected++

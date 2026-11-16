@@ -55,7 +55,8 @@
     "test:watch": "vitest watch",
     "test:types": "vue-tsc --noEmit && cd playground && vue-tsc --noEmit",
     "docs:dev": "nuxt dev docs",
-    "docs:build": "nuxt build docs"
+    "docs:build": "nuxt build docs",
+    "test:e2e": "playwright test -c playground/playwright.config.ts"
   },
   "dependencies": {
     "@graphql-codegen/core": "^6.2.2",

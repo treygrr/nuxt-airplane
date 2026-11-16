@@ -54,3 +54,7 @@ coverage
 Network Trash Folder
 Temporary Items
 .apdisk
+
+# Playwright
+playground/test-results
+playground/playwright-report

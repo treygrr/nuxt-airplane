@@ -1,0 +1,44 @@
+name: e2e
+
+# The playground's end-to-end scenarios in Chromium, Firefox and WebKit,
+# against a production build. Started by hand for now (Actions → e2e → Run
+# workflow): it is not a required check until it has proven stable on CI.
+
+on:
+  workflow_dispatch:
+    inputs:
+      browsers:
+        description: Projects to run, space-separated (chromium firefox webkit)
+        default: chromium firefox webkit
+
+permissions:
+  contents: read
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24.21.0
+          cache: npm
+      - run: npm ci
+      - run: npm run dev:prepare
+      # With the system libraries each browser needs, which WebKit in particular does.
+      - run: npx playwright install --with-deps $BROWSERS
+        working-directory: playground
+        env:
+          BROWSERS: ${{ inputs.browsers }}
+      - run: npm run test:e2e -- $(printf -- '--project=%s ' $BROWSERS)
+        env:
+          BROWSERS: ${{ inputs.browsers }}
+      - uses: actions/upload-artifact@v7
+        if: failure()
+        with:
+          name: playwright-report
+          path: |
+            playground/playwright-report
+            playground/test-results
+          retention-days: 7
