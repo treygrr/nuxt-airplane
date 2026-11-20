@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { mdiCloudCheckOutline, mdiDeleteSweepOutline, mdiRefresh, mdiSync } from '@mdi/js'
-import type { MutationRow } from '#nuxt-airplane'
 
 // Every change waiting for the server, oldest first, each under what it
 // depends on. Failed changes can be retried or undone, one at a time or all

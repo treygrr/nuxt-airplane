@@ -2,8 +2,6 @@
 // with its state and how deep it sits under what it depends on, and the
 // bulk actions (retry every failure, clear them).
 
-import type { MutationRow } from '#nuxt-airplane'
-
 export type QueueState = 'pending' | 'syncing' | 'failed' | 'held'
 
 export interface QueueRow {
