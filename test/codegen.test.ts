@@ -41,6 +41,10 @@ describe('loadDocuments', () => {
     expect(Object.keys(docs.operations).sort()).toEqual(['GetSite', 'GetSites', 'RenameSite'])
     expect(docs.operations.GetSites).toMatchObject({ kind: 'query' })
     expect(docs.operations.RenameSite).toMatchObject({ kind: 'mutation' })
+    // What each declares is what is sent; any other key passed with it is local, or dropped.
+    expect(docs.operations.GetSites!.variables).toEqual([])
+    expect(docs.operations.RenameSite!.variables).toEqual(['id', 'name'])
+    expect(docs.operations.GetSite!.variables).toEqual(['id'])
     // Both fragments travel with GetSites, only SiteName with RenameSite, none with GetSite.
     expect(docs.operations.GetSites!.source).toMatch(/fragment SiteFields on Site[\s\S]*fragment SiteName on Site/)
     expect(docs.operations.RenameSite!.source).toContain('fragment SiteName')

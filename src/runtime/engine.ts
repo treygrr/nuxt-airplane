@@ -9,12 +9,13 @@ import { Dexie } from 'dexie'
 import { hash } from 'ohash'
 import { BOOKKEEPING_TABLES, MODULE_STORES, createDb, describeChanges, putRow, quietly, record, thingPath, track, type RowChange } from './db'
 import type { IndexableType } from 'dexie'
-import { TEMP_IDS_KEY, QUERY_TABLES_KEY, humanize, keyed, mergeStores, newTempId, queryKey, queuedBefore, queuedRows, readQueryTableMap, readTempIdMap, requeueStuckRows, sameRow, substituteTempIds, uuid } from './helpers'
+import { TEMP_IDS_KEY, QUERY_TABLES_KEY, humanize, keyed, mergeStores, newTempId, queryKey, queuedBefore, queuedRows, readQueryTableMap, readTempIdMap, requeueStuckRows, sameRow, splitVariables, substituteTempIds, uuid } from './helpers'
 import type {
   AirplaneDexie,
   AirplaneEngine,
   AirplaneStores,
   EntityInfo,
+  Locals,
   MutationHandler,
   MutationHandlers,
   MutationRow,
@@ -121,6 +122,9 @@ export function createEngine(options: AirplaneEngineOptions, { db, opened }: { d
   }
 
   const queued = () => queuedRows(db)
+
+  /** A queued mutation's local variables: the ones it was queued with over the handler's defaults. */
+  const localOf = (row: Pick<MutationRow, 'document' | 'local'>): Locals => ({ ...mutationHandler(row.document)?.local, ...row.local })
 
   /**
    * Writes a response through the `store` handler and records the fetch. A
@@ -246,7 +250,7 @@ export function createEngine(options: AirplaneEngineOptions, { db, opened }: { d
     let minted = 0
     const tempId = () => (tempIds[minted] ??= newTempId(), tempIds[minted++]!)
     const { changes, error } = await record(db, () =>
-      h.apply!({ db, variables: row.variables as never, tempId }), { tolerant })
+      h.apply!({ db, variables: row.variables as never, local: localOf(row), tempId }), { tolerant })
     // Said once per mutation, not every time the queue is put back on.
     if (!error) skipped.delete(row.id)
     else if (!skipped.has(row.id)) {
@@ -344,7 +348,7 @@ export function createEngine(options: AirplaneEngineOptions, { db, opened }: { d
       await lower()
       const h = mutationHandler(row.document)
       const ids = [...(row.tempIds ?? [])]
-      if (h?.apply) await record(db, () => h.apply!({ db, variables: row.variables as never, tempId: () => ids.shift() ?? newTempId() }), { tolerant: true })
+      if (h?.apply) await record(db, () => h.apply!({ db, variables: row.variables as never, local: localOf(row), tempId: () => ids.shift() ?? newTempId() }), { tolerant: true })
       await raise(rest)
     })
   }
@@ -389,6 +393,11 @@ export function createEngine(options: AirplaneEngineOptions, { db, opened }: { d
     await db.mutations.toCollection().modify((row: MutationRow) => {
       const { value, replaced } = substituteTempIds(row.variables, ids)
       if (replaced) row.variables = value
+      // A placeholder in a local variable is what `apply` reads too.
+      if (row.local) {
+        const local = substituteTempIds(row.local, ids)
+        if (local.replaced) row.local = local.value
+      }
       if (row.tempIds?.includes(tempId)) row.tempIds = row.tempIds.map(t => (t === tempId ? id : t))
       if (row.keys) Object.assign(row, keyed(row.keys.map(([table, key]) => [table, key === tempId ? id : key])))
       if (row.creates) row.creates = row.creates.map(path => rekeyThing(path, tempId, id))
@@ -437,8 +446,8 @@ export function createEngine(options: AirplaneEngineOptions, { db, opened }: { d
   }
 
   /** The context `reconcile` runs with. */
-  function reconcileContext(variables: unknown, tempIds: string[] = []): ReconcileContext<never> {
-    return { db, variables: variables as never, tempIds, resolve: resolveTempId }
+  function reconcileContext(variables: unknown, local: Locals, tempIds: string[] = []): ReconcileContext<never, never> {
+    return { db, variables: variables as never, local: local as never, tempIds, resolve: resolveTempId }
   }
 
   /**
@@ -447,10 +456,11 @@ export function createEngine(options: AirplaneEngineOptions, { db, opened }: { d
    * something its `apply` touched (a row, or an element of a list inside
    * one): the server has seen neither yet. And it comes after the rows that
    * wrote a piece it writes too. A placeholder already resolved is a real id
-   * by the time the mutation is sent, so it links nothing.
+   * by the time the mutation is sent, so it links nothing. A placeholder in
+   * a local variable links as well: `apply` reads it like the others.
    */
-  async function linksOf(id: number, variables: unknown, { touched, wrote }: { touched: Set<string>, wrote: Set<string> }) {
-    const { unresolved } = substituteTempIds(variables, await readTempIds())
+  async function linksOf(id: number, variables: unknown, local: Locals | undefined, { touched, wrote }: { touched: Set<string>, wrote: Set<string> }) {
+    const { unresolved } = substituteTempIds([variables, local], await readTempIds())
     // By index: a queue of thousands is not read to link one more to it.
     const ids = async (index: 'tempIds' | 'creates' | 'writes', values: Iterable<string>) =>
       (await db.mutations.where(index).anyOf([...values]).distinct().primaryKeys()).filter(found => found !== id)
@@ -459,10 +469,10 @@ export function createEngine(options: AirplaneEngineOptions, { db, opened }: { d
     return { dependsOn, after }
   }
 
-  async function describeMutation(name: string, variables: unknown) {
+  async function describeMutation(name: string, variables: unknown, local: Locals) {
     const { describe } = mutationHandler(name) ?? {}
     if (typeof describe === 'string') return describe
-    if (describe) return describe({ db, variables: variables as never })
+    if (describe) return describe({ db, variables: variables as never, local: local as never })
     return humanize(name)
   }
 
@@ -481,7 +491,9 @@ export function createEngine(options: AirplaneEngineOptions, { db, opened }: { d
    * Only a mutation that has never been sent is merged into: the server may
    * have seen one that was, and would take a changed version of it for a
    * retry. And only when nothing queued between the two has to do with the
-   * new one, and the new one minted nothing.
+   * new one, the new one minted nothing, and both carry the same local
+   * variables: `merge` sees only the variables, so two mutations whose
+   * local ones differ are not the same change.
    */
   async function fold(row: MutationRow) {
     const merge = mutationHandler(row.document)?.merge as ((a: unknown, b: unknown) => unknown) | undefined
@@ -493,7 +505,7 @@ export function createEngine(options: AirplaneEngineOptions, { db, opened }: { d
     let into: MutationRow | undefined
     let merged: unknown
     for (const m of candidates.reverse()) {
-      if (m.document !== row.document || m.status !== 'pending' || m.attempts) continue
+      if (m.document !== row.document || m.status !== 'pending' || m.attempts || hash(m.local ?? {}) !== hash(row.local ?? {})) continue
       merged = merge(m.variables, row.variables)
       if (!merged) continue
       into = m
@@ -538,9 +550,13 @@ export function createEngine(options: AirplaneEngineOptions, { db, opened }: { d
   async function enqueueNext(name: string, input: unknown) {
     if (document(name).kind !== 'mutation') throw new Error(`[nuxt-airplane] "${name}" is not a mutation`)
     await ready()
+    // What is sent, and what only the handler gets.
+    const split = splitVariables(name, input, { declared: document(name).variables, local: mutationHandler(name)?.local })
     // A placeholder the server has already named is its real id from the start.
-    const named = substituteTempIds(input, await readTempIds()).value
-    const description = await describeMutation(name, named)
+    const tempIdMap = await readTempIds()
+    const named = substituteTempIds(split.server, tempIdMap).value
+    const namedLocal = substituteTempIds(split.local, tempIdMap).value
+    const description = await describeMutation(name, named, namedLocal)
     // One transaction: the mutation is queued with its effect applied and its
     // dependencies known, or not at all if `apply` throws, and no rebase can
     // find it half-queued.
@@ -548,12 +564,14 @@ export function createEngine(options: AirplaneEngineOptions, { db, opened }: { d
     const idempotencyKey = uuid()
     let folded = false
     const row = await db.transaction('rw', db.tables, async () => {
-      const variables = substituteTempIds(named, await readTempIds()).value
+      const ids = await readTempIds()
+      const variables = substituteTempIds(named, ids).value
+      const local = Object.keys(namedLocal).length ? substituteTempIds(namedLocal, ids).value : undefined
       // The queue is ordered by this, so it must not step back with the clock.
       const createdAt = Math.max(Date.now(), (await db.mutations.orderBy('createdAt').last())?.createdAt ?? 0)
-      const id = queuedAs = await db.mutations.add({ document: name, variables, description, status: 'pending', createdAt, idempotencyKey, unkeyed: 1 } as MutationRow)
+      const id = queuedAs = await db.mutations.add({ document: name, variables, ...(local && { local }), description, status: 'pending', createdAt, idempotencyKey, unkeyed: 1 } as MutationRow)
       const did = await applyMutation((await db.mutations.get(id))!)
-      await db.mutations.update(id, await linksOf(id, variables, did))
+      await db.mutations.update(id, await linksOf(id, variables, local, did))
       const row = (await db.mutations.get(id))!
       const into = await fold(row)
       folded = !!into
@@ -570,7 +588,7 @@ export function createEngine(options: AirplaneEngineOptions, { db, opened }: { d
     if (!folded) return row
     // Said in words outside the transaction, as `describe` may await anything.
     // Skipped if another change was folded in meanwhile: that one says it.
-    const said = await describeMutation(name, row.variables)
+    const said = await describeMutation(name, row.variables, localOf(row))
     await db.mutations.where('id').equals(row.id).modify((m: MutationRow) => {
       if (hash(m.variables) === hash(row.variables)) m.description = said
     })
@@ -593,7 +611,7 @@ export function createEngine(options: AirplaneEngineOptions, { db, opened }: { d
     const target = await db.mutations.get(id)
     if (!target || target.status === 'syncing') return []
     // The hook is for what `apply` did outside the database, so it runs outside the transaction.
-    await mutationHandler(target.document)?.revert?.({ db, variables: target.variables as never })
+    await mutationHandler(target.document)?.revert?.({ db, variables: target.variables as never, local: localOf(target) as never })
     const dropped = await quietly(db, async () => {
       const rows = await queued()
       const row = rows.find(m => m.id === id)
@@ -611,7 +629,7 @@ export function createEngine(options: AirplaneEngineOptions, { db, opened }: { d
       for (const m of others) {
         const orphan = lost(m.dependsOn)
         const placeholders = gone.flatMap(d => d.tempIds ?? [])
-        const stuck = orphan && substituteTempIds(m.variables, {}).unresolved.some(t => placeholders.includes(t))
+        const stuck = orphan && substituteTempIds([m.variables, m.local], {}).unresolved.some(t => placeholders.includes(t))
         if (!stuck && ((await reapply(m)).touched.size || !orphan)) {
           if (orphan || lost(m.after)) {
             const left = (ids?: number[]) => ids?.filter(d => !gone.some(x => x.id === d))
@@ -628,8 +646,8 @@ export function createEngine(options: AirplaneEngineOptions, { db, opened }: { d
   }
 
   /** Runs a mutation's `reconcile` with the server's answer. */
-  async function reconcileLocal(name: string, variables: unknown, tempIds: string[], result: unknown) {
-    await mutationHandler(name)?.reconcile?.(reconcileContext(variables, tempIds), result as never)
+  async function reconcileLocal(name: string, variables: unknown, tempIds: string[], result: unknown, local?: Locals) {
+    await mutationHandler(name)?.reconcile?.(reconcileContext(variables, localOf({ document: name, local }), tempIds), result as never)
   }
 
   /** Empties every table, including the outbox. */

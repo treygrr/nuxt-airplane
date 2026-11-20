@@ -393,7 +393,9 @@ export async function loadDocuments(
     documentNodes.push(documentNode)
     // What is sent asks for `__typename` everywhere, so responses can be split into tables.
     const source = print(documentNode)
-    operations[name] = { name, kind: node.operation, source, hash: createHash('sha256').update(source).digest('hex') }
+    // The variables it declares are what is sent; any other key passed with it is a handler's local variable.
+    const variables = (node.variableDefinitions ?? []).map(def => def.variable.name.value)
+    operations[name] = { name, kind: node.operation, source, hash: createHash('sha256').update(source).digest('hex'), variables }
   }
 
   const { entities, rows } = schema ? analyzeEntities(schema, documentNodes, fragments) : { entities: {}, rows: {} }
@@ -417,7 +419,7 @@ function operationMap(ops: OperationDocument[], kind: OperationDocument['kind'],
  */
 const virtualModules = `
 declare module '#nuxt-airplane/documents' {
-  export const documents: Record<string, { name: string, kind: 'query' | 'mutation' | 'subscription', source: string, hash: string }>
+  export const documents: Record<string, { name: string, kind: 'query' | 'mutation' | 'subscription', source: string, hash: string, variables: string[] }>
   export const documentsHash: string
   export const entities: Record<string, { key: string }>
   export const unusedEntities: string[]

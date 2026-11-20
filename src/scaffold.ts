@@ -49,13 +49,13 @@ export function scaffoldHandler(op: Pick<OperationDocument, 'name' | 'kind' | 's
     return `${head}
 export default defineMutationHandler('${op.name}', {
   // Runs as soon as the mutation is queued: change the tables so the UI shows it at once.
-  // Receives { db, variables, tempId }.
+  // Receives { db, variables, local, tempId }.
   apply() {
 
   },
 
   // Runs with the server's answer: write what it assigned (ids, timestamps) into the tables.
-  // Receives { db, variables, tempIds, resolve } and the result.
+  // Receives { db, variables, local, tempIds, resolve } and the result.
   reconcile() {
 
   },
@@ -72,7 +72,7 @@ export default defineQueryHandler('${op.name}', {
   },
 
   // Builds the query's result from the tables: what \`useQuery('${op.name}')\` returns, online or not.
-  // Receives { db, variables }. Until it returns something, the query has nothing to show.
+  // Receives { db, variables, local }. Until it returns something, the query has nothing to show.
   read() {
     return null
   },

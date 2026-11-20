@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { mdiCounter, mdiDeleteOutline, mdiDotsVertical, mdiMagnify, mdiSortAscending, mdiSortDescending, mdiTuneVariant } from '@mdi/js'
+import { mdiAlertCircleOutline, mdiCounter, mdiDeleteOutline, mdiDotsVertical, mdiMagnify, mdiSortAscending, mdiSortDescending, mdiTuneVariant } from '@mdi/js'
 import type { SiteItemSort } from '#shared/siteItemSort'
 import { encodeCursor } from '~/lib/airplane'
 import { LEVEL_STATUS, fitRestock, levelStatus, suggestedRestock } from '~/lib/restock'
@@ -37,13 +37,17 @@ const descending = ref(false)
 watch(sortOptions, (options) => {
   if (!options.some(o => o.value === sort.value)) sort.value = 'NAME'
 })
-watch([search, sort, descending], () => (page.value = 1))
+// Below their min. A local variable of the query: answered from what is
+// stored, so it works offline and toggling it fetches nothing.
+const lowStock = ref(false)
+watch([search, sort, descending, lowStock], () => (page.value = 1))
 
 const { data, loading, fetching } = useSiteItems(() => ({
   siteId: props.siteId,
   search: search.value?.trim() || null,
   sort: sort.value,
   descending: descending.value,
+  lowStock: props.tracking && lowStock.value,
   first: itemsPerPage.value,
   after: page.value > 1 ? encodeCursor((page.value - 1) * itemsPerPage.value) : null,
 }))
@@ -118,6 +122,16 @@ const headers = computed(() => [
             <span class="text-title-medium">Items</span>
             <span class="text-body-medium text-medium-emphasis ms-2">{{ total.toLocaleString() }}</span>
           </div>
+          <v-chip
+            v-if="tracking"
+            :prepend-icon="mdiAlertCircleOutline"
+            :variant="lowStock ? 'flat' : 'outlined'"
+            :color="lowStock ? 'error' : undefined"
+            :aria-pressed="lowStock"
+            @click="lowStock = !lowStock"
+          >
+            Low stock
+          </v-chip>
           <v-text-field
             v-model="search"
             :prepend-inner-icon="mdiMagnify"

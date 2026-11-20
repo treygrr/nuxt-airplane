@@ -12,8 +12,8 @@ export function useSite(id: MaybeRefOrGetter<string>) {
   return useQuery('GetSite', () => ({ id: toValue(id) }))
 }
 
-/** A page of a site's items: `first` of them, after `after`. */
-export function useSiteItems(vars: MaybeRefOrGetter<{ siteId: string, search?: string | null, first: number, after?: string | null, sort?: SiteItemSort | null, descending?: boolean | null }>) {
+/** A page of a site's items: `first` of them, after `after`. `lowStock` is local: it filters what is stored and is never sent. */
+export function useSiteItems(vars: MaybeRefOrGetter<{ siteId: string, search?: string | null, first: number, after?: string | null, sort?: SiteItemSort | null, descending?: boolean | null, lowStock?: boolean }>) {
   return useQuery('GetSiteItems', () => toValue(vars))
 }
 

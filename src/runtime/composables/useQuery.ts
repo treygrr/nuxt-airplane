@@ -1,6 +1,6 @@
 import { computed, getCurrentInstance, onMounted, onScopeDispose, ref, shallowRef, toValue, watch, type MaybeRefOrGetter, type Ref } from 'vue'
-import { queryKey } from '../client'
-import type { QueryName, QueryResult, QueryVariables } from '../types'
+import { hash } from 'ohash'
+import type { QueryInput, QueryName, QueryResult } from '../types'
 import { useAirplane } from './useAirplane'
 
 export interface UseQueryOptions {
@@ -27,7 +27,12 @@ export interface UseQueryReturn<T> {
 
 export function useQuery<N extends QueryName>(
   name: N,
-  variables?: MaybeRefOrGetter<QueryVariables<N> | undefined>,
+  /**
+   * The query's variables, and any of the local variables its handler
+   * declares. Only the query's own are sent and make up the query key; a
+   * change to a local one runs `read` again and fetches nothing.
+   */
+  variables?: MaybeRefOrGetter<QueryInput<N> | undefined>,
   options: UseQueryOptions = {},
 ): UseQueryReturn<QueryResult<N>> {
   const data = shallowRef(null) as Ref<QueryResult<N> | null>
@@ -43,7 +48,10 @@ export function useQuery<N extends QueryName>(
   }
 
   const vars = computed(() => toValue(variables))
-  const key = computed(() => queryKey(name, vars.value))
+  const split = computed(() => client.splitQuery(name, vars.value))
+  const key = computed(() => split.value.key)
+  /** Changes when a local variable does and nothing else: `read` runs again, nothing is fetched. */
+  const localKey = computed(() => `${key.value}|${hash(split.value.local)}`)
   const readable = client.readable(name)
 
   async function refresh() {
@@ -89,17 +97,22 @@ export function useQuery<N extends QueryName>(
     }
   }
 
-  watch(key, (next, prev) => {
-    client.active.delete(prev)
-    client.active.set(next, refresh)
+  let unmount: (() => void) | undefined
+  watch(key, (next) => {
+    unmount?.()
+    unmount = client.mount(next, refresh)
     loading.value = true
     if (!readable) data.value = null
     subscribe()
     void refresh()
   })
+  // Only a local variable changed: the same fetch record, read again.
+  watch(localKey, (next, prev) => {
+    if (next.slice(0, next.indexOf('|')) === prev.slice(0, prev.indexOf('|')) && unmount) subscribe()
+  })
 
   function start() {
-    client!.active.set(key.value, refresh)
+    unmount = client!.mount(key.value, refresh)
     subscribe()
     void refresh()
   }
@@ -108,7 +121,7 @@ export function useQuery<N extends QueryName>(
   else start()
 
   onScopeDispose(() => {
-    client.active.delete(key.value)
+    unmount?.()
     stopWatch?.()
   })
 

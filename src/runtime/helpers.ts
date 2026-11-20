@@ -14,6 +14,55 @@ export function humanize(name: string) {
   return words.charAt(0).toUpperCase() + words.slice(1)
 }
 
+// ---------------------------------------------------------------------------
+// Local variables
+//
+// A handler can declare `local` variables with their defaults: values a
+// caller passes next to the operation's own that reach the handler's hooks
+// and never the server. The keys a caller passes are sorted against the
+// operation: those it declares are sent, those the handler declares as local
+// go to the hooks with the defaults filled in, and anything else is dropped,
+// with a warning in development, since the server would reject it.
+// ---------------------------------------------------------------------------
+
+/** Keys already warned about, so a key passed on every render is said once. */
+const warnedKeys = new Set<string>()
+
+/**
+ * Sorts what a caller passed into the variables the server gets and the
+ * local ones the handler gets, defaults applied. `declared` is the list of
+ * the operation's variable names; without it, every key that is not local is
+ * sent.
+ */
+export function splitVariables(
+  name: string,
+  input: unknown,
+  { declared, local: defaults }: { declared?: string[], local?: Record<string, unknown> },
+): { server: unknown, local: Record<string, unknown> } {
+  const local: Record<string, unknown> = { ...defaults }
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return { server: input, local }
+  const known = declared && new Set(declared)
+  let server: Record<string, unknown> | undefined
+  let dropped = false
+  for (const [key, value] of Object.entries(input)) {
+    if (known?.has(key) || (!known && !(defaults && Object.hasOwn(defaults, key)))) {
+      (server ??= {})[key] = value
+      continue
+    }
+    dropped = true
+    if (defaults && Object.hasOwn(defaults, key)) {
+      if (value !== undefined) local[key] = value
+      continue
+    }
+    if (import.meta.dev && !warnedKeys.has(`${name}.${key}`)) {
+      warnedKeys.add(`${name}.${key}`)
+      console.warn(`[nuxt-airplane] "${name}" was passed "${key}", which is neither a variable of the operation nor a local variable of its handler. It is not sent.`)
+    }
+  }
+  // Nothing taken out: the input is sent as it came, the same object.
+  return { server: dropped ? server : input, local }
+}
+
 /** `undefined`, `null` and `{}` all mean "no variables" and share a key. */
 export function queryKey(name: string, variables: unknown) {
   const normalized = variables && typeof variables === 'object' && Object.keys(variables).length ? variables : null
