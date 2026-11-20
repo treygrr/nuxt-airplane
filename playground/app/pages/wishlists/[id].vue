@@ -15,7 +15,7 @@ useHead({ title: () => `${list.value?.name ?? 'Wishlist'} · Toolshed` })
 // own bookkeeping, so this reads it there (FINDINGS.md, 10).
 const airplane = useAirplane()
 watch(list, async (now, before) => {
-  if (now || !before || !String(route.params.id).startsWith('tmp-')) return
+  if (now || !before || !isTempId(route.params.id)) return
   const raw = (await airplane?.db.meta.get('tempIds'))?.value
   const id = raw && (JSON.parse(raw) as Record<string, string>)[String(route.params.id)]
   if (id) await navigateTo(`/wishlists/${id}`, { replace: true })

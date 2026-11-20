@@ -119,6 +119,7 @@ export default defineMutationHandlers({
 The handler context gives you `db`, the typed Dexie instance, and `variables`,
 the mutation's input, typed. `apply` also gets `tempId()` for rows created
 offline, and `reconcile` gets `resolve()` to map them to the server's ids.
+`isTempId(id)`, auto-imported, tells such a placeholder from a real id.
 
 ## Auth and headers
 

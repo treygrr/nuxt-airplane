@@ -1,5 +1,6 @@
 import type { IndexableType } from 'dexie'
 import { rowKey } from './db'
+import { isTempId } from './tempIds'
 import type { AirplaneDexie, MutationRow } from './types'
 
 /** `ArchiveSite` → `Archive site`, `SendHTTPRequest` → `Send http request`, for mutations without a `describe`. */
@@ -89,27 +90,9 @@ export { queryKey } from './request'
 // order only. Rolling the earlier one back leaves the later one queued.
 // ---------------------------------------------------------------------------
 
-const TEMP_ID_PREFIX = 'tmp-'
-const TEMP_ID_RE = /^tmp-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
-
-export function uuid() {
-  return typeof crypto === 'object' && typeof crypto.randomUUID === 'function'
-    ? crypto.randomUUID()
-    : 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
-        const r = (Math.random() * 16) | 0
-        return (c === 'x' ? r : (r & 0x3) | 0x8).toString(16)
-      })
-}
-
-/** A fresh placeholder id: `tmp-` plus a UUID. */
-export function newTempId() {
-  return `${TEMP_ID_PREFIX}${uuid()}`
-}
-
-/** Whether a value is an id minted by `tempId()`. */
-export function isTempId(value: unknown): value is string {
-  return typeof value === 'string' && TEMP_ID_RE.test(value)
-}
+// The primitives live in their own file, free of IndexedDB, so `isTempId`
+// can be auto-imported in components that render on the server.
+export { TEMP_ID_PREFIX, TEMP_ID_RE, isTempId, newTempId, uuid } from './tempIds'
 
 /**
  * Replaces, anywhere in `value`, every string that is a key of `ids` with its

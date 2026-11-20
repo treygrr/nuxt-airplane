@@ -432,6 +432,9 @@ export class OfflineError extends Error {
   }
 }
 
+/** Whether a value is a placeholder id minted by `tempId()`, the id of a row the server has not named yet. */
+export { isTempId } from './tempIds'
+
 export interface AirplaneRuntimeConfig {
   endpoint: string
   dbName: string
