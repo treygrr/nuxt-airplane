@@ -49,13 +49,13 @@ export function scaffoldHandler(op: Pick<OperationDocument, 'name' | 'kind' | 's
     return `${head}
 export default defineMutationHandler('${op.name}', {
   // Runs as soon as the mutation is queued: change the tables so the UI shows it at once.
-  // Receives { db, variables, local, tempId }.
+  // Receives { db, result, variables, local, tempId }.
   apply() {
 
   },
 
   // Runs with the server's answer: write what it assigned (ids, timestamps) into the tables.
-  // Receives { db, variables, local, tempIds, resolve } and the result.
+  // Receives { db, result, variables, local, tempIds, resolve } and the result.
   reconcile() {
 
   },
@@ -65,14 +65,15 @@ export default defineMutationHandler('${op.name}', {
   if (op.kind === 'query') {
     return `${head}
 export default defineQueryHandler('${op.name}', {
+  // For a result with no \`id\`, \`store: 'result'\` keeps it whole and needs no \`read\`.
   // Writes a response into the tables.
-  // Receives { db, variables } and the data.
+  // Receives { db, result, variables } and the data.
   store() {
 
   },
 
   // Builds the query's result from the tables: what \`useAirplaneQuery('${op.name}')\` returns, online or not.
-  // Receives { db, variables, local }. Until it returns something, the query has nothing to show.
+  // Receives { db, result, variables, local }. Until it returns something, the query has nothing to show.
   read() {
     return null
   },

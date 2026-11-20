@@ -138,6 +138,7 @@ describe('handlers.generate', () => {
     expect(query).toContain('//   query GetSites {\n//     sites { id name }\n//   }')
     expect(query).toMatch(/store\(\) \{\s*\},/)
     expect(query).toMatch(/read\(\) \{\s*return null\s*\},/)
+    expect(query).toContain('// For a result with no `id`, `store: \'result\'` keeps it whole and needs no `read`.')
   })
 
   it('leaves alone what has a handler, wherever it is declared, and never overwrites a file', async () => {

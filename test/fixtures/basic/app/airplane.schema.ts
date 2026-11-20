@@ -14,10 +14,11 @@ export const version = 1
 export const schema = {
   // Declared with defineAirplaneStores
   sites: '&id, archived', // airplane/stores.ts
-  // The module's own: fetch records, the outbox, bookkeeping, the server's version of queued rows
+  // The module's own: fetch records, the outbox, bookkeeping, results kept whole, the server's version of queued rows
   queries: '&key, document, updatedAt',
   mutations: '++id, status, createdAt, document, unkeyed, *rows, *creates, *writes, *tempIds',
   meta: '&key',
+  results: '&key, document',
   base: '[table+key]',
 } as const
 

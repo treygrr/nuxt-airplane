@@ -191,6 +191,19 @@ export interface MutationRow {
   after?: number[]
 }
 
+/**
+ * A query's whole result, for a query handler with `store: 'result'`: one
+ * row per set of variables, keyed like the query's fetch record. Cached
+ * data, cleared with the rest of the cache.
+ */
+export interface ResultRow {
+  /** The query key: the document name and the variables it was fetched with. */
+  key: string
+  document: string
+  variables: unknown
+  data: unknown
+}
+
 /** Module bookkeeping, e.g. the cache key the data was written under. */
 export interface MetaRow {
   key: string
@@ -201,13 +214,38 @@ export type AirplaneDexie = Dexie & {
   queries: EntityTable<QueryRow, 'key'>
   mutations: EntityTable<MutationRow, 'id'>
   meta: EntityTable<MetaRow, 'key'>
+  results: EntityTable<ResultRow, 'key'>
   base: Table<BaseRow, [string, IndexableType]>
 } & {
   [K in keyof NuxtAirplaneStores]: Table<NuxtAirplaneStores[K], IndexableType>
 }
 
+/** A query's stored result, as `result(name, variables)` hands it out. */
+export interface StoredResult<T> {
+  /** The stored result, or `undefined` when none is stored. */
+  get: () => Promise<T | undefined>
+  /** Stores `data` as the result. */
+  set: (data: T) => Promise<void>
+  /** Changes the stored result in place; resolves `false` when none is stored. */
+  update: (change: (data: T) => void) => Promise<boolean>
+  /** Drops the stored result. */
+  delete: () => Promise<void>
+}
+
+/**
+ * The result a query handler with `store: 'result'` keeps, by query name and
+ * variables. The variables can be left out when the query has none it needs.
+ */
+export type ResultAccessor = <N extends QueryName>(
+  name: N,
+  // eslint-disable-next-line @typescript-eslint/no-empty-object-type
+  ...variables: {} extends QueryVariables<N> ? [variables?: QueryVariables<N>] : [variables: QueryVariables<N>]
+) => StoredResult<QueryResult<N>>
+
 export interface HandlerContext<V = unknown, L = Locals> {
   db: AirplaneDexie
+  /** The whole result a query with `store: 'result'` keeps, to read or change. */
+  result: ResultAccessor
   /** The variables that are sent: those the operation declares. */
   variables: V
   /** The handler's local variables, defaults filled in. Never sent. */
@@ -292,6 +330,8 @@ export type MutationHandlers = { [N in MutationName]?: MutationHandler<N, any> }
 
 export interface QueryHandlerContext<V = unknown> {
   db: AirplaneDexie
+  /** The whole result a query with `store: 'result'` keeps, to read or change. */
+  result: ResultAccessor
   /** The variables that are sent: those the query declares. */
   variables: V
 }
@@ -327,13 +367,20 @@ export interface QueryHandler<N extends QueryName = QueryName, L extends Locals 
   local?: L & NoClash<QueryVariables<N>>
   /** Fetch every following page in the background once a page of this query is fetched. */
   prefetch?: QueryPrefetch<N>
-  /** Writes a fresh response into the tables. Runs inside a Dexie transaction. */
-  store?: (ctx: QueryHandlerContext<QueryVariables<N>>, data: QueryResult<N>) => unknown
+  /**
+   * Writes a fresh response into the tables. Runs inside a Dexie transaction.
+   *
+   * `'result'` keeps the response whole instead, one per set of variables,
+   * for a result with no `id` to split it by (the current user, settings,
+   * stats). It is read back for you when there is no `read`.
+   */
+  store?: 'result' | ((ctx: QueryHandlerContext<QueryVariables<N>>, data: QueryResult<N>) => unknown)
   /**
    * Builds the query's result from the tables; what `useAirplaneQuery` returns, online
    * or offline. Runs inside Dexie's `liveQuery`, so whatever it reads is
    * observed and `data` stays live. Without it the query is served from the
-   * network only.
+   * network only, unless `store` is `'result'`: then the stored result is
+   * what it returns.
    */
   read?: (ctx: QueryReadContext<QueryVariables<N>, L>) =>
     QueryResult<N> | null | undefined | Promise<QueryResult<N> | null | undefined>

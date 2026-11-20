@@ -90,6 +90,23 @@ export default defineQueryHandlers({
 })
 ```
 
+A result with no `id` to key a table on (the signed-in user, settings, stats)
+is kept whole with `store: 'result'`, one per set of variables, and read back
+with no `read` to write. A mutation changes it through `result(name)`, which
+every hook gets, and a rollback undoes that like any other write.
+
+```ts
+// app/airplane/queries/get-viewer.ts
+export default defineQueryHandler('GetViewer', { store: 'result' })
+
+// app/airplane/mutations/rename-viewer.ts
+export default defineMutationHandler('RenameViewer', {
+  apply: ({ result, variables }) => result('GetViewer').update((data) => {
+    data.viewer.name = variables.name
+  }),
+})
+```
+
 A query without a handler is served from the network and has nothing to show
 offline.
 
