@@ -80,6 +80,13 @@ export interface ModuleOptions {
   /** Static headers sent with every request, e.g. an API key. Public: they ship to the browser. */
   headers?: Record<string, string>
   /**
+   * Start held offline, as if `goOffline()` had been called, until the user
+   * chooses otherwise: their `goOffline()` / `goOnline()` is kept and wins
+   * from then on. Default `false`. Overridable at runtime with
+   * `NUXT_PUBLIC_AIRPLANE_START_OFFLINE`.
+   */
+  startOffline: boolean
+  /**
    * Send operations by their SHA-256 hash instead of their text.
    * - `'automatic'`: Apollo-style automatic persisted queries. The hash is
    *   sent first; the text follows only when the server answers
@@ -170,6 +177,7 @@ export default defineNuxtModule<ModuleOptions>({
   defaults: {
     endpoint: '/api/graphql',
     persistedQueries: false,
+    startOffline: false,
     documents: ['**/*.gql', '**/*.graphql'],
     schema: {},
     handlers: { dir: 'airplane', generate: false, worker: true },
@@ -197,6 +205,7 @@ export default defineNuxtModule<ModuleOptions>({
       // A string so Nuxt's runtime config typing does not pin it to boolean.
       persistedQueries: options.persistedQueries || '',
       worker: options.handlers.worker,
+      startOffline: options.startOffline,
     }
 
     nuxt.options.build.transpile.push(resolver.resolve('./runtime'))

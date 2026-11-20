@@ -5,7 +5,7 @@ import 'fake-indexeddb/auto'
 import { createHash } from 'node:crypto'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { reactive } from 'vue'
-import { backoffDelay, createAirplaneClient, parseRetryAfter, queryKey, isTempId, mergeStores, newTempId, substituteTempIds, withDependents, type AirplaneClient, type AirplaneClientOptions } from '../src/runtime/client'
+import { backoffDelay, createAirplaneClient, offlineKey, parseRetryAfter, queryKey, isTempId, mergeStores, newTempId, substituteTempIds, withDependents, type AirplaneClient, type AirplaneClientOptions } from '../src/runtime/client'
 import { describeChanges } from '../src/runtime/db'
 import { createEngine, type AirplaneEngineOptions } from '../src/runtime/engine'
 import { remoteEngine, serveEngine, type Port } from '../src/runtime/worker'
@@ -2727,5 +2727,108 @@ describe('ask', () => {
     await client.enqueue('ArchiveSite', { id: 's2' })
     await until(() => named.mock.calls.length === 1, 'the named online query refetched')
     expect(online).not.toHaveBeenCalled()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// "Work offline": kept across reloads and tabs, and nothing sent before start
+// ---------------------------------------------------------------------------
+
+describe('work offline', () => {
+  /** A `localStorage` of its own, shared by the clients a test creates, as the tabs of one browser share theirs. */
+  function memoryStorage() {
+    const items = new Map<string, string>()
+    return { getItem: (key: string) => items.get(key) ?? null, setItem: (key: string, value: string) => void items.set(key, value), items }
+  }
+
+  it('is kept: a client opened later, as after a reload, starts offline and sends nothing', async () => {
+    const storage = memoryStorage()
+    const dbName = `offline-${++n}`
+    const first = createClient(server, { dbName, storage, mutationHandlers: siteHandlers })
+    await first.fetchQuery('GetSites', undefined)
+    first.goOffline()
+    await first.enqueue('RenameSite', { id: 's1', name: 'Held' })
+    // The first client stays open, held offline as it is: closing its database under its own background work would only add noise.
+
+    const reloaded = createClient(server, { dbName, storage, mutationHandlers: siteHandlers })
+    expect(reloaded.state.forcedOffline).toBe(true)
+    await reloaded.sync()
+    expect(server.mutations()).toHaveLength(0)
+
+    reloaded.goOnline()
+    await until(async () => (await reloaded.db.mutations.count()) === 0, 'outbox to drain')
+    expect(storage.items.get(offlineKey(dbName))).toBe('0')
+    expect(createClient(server, { dbName, storage }).state.forcedOffline).toBe(false)
+  })
+
+  it('starts offline with `startOffline` until a choice is made, and the choice wins from then on', () => {
+    const storage = memoryStorage()
+    const dbName = `offline-${++n}`
+    expect(createClient(server, { dbName, storage, startOffline: true }).state.forcedOffline).toBe(true)
+    createClient(server, { dbName, storage, startOffline: true }).goOnline()
+    expect(createClient(server, { dbName, storage, startOffline: true }).state.forcedOffline).toBe(false)
+    // No storage at all: `startOffline` alone.
+    expect(createClient(server, { storage: null, startOffline: true }).state.forcedOffline).toBe(true)
+  })
+
+  it('follows another tab going offline and back online', async () => {
+    const tab = new EventTarget()
+    vi.stubGlobal('window', tab)
+    const storage = memoryStorage()
+    const dbName = `offline-${++n}`
+    const client = createClient(server, { dbName, storage, mutationHandlers: siteHandlers })
+    await client.fetchQuery('GetSites', undefined)
+    const fromOtherTab = (newValue: string | null) => tab.dispatchEvent(Object.assign(new Event('storage'), { key: offlineKey(dbName), newValue }))
+
+    fromOtherTab('1')
+    expect(client.state.forcedOffline).toBe(true)
+    await client.enqueue('RenameSite', { id: 's1', name: 'Waits' })
+    await new Promise(r => setTimeout(r, 30))
+    expect(server.mutations()).toHaveLength(0)
+
+    fromOtherTab('0')
+    expect(client.state.forcedOffline).toBe(false)
+    await until(async () => (await client.db.mutations.count()) === 0, 'the other tab\'s goOnline to drain it')
+    // Someone else's key changes nothing.
+    tab.dispatchEvent(Object.assign(new Event('storage'), { key: 'other', newValue: '1' }))
+    expect(client.state.forcedOffline).toBe(false)
+  })
+
+  it('with autoStart: false, sends nothing until start(), and a sync() asked for before resolves after', async () => {
+    const client = createClient(server, { autoStart: false, mutationHandlers: siteHandlers })
+    await client.fetchQuery('GetSites', undefined)
+    await client.enqueue('RenameSite', { id: 's1', name: 'Later' })
+    let drained = false
+    const asked = client.sync().then(() => (drained = true))
+    await new Promise(r => setTimeout(r, 30))
+    expect(server.mutations()).toHaveLength(0)
+    expect(drained).toBe(false)
+
+    client.start()
+    await asked
+    expect(server.mutations()).toHaveLength(1)
+  })
+
+  it('going offline mid-batch lets what is in flight land and starts nothing more', async () => {
+    const client = createClient(server, { mutationHandlers: siteHandlers, request: { concurrency: 1 } })
+    await client.fetchQuery('GetSites', undefined)
+    client.goOffline()
+    await client.enqueue('RenameSite', { id: 's1', name: 'A' })
+    await client.enqueue('ArchiveSite', { id: 's2' })
+    const impl = server.fetch.getMockImplementation()!
+    let release!: () => void
+    const held = new Promise<void>(r => (release = r))
+    server.fetch.mockImplementation(async (url, init) => {
+      if ((init!.body as string).includes('mutation RenameSite')) await held
+      return impl(url, init)
+    })
+    client.goOnline()
+    await until(() => server.fetch.mock.calls.some(([, init]) => (init!.body as string).includes('mutation RenameSite')), 'the rename to be in flight')
+    client.goOffline()
+    release()
+    await until(async () => (await client.db.mutations.count()) === 1, 'the rename to land')
+    await new Promise(r => setTimeout(r, 30))
+    expect(server.mutations().map(c => c.op)).toEqual(['RenameSite'])
+    expect((await client.db.mutations.toArray()).map(m => m.document)).toEqual(['ArchiveSite'])
   })
 })

@@ -48,3 +48,45 @@ test('a change queued in one tab shows in another at once', async ({ context }) 
   await one.getByRole('button', { name: 'Add to cart' }).click()
   await expect(two.getByText('1 in your cart')).toBeVisible()
 })
+
+test('"Work offline" holds after a reload and in a second tab, until it is turned off', async ({ context, request }) => {
+  /** The sync chip in the app bar: "Offline" while held, its menu has the switch. */
+  const chip = (page: import('@playwright/test').Page) => page.locator('header .v-chip').filter({ hasText: /Offline|Synced|pending|Syncing|failed/ })
+  async function setOffline(page: import('@playwright/test').Page, offline: boolean) {
+    await chip(page).click()
+    const toggle = page.getByLabel('Work offline')
+    await (offline ? toggle.check() : toggle.uncheck())
+    await page.keyboard.press('Escape')
+  }
+
+  const one = await context.newPage()
+  await one.goto('/p/p-1')
+  await ready(one)
+  const before = (await lab(request).stats()).mutations
+  await setOffline(one, true)
+  await expect(chip(one)).toHaveText('Offline')
+  await one.getByRole('button', { name: 'Add to cart' }).click()
+  await expect(one.getByText('1 in your cart')).toBeVisible()
+
+  // A reload comes back offline and sends nothing, and the page rendered
+  // online on the server hydrates without a mismatch.
+  const mismatches: string[] = []
+  one.on('console', m => /hydration/i.test(m.text()) && mismatches.push(m.text()))
+  await one.reload()
+  await ready(one)
+  await expect(chip(one)).toHaveText('Offline')
+  expect(mismatches).toEqual([])
+  // A tab opened now holds back the shared queue too.
+  const two = await context.newPage()
+  await two.goto('/p/p-1')
+  await ready(two)
+  await expect(chip(two)).toHaveText('Offline')
+  await two.waitForTimeout(500)
+  expect((await lab(request).stats()).mutations).toBe(before)
+
+  // Turned off in the second tab: the first follows, and the queue goes.
+  await setOffline(two, false)
+  await expect(chip(one)).not.toHaveText('Offline')
+  await drained(two)
+  expect((await lab(request).stats()).mutations).toBe(before + 1)
+})

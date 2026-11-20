@@ -28,7 +28,19 @@ export interface AirplaneClientOptions extends AirplaneRuntimeConfig, AirplaneEn
   runWithContext?: <T>(fn: () => T) => T | Promise<Awaited<T>>
   /** The engine running in a web worker. The client then leaves every write to the tables to it. */
   remote?: AirplaneEngine
+  /**
+   * `false` holds every sync back until `start()` is called. The module's
+   * plugin starts it once the first page has hydrated, so a plugin of the app that
+   * decides to go offline, even after awaiting something, always does so
+   * before anything is sent. Default `true`: syncs from the start.
+   */
+  autoStart?: boolean
+  /** Where the "work offline" choice is kept. Default `localStorage`, where there is one. */
+  storage?: Pick<Storage, 'getItem' | 'setItem'> | null
 }
+
+/** The key the "work offline" choice is kept under, per database. */
+export const offlineKey = (dbName: string) => `nuxt-airplane:offline:${dbName}`
 
 // The pure pieces live in `helpers`; they are part of what this module offers.
 export * from './helpers'
@@ -93,11 +105,44 @@ export function createAirplaneClient(options: AirplaneClientOptions) {
   const readQueryTables = () => readQueryTableMap(db)
   const requeueStuck = () => requeueStuckRows(db)
 
+  // --------------------------------------------------------------------------
+  // "Work offline"
+  //
+  // The choice made with `goOffline()` / `goOnline()` is kept, per database,
+  // so it survives a reload and holds in every tab: the tabs share the
+  // outbox, so one that went online would send what another holds back. It
+  // is read synchronously, before anything could be sent. Until a choice is
+  // made, `startOffline` says.
+  // --------------------------------------------------------------------------
+
+  const storage = options.storage !== undefined ? options.storage : browserStorage()
+  const OFFLINE_KEY = offlineKey(options.dbName)
+  /** The kept choice, or `startOffline` when there is none (or nowhere to keep one). */
+  function keptOffline(value = readKept()) {
+    return value === null ? !!options.startOffline : value === '1'
+  }
+  function readKept(): string | null {
+    try {
+      return storage?.getItem(OFFLINE_KEY) ?? null
+    }
+    catch {
+      return null
+    }
+  }
+  function keepOffline(offline: boolean) {
+    try {
+      storage?.setItem(OFFLINE_KEY, offline ? '1' : '0')
+    }
+    catch {
+      // Private mode, a full or blocked storage: the choice holds for this page only.
+    }
+  }
+
   const state = reactive({
     /** What the browser reports; assumed online where `navigator.onLine` does not exist (Node, some webviews). */
     networkOnline: typeof navigator === 'object' && typeof navigator.onLine === 'boolean' ? navigator.onLine : true,
-    /** Set by `goOffline()`: behave as offline whatever the network says. */
-    forcedOffline: false,
+    /** Set by `goOffline()`: behave as offline whatever the network says. Kept across reloads and tabs. */
+    forcedOffline: keptOffline(),
     /** Effective state the client acts on. */
     get online(): boolean {
       return this.networkOnline && !this.forcedOffline
@@ -120,6 +165,8 @@ export function createAirplaneClient(options: AirplaneClientOptions) {
     retryAt: null as number | null,
     /** Paginated queries currently being walked to the end by `prefetch`. */
     prefetching: 0,
+    /** Syncs are let through: from the start, or once `start()` was called (the first page has hydrated). */
+    started: options.autoStart !== false,
   })
 
   const synced = computed(() => !state.syncing && state.pending.length === 0)
@@ -186,19 +233,30 @@ export function createAirplaneClient(options: AirplaneClientOptions) {
       void sync()
     })
     window.addEventListener('offline', () => (state.networkOnline = false))
+    // Another tab went offline or back online.
+    window.addEventListener('storage', (event) => {
+      if (event.key !== OFFLINE_KEY && event.key !== null) return
+      const offline = keptOffline(event.key === null ? null : event.newValue)
+      if (offline === state.forcedOffline) return
+      state.forcedOffline = offline
+      if (!offline) void sync()
+    })
   }
 
   /**
    * Hold the client offline regardless of the network: queries stop fetching
-   * and mutations stay queued until `goOnline()`.
+   * and mutations stay queued until `goOnline()`. Kept: it holds after a
+   * reload and in every tab of the app, until `goOnline()`.
    */
   function goOffline() {
     state.forcedOffline = true
+    keepOffline(true)
   }
 
-  /** Release the hold from `goOffline()` and sync the queue if the network is up. */
+  /** Release the hold from `goOffline()`, in every tab, and sync the queue if the network is up. */
   function goOnline() {
     state.forcedOffline = false
+    keepOffline(false)
     void sync()
   }
 
@@ -519,7 +577,9 @@ export function createAirplaneClient(options: AirplaneClientOptions) {
    * snapshotted but is honoured by a second run right after it, and the
    * returned promise settles when the queue is drained or blocked.
    */
-  function sync() {
+  function sync(): Promise<void> {
+    // Not started yet: the run waits for `start()`.
+    if (!syncsStarted) return starting.then(sync)
     if (syncPromise) {
       syncAgain = true
       return syncPromise
@@ -716,7 +776,8 @@ export function createAirplaneClient(options: AirplaneClientOptions) {
           if (stopped || done.some(([, outcome]) => outcome === 'stopped')) return 'stopped'
           await lane()
           try {
-            return stopped ? 'stopped' : await send(row)
+            // Gone offline mid-batch: what is in flight lands, nothing more starts.
+            return stopped || !state.online ? 'stopped' : await send(row)
           }
           catch (error) {
             // The database went away under it: nothing else will get through either.
@@ -761,6 +822,18 @@ export function createAirplaneClient(options: AirplaneClientOptions) {
     return result
   }
 
+  /** Syncs are held until this is true; see `autoStart`. */
+  let syncsStarted = options.autoStart !== false
+  let begin!: () => void
+  const starting = new Promise<void>(resolve => (begin = resolve))
+  /** Lets syncs through, and drains what a previous session left. Called once the first page has hydrated. */
+  function start() {
+    if (syncsStarted) return
+    syncsStarted = true
+    state.started = true
+    begin()
+  }
+
   // Attempt to drain anything left over from a previous session.
   void sync()
 
@@ -788,11 +861,23 @@ export function createAirplaneClient(options: AirplaneClientOptions) {
     sync,
     goOffline,
     goOnline,
+    start,
     cacheKey,
     ready,
     clear: () => write.clear(),
     clearCache: () => write.clearCache(),
     evict: () => write.evict([...active.keys()]),
     engine,
+  }
+}
+
+/** The page's `localStorage`, if it has one it may use. */
+function browserStorage(): Pick<Storage, 'getItem' | 'setItem'> | null {
+  try {
+    return typeof localStorage === 'object' ? localStorage : null
+  }
+  catch {
+    // Reading `localStorage` itself throws where storage is blocked.
+    return null
   }
 }

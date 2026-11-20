@@ -443,6 +443,8 @@ export interface AirplaneRuntimeConfig {
   persistedQueries?: PersistedQueriesMode | ''
   /** Run the handlers that write (`store`, `apply`, `reconcile`…) in a web worker; see the `handlers.worker` module option. */
   worker?: boolean
+  /** Start held offline until the user chooses otherwise; see the `startOffline` module option. */
+  startOffline?: boolean
 }
 
 /**

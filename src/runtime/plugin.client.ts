@@ -31,7 +31,14 @@ export default defineNuxtPlugin({
       ...collect(handlers),
       runWithContext: fn => nuxtApp.runWithContext(fn),
       remote,
+      // Nothing is sent before the page has hydrated: a plugin of the app
+      // that decides to go offline, even after awaiting something, does so
+      // first, and `useSync` shows the state the server rendered until then.
+      autoStart: false,
     })
+    // Once the first page is in: its layout and page hydrate when the root
+    // suspense resolves, after `app:mounted`.
+    nuxtApp.hooks.hookOnce('app:suspense:resolve', () => airplane.start())
     return { provide: { airplane } }
   },
 })
