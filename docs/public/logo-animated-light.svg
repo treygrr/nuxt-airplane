@@ -1,0 +1,77 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="140 150 960 960" role="img" aria-labelledby="logo-title logo-description">
+  <title id="logo-title">nuxt-airplane</title>
+  <desc id="logo-description">A six-node GraphQL network in magenta and purple. A black jet takes off inside it, and a Wi-Fi signal drawn with the angles of the hexagon comes on, bar by bar.</desc>
+  <defs>
+    <linearGradient id="network-magenta-purple" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#ff13b1"/><stop offset="0.52" stop-color="#ed0dc0"/><stop offset="1" stop-color="#b40ed7"/>
+    </linearGradient>
+    <!-- The inside of the network: the plane comes up from behind its frame. -->
+    <clipPath id="inside-network"><path d="M620 247 L309 437 L309 804 L620 994 L932 804 L932 437 Z"/></clipPath>
+    <!-- Where the Wi-Fi bars end: along the frame's lower edges, a little inside them. -->
+    <clipPath id="wifi-ends"><path d="M620 938.3 L180 669.5 L180 300 L1060 300 L1060 669.5 Z"/></clipPath>
+  </defs>
+  <style>
+    /* Played once, and it stays as it ends: the jet takes off, then each bar
+       of the signal comes on in pink and turns black, one right after another. */
+    #airplane { animation: takeoff 2s cubic-bezier(.2, .7, .2, 1) both; }
+    #wifi-bar-inner { animation: bar-inner 2s linear both; }
+    #wifi-bar-middle { animation: bar-middle 2s linear both; }
+    #wifi-bar-outer { animation: bar-outer 2s linear both; }
+    @keyframes takeoff {
+      0% { transform: translateY(660px); opacity: 0; }
+      4% { transform: translateY(660px); opacity: 1; }
+      48%, 100% { transform: translateY(0); opacity: 1; }
+    }
+    @keyframes bar-inner {
+      0%, 48% { opacity: 0; stroke: #ff13b1; }
+      51% { opacity: 1; stroke: #ff13b1; }
+      57% { opacity: 1; stroke: #ff13b1; }
+      66%, 100% { opacity: 1; stroke: #000; }
+    }
+    @keyframes bar-middle {
+      0%, 57% { opacity: 0; stroke: #ff13b1; }
+      60% { opacity: 1; stroke: #ff13b1; }
+      66% { opacity: 1; stroke: #ff13b1; }
+      75%, 100% { opacity: 1; stroke: #000; }
+    }
+    @keyframes bar-outer {
+      0%, 66% { opacity: 0; stroke: #ff13b1; }
+      69% { opacity: 1; stroke: #ff13b1; }
+      75% { opacity: 1; stroke: #ff13b1; }
+      84%, 100% { opacity: 1; stroke: #000; }
+    }
+    /* Still, as it ends up, for whoever asks for less motion. */
+    @media (prefers-reduced-motion: reduce) {
+      #airplane, #wifi-bar-inner, #wifi-bar-middle, #wifi-bar-outer { animation: none; }
+    }
+  </style>
+  <g clip-path="url(#inside-network)">
+    <path id="airplane" fill="#000" d="M620 406 C627 422 633 450 636 480 L640 528 L804 630 Q810 635 808 645 L806 656 L646 632 L646 648 L714 690 Q718 694 717 700 L716 708 L639 694 L633 706 L620 699 L607 706 L601 694 L524 708 L523 700 Q522 694 526 690 L594 648 L594 632 L434 656 L432 645 Q430 635 436 630 L600 528 L604 480 C607 450 613 422 620 406 Z"/>
+    <g id="wifi-signal" fill="none" stroke="#000" stroke-width="27" stroke-linejoin="round" clip-path="url(#wifi-ends)">
+      <path id="wifi-bar-outer" d="M314.4 915.8 L502.2 801.1 A226 226 0 0 1 737.8 801.1 L925.6 915.8"/>
+      <path id="wifi-bar-middle" d="M341.6 960.2 L529.3 845.5 A174 174 0 0 1 710.7 845.5 L898.4 960.2"/>
+      <path id="wifi-bar-inner" d="M368.7 1004.6 L556.4 889.9 A122 122 0 0 1 683.6 889.9 L871.3 1004.6"/>
+    </g>
+  </g>
+  <!-- Hard-edged shadow under the network; no blur. -->
+  <g id="graphql-shadow" transform="translate(0 18)" fill="#65067f">
+    <path d="M620 247 L309 437 L309 804 L620 994 L932 804 L932 437 Z" fill="none" stroke="#65067f" stroke-width="51" stroke-linejoin="round"/>
+    <circle cx="620" cy="247" r="79"/>
+    <circle cx="309" cy="437" r="81"/>
+    <circle cx="932" cy="437" r="81"/>
+    <circle cx="309" cy="804" r="81"/>
+    <circle cx="932" cy="804" r="81"/>
+    <circle cx="620" cy="994" r="83"/>
+  </g>
+  <g id="graphql-network" fill="none" stroke="url(#network-magenta-purple)" stroke-width="51" stroke-linejoin="round">
+    <path id="network-edges" d="M620 247 L309 437 L309 804 L620 994 L932 804 L932 437 Z"/>
+  </g>
+  <g id="graphql-nodes" fill="url(#network-magenta-purple)">
+    <circle id="node-top" cx="620" cy="247" r="79"/>
+    <circle id="node-upper-left" cx="309" cy="437" r="81"/>
+    <circle id="node-upper-right" cx="932" cy="437" r="81"/>
+    <circle id="node-lower-left" cx="309" cy="804" r="81"/>
+    <circle id="node-lower-right" cx="932" cy="804" r="81"/>
+    <circle id="node-bottom" cx="620" cy="994" r="83"/>
+  </g>
+</svg>

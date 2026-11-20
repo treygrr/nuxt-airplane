@@ -45,19 +45,158 @@ defineProps<{
       </div>
 
       <div class="flex items-center gap-4">
+        <!-- The nuxt-airplane logo, as docs/public/logo.svg has it. -->
         <svg
-          class="size-8"
-          viewBox="0 0 512 512"
-          fill="none"
+          class="size-12"
+          viewBox="140 150 960 960"
           xmlns="http://www.w3.org/2000/svg"
         >
+          <defs>
+            <linearGradient
+              id="network-magenta-purple"
+              x1="0"
+              y1="0"
+              x2="1"
+              y2="1"
+            >
+              <stop
+                offset="0"
+                stop-color="#ff13b1"
+              /><stop
+                offset="0.52"
+                stop-color="#ed0dc0"
+              /><stop
+                offset="1"
+                stop-color="#b40ed7"
+              />
+            </linearGradient>
+            <clipPath id="wifi-ends"><path d="M620 938.3 L180 669.5 L180 300 L1060 300 L1060 669.5 Z" /></clipPath>
+          </defs>
+          <g
+            id="graphql-shadow"
+            transform="translate(0 18)"
+            fill="#65067f"
+          >
+            <path
+              d="M620 247 L309 437 L309 804 L620 994 L932 804 L932 437 Z"
+              fill="none"
+              stroke="#65067f"
+              stroke-width="51"
+              stroke-linejoin="round"
+            />
+            <circle
+              cx="620"
+              cy="247"
+              r="79"
+            />
+            <circle
+              cx="309"
+              cy="437"
+              r="81"
+            />
+            <circle
+              cx="932"
+              cy="437"
+              r="81"
+            />
+            <circle
+              cx="309"
+              cy="804"
+              r="81"
+            />
+            <circle
+              cx="932"
+              cy="804"
+              r="81"
+            />
+            <circle
+              cx="620"
+              cy="994"
+              r="83"
+            />
+          </g>
+          <g
+            id="graphql-network"
+            fill="none"
+            stroke="url(#network-magenta-purple)"
+            stroke-width="51"
+            stroke-linejoin="round"
+          >
+            <path
+              id="network-edges"
+              d="M620 247 L309 437 L309 804 L620 994 L932 804 L932 437 Z"
+            />
+          </g>
+          <g
+            id="graphql-nodes"
+            fill="url(#network-magenta-purple)"
+          >
+            <circle
+              id="node-top"
+              cx="620"
+              cy="247"
+              r="79"
+            />
+            <circle
+              id="node-upper-left"
+              cx="309"
+              cy="437"
+              r="81"
+            />
+            <circle
+              id="node-upper-right"
+              cx="932"
+              cy="437"
+              r="81"
+            />
+            <circle
+              id="node-lower-left"
+              cx="309"
+              cy="804"
+              r="81"
+            />
+            <circle
+              id="node-lower-right"
+              cx="932"
+              cy="804"
+              r="81"
+            />
+            <circle
+              id="node-bottom"
+              cx="620"
+              cy="994"
+              r="83"
+            />
+          </g>
           <path
-            d="M281.44 397.667H438.32C443.326 397.667 448.118 395.908 452.453 393.427C456.789 390.946 461.258 387.831 463.76 383.533C466.262 379.236 468.002 374.36 468 369.399C467.998 364.437 466.266 359.563 463.76 355.268L357.76 172.947C355.258 168.65 352.201 165.534 347.867 163.053C343.532 160.573 337.325 158.813 332.32 158.813C327.315 158.813 322.521 160.573 318.187 163.053C313.852 165.534 310.795 168.65 308.293 172.947L281.44 219.587L227.733 129.13C225.229 124.834 222.176 120.307 217.84 117.827C213.504 115.346 208.713 115 203.707 115C198.701 115 193.909 115.346 189.573 117.827C185.238 120.307 180.771 124.834 178.267 129.13L46.8267 355.268C44.3208 359.563 44.0022 364.437 44 369.399C43.9978 374.36 44.3246 379.235 46.8267 383.533C49.3288 387.83 53.7979 390.946 58.1333 393.427C62.4688 395.908 67.2603 397.667 72.2667 397.667H171.2C210.401 397.667 238.934 380.082 258.827 346.787L306.88 263.4L332.32 219.587L410.053 352.44H306.88L281.44 397.667ZM169.787 352.44H100.533L203.707 174.36L256 263.4L221.361 323.784C208.151 345.387 193.089 352.44 169.787 352.44Z"
-            fill="#00DC82"
+            id="airplane"
+            fill="#fff"
+            d="M620 406 C627 422 633 450 636 480 L640 528 L804 630 Q810 635 808 645 L806 656 L646 632 L646 648 L714 690 Q718 694 717 700 L716 708 L639 694 L633 706 L620 699 L607 706 L601 694 L524 708 L523 700 Q522 694 526 690 L594 648 L594 632 L434 656 L432 645 Q430 635 436 630 L600 528 L604 480 C607 450 613 422 620 406 Z"
           />
+          <g
+            id="wifi-signal"
+            fill="none"
+            stroke="#fff"
+            stroke-width="27"
+            stroke-linejoin="round"
+            clip-path="url(#wifi-ends)"
+          >
+            <path
+              id="wifi-bar-outer"
+              d="M314.4 915.8 L502.2 801.1 A226 226 0 0 1 737.8 801.1 L925.6 915.8"
+            />
+            <path
+              id="wifi-bar-middle"
+              d="M341.6 960.2 L529.3 845.5 A174 174 0 0 1 710.7 845.5 L898.4 960.2"
+            />
+            <path
+              id="wifi-bar-inner"
+              d="M368.7 1004.6 L556.4 889.9 A122 122 0 0 1 683.6 889.9 L871.3 1004.6"
+            />
+          </g>
         </svg>
         <div class="h-px flex-1 bg-border" />
-        <span class="text-xl text-dimmed">ui.nuxt.com</span>
+        <span class="text-xl text-dimmed">treygrr.github.io/nuxt-airplane</span>
       </div>
     </div>
   </div>

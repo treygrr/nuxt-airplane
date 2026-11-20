@@ -15,7 +15,8 @@ useHead({
   ],
   link: [
     { rel: 'icon', href: withBase('/favicon.ico', app.baseURL), sizes: '48x48' },
-    { rel: 'icon', type: 'image/png', href: withBase('/logo.png', app.baseURL), sizes: '512x512' },
+    { rel: 'icon', type: 'image/svg+xml', href: withBase('/favicon.svg', app.baseURL) },
+    { rel: 'icon', type: 'image/png', href: withBase('/logo-light.png', app.baseURL), sizes: '512x512' },
     { rel: 'apple-touch-icon', href: withBase('/logo.png', app.baseURL) }
   ],
   htmlAttrs: {

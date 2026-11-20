@@ -10,11 +10,8 @@ orientation: horizontal
 #top
 :hero-background
 
-#headline
-:hero-logo
-
 #title
-[Airplane mode]{.text-primary} for your GraphQL app.
+:hero-title
 
 #description
 Give it an endpoint and your `.gql` files. Every operation becomes a typed `useAirplaneQuery` or `useMutation`, results live in IndexedDB, and anything you change mid-flight queues up and lands on the server once you're back on the ground.
