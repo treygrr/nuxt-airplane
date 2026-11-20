@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.7.1 (2026-11-19)
+
+A small release: nothing changes in how the module behaves.
+
+## Changed
+
+- **The warning when the stored database cannot be opened** no longer suggests bumping the store version to migrate, which does not help. It now says what happens: the database is recreated, and cached data and queued changes are lost. (#110)
+- **Type hints corrected** on three fields in the editor: a mutation handler's `refetch` default, what `resolve` re-keys, and the request context's `idempotencyKey`. (#110)
+
+## Docs
+
+- **Every docs page was checked against the code** and about 45 statements corrected. The ones most likely to have misled: there is no migration step for a changed primary key, `concurrency: 1` is not strictly oldest first, `prefetch.when` runs outside the Nuxt app context, and `queue: false` is what keeps a mutation out of the outbox. (#110)
+- **A shorter README** that says what the module does and why. This is the one shown on the npm page. (#107)
+- **`llms.txt` on the docs site** lists every section of every page, with a page on using the docs with AI tools. (#108, #111, #112)
+
+## Releases
+
+- Publishing a GitHub release now publishes that version to npm, with provenance. (#106)
+
 ## 0.7.0 (2026-11-19)
 
 Twelve changes since 0.6.1. Three of them break existing apps; the upgrade steps are first.
