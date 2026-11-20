@@ -9,7 +9,7 @@ import { Dexie } from 'dexie'
 import { hash } from 'ohash'
 import { BOOKKEEPING_TABLES, MODULE_STORES, createDb, describeChanges, putRow, quietly, record, thingPath, track, type RowChange } from './db'
 import type { IndexableType } from 'dexie'
-import { TEMP_IDS_KEY, QUERY_TABLES_KEY, humanize, keyed, mergeStores, newTempId, queryKey, queuedBefore, queuedRows, readQueryTableMap, readTempIdMap, requeueStuckRows, sameRow, splitVariables, substituteTempIds, uuid } from './helpers'
+import { TEMP_IDS_KEY, QUERY_TABLES_KEY, humanize, keyed, mergeStores, newTempId, queryKey, queryStore, queuedBefore, queuedRows, readQueryTableMap, readTempIdMap, requeueStuckRows, resultAccessor, sameRow, splitVariables, substituteTempIds, uuid } from './helpers'
 import type {
   AirplaneDexie,
   AirplaneEngine,
@@ -78,6 +78,9 @@ export function createEngine(options: AirplaneEngineOptions, { db, opened }: { d
 
   const cacheKey = cacheKeyOf(options)
 
+  /** What every handler context carries as `result`. */
+  const result = resultAccessor(db)
+
   /** Empties the tables and the fetch records but keeps the outbox, which is applied again on the empty tables. */
   async function clearCache() {
     const tables = db.tables.filter(t => !BOOKKEEPING_TABLES.has(t.name))
@@ -127,8 +130,9 @@ export function createEngine(options: AirplaneEngineOptions, { db, opened }: { d
   const localOf = (row: Pick<MutationRow, 'document' | 'local'>): Locals => ({ ...mutationHandler(row.document)?.local, ...row.local })
 
   /**
-   * Writes a response through the `store` handler and records the fetch. A
-   * query with neither `store` nor `read` leaves nothing behind.
+   * Writes a response through the `store` handler (the handler's own, or the
+   * built-in one for `store: 'result'`) and records the fetch. A query with
+   * neither `store` nor `read` leaves nothing behind.
    *
    * Server data belongs under the queue. Where the response carries a row a
    * queued mutation has changed, it becomes that row's server version and the
@@ -139,15 +143,16 @@ export function createEngine(options: AirplaneEngineOptions, { db, opened }: { d
    */
   async function storeResponse(name: string, variables: unknown, data: unknown) {
     const h = queryHandler(name)
-    if (!h?.store && !h?.read) return
+    const handlerStore = queryStore(name, h)
+    if (!handlerStore && !h?.read) return
     const key = queryKey(name, variables)
     const fetched = (rows?: [string, IndexableType][]) =>
       db.queries.put({ key, document: name, variables, updatedAt: Date.now(), ...(rows && { rows }) })
-    if (!h.store) {
+    if (!handlerStore) {
       await fetched()
       return
     }
-    const store = () => h.store!({ db, variables: variables as never }, data as never)
+    const store = () => handlerStore({ db, result, variables }, data)
     await quietly(db, async () => {
       // A queued mutation that found nothing to change may find its row in this response.
       let again = (await db.mutations.where('unkeyed').equals(1).toArray()).some(m => mutationHandler(m.document)?.apply)
@@ -250,7 +255,7 @@ export function createEngine(options: AirplaneEngineOptions, { db, opened }: { d
     let minted = 0
     const tempId = () => (tempIds[minted] ??= newTempId(), tempIds[minted++]!)
     const { changes, error } = await record(db, () =>
-      h.apply!({ db, variables: row.variables as never, local: localOf(row), tempId }), { tolerant })
+      h.apply!({ db, result, variables: row.variables as never, local: localOf(row), tempId }), { tolerant })
     // Said once per mutation, not every time the queue is put back on.
     if (!error) skipped.delete(row.id)
     else if (!skipped.has(row.id)) {
@@ -348,7 +353,7 @@ export function createEngine(options: AirplaneEngineOptions, { db, opened }: { d
       await lower()
       const h = mutationHandler(row.document)
       const ids = [...(row.tempIds ?? [])]
-      if (h?.apply) await record(db, () => h.apply!({ db, variables: row.variables as never, local: localOf(row), tempId: () => ids.shift() ?? newTempId() }), { tolerant: true })
+      if (h?.apply) await record(db, () => h.apply!({ db, result, variables: row.variables as never, local: localOf(row), tempId: () => ids.shift() ?? newTempId() }), { tolerant: true })
       await raise(rest)
     })
   }
@@ -447,7 +452,7 @@ export function createEngine(options: AirplaneEngineOptions, { db, opened }: { d
 
   /** The context `reconcile` runs with. */
   function reconcileContext(variables: unknown, local: Locals, tempIds: string[] = []): ReconcileContext<never, never> {
-    return { db, variables: variables as never, local: local as never, tempIds, resolve: resolveTempId }
+    return { db, result, variables: variables as never, local: local as never, tempIds, resolve: resolveTempId }
   }
 
   /**
@@ -472,7 +477,7 @@ export function createEngine(options: AirplaneEngineOptions, { db, opened }: { d
   async function describeMutation(name: string, variables: unknown, local: Locals) {
     const { describe } = mutationHandler(name) ?? {}
     if (typeof describe === 'string') return describe
-    if (describe) return describe({ db, variables: variables as never, local: local as never })
+    if (describe) return describe({ db, result, variables: variables as never, local: local as never })
     return humanize(name)
   }
 
@@ -611,7 +616,7 @@ export function createEngine(options: AirplaneEngineOptions, { db, opened }: { d
     const target = await db.mutations.get(id)
     if (!target || target.status === 'syncing') return []
     // The hook is for what `apply` did outside the database, so it runs outside the transaction.
-    await mutationHandler(target.document)?.revert?.({ db, variables: target.variables as never, local: localOf(target) as never })
+    await mutationHandler(target.document)?.revert?.({ db, result, variables: target.variables as never, local: localOf(target) as never })
     const dropped = await quietly(db, async () => {
       const rows = await queued()
       const row = rows.find(m => m.id === id)

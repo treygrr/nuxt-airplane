@@ -8,8 +8,9 @@ import { HANDLER_KIND, type Locals, type LocalsTag, type QueryHandler, type Quer
 export type EachQueryHandler<T> = { [N in keyof T]: N extends QueryName ? QueryHandler<N, T[N] extends Locals ? T[N] : {}> : N extends keyof LocalsTag ? unknown : never }
 
 /**
- * Declare how query responses are stored in, and read back from, your own
- * tables. Queries without a handler are cached as-is.
+ * Declare how query responses are stored in, and read back from, the
+ * tables. A query without a handler is served from the network only and
+ * keeps nothing.
  */
 export function defineQueryHandlers<T>(handlers: EachQueryHandler<T>): QueryHandlers & LocalsTag<T> {
   return Object.defineProperty(handlers as QueryHandlers, HANDLER_KIND, { value: 'queries' })

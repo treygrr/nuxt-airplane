@@ -27,6 +27,10 @@ const documents: Record<string, OperationDocument> = {
   AddSiteItem: { name: 'AddSiteItem', kind: 'mutation', source: 'mutation AddSiteItem($siteId: ID!, $name: String!) { addSiteItem(siteId: $siteId, name: $name) { id } }' },
   SetItemQty: { name: 'SetItemQty', kind: 'mutation', source: 'mutation SetItemQty($itemId: ID!, $qty: Int!) { setItemQty(itemId: $itemId, qty: $qty) { id qty } }' },
   SearchItems: { name: 'SearchItems', kind: 'query', source: 'query SearchItems($after: String) { searchItems(after: $after) { edges { node { id } } pageInfo { hasNextPage endCursor } } }' },
+  // Results with no id: the signed-in user, and figures per site.
+  GetViewer: { name: 'GetViewer', kind: 'query', source: 'query GetViewer { viewer { name role } }' },
+  GetSiteStats: { name: 'GetSiteStats', kind: 'query', source: 'query GetSiteStats($siteId: ID!) { siteStats(siteId: $siteId) { siteName itemCount } }' },
+  RenameViewer: { name: 'RenameViewer', kind: 'mutation', source: 'mutation RenameViewer($name: String!) { renameViewer(name: $name) { name role } }' },
 }
 
 const sha256 = (text: string) => createHash('sha256').update(text).digest('hex')
@@ -40,6 +44,7 @@ function createServer() {
   ]
   const items = Array.from({ length: 5 }, (_, i) => ({ id: `i${i + 1}` }))
   const siteItems: SiteItem[] = []
+  const viewer = { name: 'Ada', role: 'admin' }
   const calls: { op: string, variables: unknown, headers: Headers }[] = []
 
   const fetch = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
@@ -82,6 +87,13 @@ function createServer() {
         item.qty = Number(v.qty)
         return reply({ setItemQty: { id: item.id, qty: item.qty } })
       }
+      case 'GetViewer': return reply({ viewer: { ...viewer } })
+      case 'GetSiteStats': return reply({ siteStats: { siteName: sites.find(s => s.id === v.siteId)?.name ?? null, itemCount: siteItems.filter(i => i.siteId === v.siteId).length } })
+      case 'RenameViewer': {
+        if (v.name === 'bad') return Response.json({ errors: [{ message: 'name rejected' }] })
+        viewer.name = v.name!
+        return reply({ renameViewer: { ...viewer } })
+      }
       case 'SearchItems': {
         const start = v.after ? Number(v.after) : 0
         const page = items.slice(start, start + 2)
@@ -92,7 +104,7 @@ function createServer() {
     throw new Error(`unknown op ${op}`)
   })
 
-  return { sites, siteItems, calls, fetch, mutations: () => calls.filter(c => documents[c.op]!.kind === 'mutation') }
+  return { sites, siteItems, viewer, calls, fetch, mutations: () => calls.filter(c => documents[c.op]!.kind === 'mutation') }
 }
 
 // ---------------------------------------------------------------------------
@@ -1902,6 +1914,28 @@ describe('engine in a worker', () => {
     expect(calls).toEqual(expect.arrayContaining(['ready', 'storeResponse', 'enqueue', 'rollback', 'reconcile', 'acknowledge']))
   })
 
+  it('keeps a result whole and changes it from a mutation in the worker', async () => {
+    const queryHandlers = { ...siteQueries, GetViewer: { store: 'result' } } as unknown as QueryHandlers
+    const handlers = {
+      RenameViewer: {
+        apply: ({ result, variables }: { result: (name: string) => { update: (change: (data: { viewer: { name: string } }) => void) => Promise<boolean> }, variables: { name: string } }) =>
+          result('GetViewer').update((data) => {
+            data.viewer.name = variables.name
+          }),
+      },
+    } as unknown as MutationHandlers
+    const { client, calls } = createWorkerClient(handlers, { queryHandlers })
+    const live = watchData(client, 'GetViewer')
+    await client.fetchQuery('GetViewer', undefined)
+    await until(() => live<{ viewer: { name: string } } | null>()?.viewer.name === 'Ada', 'the page to read what the engine stored')
+    client.goOffline()
+    const rename = await client.enqueue('RenameViewer', { name: 'Grace' })
+    await until(() => live<{ viewer: { name: string } }>().viewer.name === 'Grace', 'the page to see the change')
+    await client.rollback(rename.id)
+    await until(() => live<{ viewer: { name: string } }>().viewer.name === 'Ada', 'the page to see the rollback')
+    expect(calls).toEqual(expect.arrayContaining(['storeResponse', 'enqueue', 'rollback']))
+  })
+
   it('carries local variables to the hooks in the worker, and not to the server', async () => {
     const declared = Object.fromEntries(Object.entries(documents).map(([name, doc]) => [name, { ...doc, variables: [...doc.source.matchAll(/\$(\w+):/g)].map(m => m[1]!) }]))
     const reconciled: unknown[] = []
@@ -1989,7 +2023,7 @@ describe('inferred tables', () => {
   it('opens a table per entity, keyed on its id', async () => {
     const client = createClient(server, { stores: { stores: { Site: 'name' } } })
     await client.ready
-    expect(client.db.tables.map(t => t.name).sort()).toEqual(['Site', 'base', 'meta', 'mutations', 'queries'])
+    expect(client.db.tables.map(t => t.name).sort()).toEqual(['Site', 'base', 'meta', 'mutations', 'queries', 'results'])
     expect(sites(client.db).schema.primKey.keyPath).toBe('id')
     expect(sites(client.db).schema.indexes.map(i => i.name)).toEqual(['name'])
   })
@@ -2393,6 +2427,158 @@ describe('query handlers and stores', () => {
 
     await client.clear()
     expect(await client.db.mutations.count()).toBe(0)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Results kept whole: `store: 'result'`
+// ---------------------------------------------------------------------------
+
+describe('results kept whole', () => {
+  interface Viewer { viewer: { name: string, role: string } }
+  interface SiteStats { siteStats: { siteName: string | null, itemCount: number } }
+  type ResultCtx = { result: (name: string, variables?: unknown) => { get: () => Promise<unknown>, update: (change: (data: never) => void) => Promise<boolean> } }
+
+  const resultQueries = { ...siteQueries, GetViewer: { store: 'result' }, GetSiteStats: { store: 'result' } } as unknown as QueryHandlers
+  /** Renames the viewer in the stored `GetViewer` result. */
+  const viewerHandlers = {
+    RenameViewer: {
+      apply: ({ result, variables }: ResultCtx & { variables: { name: string } }) =>
+        result('GetViewer').update((data: Viewer) => {
+          data.viewer.name = variables.name
+        }),
+    },
+  } as unknown as MutationHandlers
+  const viewerKey = queryKey('GetViewer', undefined)
+
+  it('keeps the whole response and reads it back, offline and in a fresh client', async () => {
+    const dbName = `test-${++n}`
+    const client = createClient(server, { dbName, queryHandlers: resultQueries })
+    expect(client.readable('GetViewer')).toBe(true)
+    await client.fetchQuery('GetViewer', undefined)
+    expect(await client.db.results.toArray()).toEqual([{ key: viewerKey, document: 'GetViewer', variables: undefined, data: { viewer: { name: 'Ada', role: 'admin' } } }])
+    // Keyed like the fetch record, which lists the row.
+    expect((await client.db.queries.get(viewerKey))?.rows).toEqual([['results', viewerKey]])
+
+    const { snapshot, unsubscribe } = client.watchQuery('GetViewer', undefined)
+    await until(() => (snapshot.value.data as Viewer | null)?.viewer.name === 'Ada', 'the stored result')
+    expect(snapshot.value).toMatchObject({ cached: true, updatedAt: expect.any(Number) })
+    unsubscribe()
+
+    const asked = server.calls.length
+    const reloaded = createClient(server, { dbName, queryHandlers: resultQueries, startOffline: true })
+    const viewer = watchData(reloaded, 'GetViewer')
+    await until(() => viewer<Viewer | null>()?.viewer.name === 'Ada', 'the result from the table, offline')
+    expect(server.calls.length).toBe(asked)
+  })
+
+  it('keeps one result per set of variables', async () => {
+    server.siteItems.push({ id: 'i1', siteId: 's1', name: 'Bolt', qty: 0 })
+    const client = createClient(server, { queryHandlers: resultQueries })
+    await client.fetchQuery('GetSiteStats', { siteId: 's1' })
+    await client.fetchQuery('GetSiteStats', { siteId: 's2' })
+    expect(await client.db.results.where('document').equals('GetSiteStats').count()).toBe(2)
+    const north = watchData(client, 'GetSiteStats', { siteId: 's1' })
+    const south = watchData(client, 'GetSiteStats', { siteId: 's2' })
+    await until(() => !!north() && !!south(), 'both results')
+    expect(north<SiteStats>().siteStats).toEqual({ siteName: 'North', itemCount: 1 })
+    expect(south<SiteStats>().siteStats).toEqual({ siteName: 'South', itemCount: 0 })
+  })
+
+  it('shows a mutation\'s change at once, keeps it on top of a fresh response, and rolls it back', async () => {
+    const client = createClient(server, { queryHandlers: resultQueries, mutationHandlers: viewerHandlers })
+    await client.fetchQuery('GetViewer', undefined)
+    const viewer = watchData(client, 'GetViewer')
+    client.goOffline()
+    const rename = await client.enqueue('RenameViewer', { name: 'Grace' })
+    await until(() => viewer<Viewer | null>()?.viewer.name === 'Grace', 'the change to show')
+    expect(rename.keys).toEqual([['results', viewerKey]])
+    expect(await client.db.base.toArray()).toEqual([{ table: 'results', key: viewerKey, row: expect.objectContaining({ data: { viewer: { name: 'Ada', role: 'admin' } } }) }])
+
+    // A response while it is queued becomes the server's version, with the change on top.
+    server.viewer.role = 'owner'
+    await client.fetchQuery('GetViewer', undefined)
+    expect((await client.db.results.get(viewerKey))?.data).toEqual({ viewer: { name: 'Grace', role: 'owner' } })
+
+    await client.rollback(rename.id)
+    expect((await client.db.results.get(viewerKey))?.data).toEqual({ viewer: { name: 'Ada', role: 'owner' } })
+    await until(() => viewer<Viewer>().viewer.name === 'Ada', 'the rollback to show')
+    expect(await client.db.base.count()).toBe(0)
+  })
+
+  it('syncs a change to a stored result like any other', async () => {
+    const client = createClient(server, { queryHandlers: resultQueries, mutationHandlers: viewerHandlers })
+    await client.fetchQuery('GetViewer', undefined)
+    client.goOffline()
+    await client.enqueue('RenameViewer', { name: 'Grace' })
+    client.goOnline()
+    await until(async () => (await client.db.mutations.count()) === 0, 'outbox to drain')
+    expect(server.viewer.name).toBe('Grace')
+    expect((await client.db.results.get(viewerKey))?.data).toEqual({ viewer: { name: 'Grace', role: 'admin' } })
+    expect(await client.db.base.count()).toBe(0)
+  })
+
+  it('goes with clearCache() and clear()', async () => {
+    const client = createClient(server, { queryHandlers: resultQueries, mutationHandlers: viewerHandlers })
+    await client.fetchQuery('GetViewer', undefined)
+    client.goOffline()
+    await client.enqueue('RenameViewer', { name: 'Grace' })
+
+    await client.clearCache()
+    // The queue is put on again and finds nothing to change.
+    expect(await client.db.results.count()).toBe(0)
+    expect(await client.db.mutations.count()).toBe(1)
+
+    await client.fetchQuery('GetViewer', undefined)
+    expect((await client.db.results.get(viewerKey))?.data).toEqual({ viewer: { name: 'Grace', role: 'admin' } })
+    await client.clear()
+    expect(await client.db.results.count()).toBe(0)
+  })
+
+  it('is dropped with its fetch record when room runs out', async () => {
+    const client = createClient(server, { queryHandlers: resultQueries })
+    for (const siteId of ['s1', 's2']) {
+      await client.fetchQuery('GetSiteStats', { siteId })
+      await new Promise(r => setTimeout(r, 2))
+    }
+    expect(await client.evict()).toBe(1)
+    expect((await client.db.results.toArray()).map(r => r.variables)).toEqual([{ siteId: 's2' }])
+    expect((await client.db.queries.toArray()).map(q => q.variables)).toEqual([{ siteId: 's2' }])
+  })
+
+  it('reads with the handler\'s own read when it has one', async () => {
+    const handlers = {
+      GetViewer: {
+        store: 'result',
+        read: async ({ result }: ResultCtx) => {
+          const data = await result('GetViewer').get() as Viewer | undefined
+          return data && { viewer: { ...data.viewer, name: data.viewer.name.toUpperCase() } }
+        },
+      },
+    } as unknown as QueryHandlers
+    const client = createClient(server, { queryHandlers: handlers })
+    await client.fetchQuery('GetViewer', undefined)
+    const viewer = watchData(client, 'GetViewer')
+    await until(() => viewer<Viewer | null>()?.viewer.name === 'ADA', 'the handler\'s read')
+  })
+
+  it('hands every hook the stored result, and says when there is none to update', async () => {
+    const seen: unknown[] = []
+    const handlers = {
+      RenameViewer: {
+        describe: async ({ result }: ResultCtx) => {
+          seen.push(await result('GetViewer').get())
+          return 'Rename'
+        },
+        apply: async ({ result }: ResultCtx) => seen.push(await result('GetViewer').update(() => {})),
+        reconcile: async ({ result }: ResultCtx) => seen.push(await result('GetViewer').get()),
+      },
+    } as unknown as MutationHandlers
+    const client = createClient(server, { queryHandlers: resultQueries, mutationHandlers: handlers })
+    await client.enqueue('RenameViewer', { name: 'Grace' })
+    await until(async () => (await client.db.mutations.count()) === 0, 'outbox to drain')
+    // Nothing fetched yet: nothing to read, nothing to update.
+    expect(seen).toEqual([undefined, false, undefined])
   })
 })
 

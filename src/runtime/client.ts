@@ -8,7 +8,7 @@ import { Dexie, liveQuery } from 'dexie'
 import { reactive, computed, shallowRef, readonly } from 'vue'
 import { isQuotaError } from './db'
 import { cacheKeyOf, createEngine, openDatabase, type AirplaneEngineOptions } from './engine'
-import { UnresolvedTempIdError, heldBack, queryKey, queuedRows, readQueryTableMap, readTempIdMap, requeueStuckRows, sameRow, splitVariables, substituteTempIds, uuid, withDependents } from './helpers'
+import { UnresolvedTempIdError, heldBack, queryKey, queryRead, queuedRows, readQueryTableMap, readTempIdMap, requeueStuckRows, resultAccessor, sameRow, splitVariables, substituteTempIds, uuid, withDependents } from './helpers'
 import { createRequester } from './request'
 import {
   GraphQLRequestError,
@@ -278,20 +278,24 @@ export function createAirplaneClient(options: AirplaneClientOptions) {
   //
   // The tables are the only store. A response goes through the query's
   // `store` handler, and its result comes from `read`, live, online or not. A
-  // query with no `read` is served from the network and nothing is kept.
+  // query with no `read` is served from the network and nothing is kept,
+  // unless its handler says `store: 'result'`: the stored result is its read.
   // --------------------------------------------------------------------------
 
   function queryHandler(name: string): QueryHandler | undefined {
     return (queryHandlers as Record<string, QueryHandler | undefined>)[name]
   }
 
-  /** Whether a query can be served from the tables: it has a `read` handler. */
+  /** Whether a query can be served from the tables: it has a `read` handler, or keeps its result whole. */
   function readable(name: string) {
-    return !!queryHandler(name)?.read
+    return !!queryRead(name, queryHandler(name))
   }
 
+  /** What the `read` context carries as `result`. */
+  const result = resultAccessor(db)
+
   if (import.meta.dev) {
-    const idle = Object.entries(queryHandlers).filter(([name, h]) => h?.local && Object.keys(h.local).length && !readable(name)).map(([name]) => `"${name}"`)
+    const idle = Object.entries(queryHandlers).filter(([, h]) => h?.local && Object.keys(h.local).length && !h.read).map(([name]) => `"${name}"`)
     if (idle.length) console.warn(`[nuxt-airplane] ${idle.join(', ')} declare local variables but no \`read\`: only \`read\` gets them, so they do nothing.`)
     for (const [name, h] of [...Object.entries(queryHandlers), ...Object.entries(mutationHandlers)]) {
       const clash = Object.keys(h?.local ?? {}).filter(key => documents[name]?.variables?.includes(key))
@@ -470,18 +474,18 @@ export function createAirplaneClient(options: AirplaneClientOptions) {
    */
   function watchQuery(name: string, input: unknown) {
     const snapshot = shallowRef<QuerySnapshot>({ data: null, updatedAt: null, cached: false })
-    const read = queryHandler(name)?.read
+    const read = queryRead(name, queryHandler(name))
     if (!read) {
       if (import.meta.dev && !unreadable.has(name)) {
         unreadable.add(name)
-        console.warn(`[nuxt-airplane] "${name}" has no query handler with \`read\`: useAirplaneQuery serves it from the network only, with nothing to show offline. For a query that is only ever online, use useOnlineQuery.`)
+        console.warn(`[nuxt-airplane] "${name}" has no query handler with \`read\` or \`store: 'result'\`: useAirplaneQuery serves it from the network only, with nothing to show offline. For a query that is only ever online, use useOnlineQuery.`)
       }
       return { snapshot: readonly(snapshot), unsubscribe: () => {} }
     }
     const { server: variables, local, key } = splitQuery(name, input)
     const subscription = liveQuery(async (): Promise<QuerySnapshot> => {
       const row = await db.queries.get(key)
-      const data = await read({ db, variables: variables as never, local })
+      const data = await read({ db, result, variables, local })
       // The tables hold data as soon as any variant of this document has been
       // fetched, so a new filter is not "loading" offline.
       const cached = !!row || (await db.queries.where('document').equals(name).count()) > 0

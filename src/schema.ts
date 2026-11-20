@@ -107,7 +107,7 @@ export function renderSchema({ entities, unusedEntities, storeFiles, failed = []
     'export const schema = {',
     ...(inferred.length ? ['  // Inferred: a type your documents select with its `id`, keyed on it', ...inferred] : []),
     ...(own.length ? ['  // Declared with defineAirplaneStores', ...own] : []),
-    '  // The module\'s own: fetch records, the outbox, bookkeeping, the server\'s version of queued rows',
+    '  // The module\'s own: fetch records, the outbox, bookkeeping, results kept whole, the server\'s version of queued rows',
     ...module,
     '} as const',
     '',

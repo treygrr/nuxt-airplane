@@ -12,6 +12,9 @@ export const MODULE_STORES = {
   // and wrote, the placeholders it minted, and whether it changed nothing.
   mutations: '++id, status, createdAt, document, unkeyed, *rows, *creates, *writes, *tempIds',
   meta: '&key',
+  // The whole result of a query whose handler says `store: 'result'`, under
+  // the query key. Cached data, like the inferred tables.
+  results: '&key, document',
   base: '[table+key]',
 }
 

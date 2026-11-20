@@ -69,7 +69,7 @@ export function useAirplaneQuery<N extends QueryName>(
       // Nothing is coming from the network, and without `read` there is nothing else to show.
       if (!readable) {
         loading.value = false
-        if (!client!.state.online) error.value = new Error(`[nuxt-airplane] "${name}" has no query handler with \`read\`, so there is nothing to show offline`)
+        if (!client!.state.online) error.value = new Error(`[nuxt-airplane] "${name}" has no query handler with \`read\` or \`store: 'result'\`, so there is nothing to show offline`)
       }
       return
     }

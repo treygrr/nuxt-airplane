@@ -1,7 +1,8 @@
 import type { IndexableType } from 'dexie'
 import { rowKey } from './db'
 import { isTempId } from './tempIds'
-import type { AirplaneDexie, MutationRow } from './types'
+import { queryKey } from './request'
+import type { AirplaneDexie, MutationRow, QueryHandler, QueryHandlerContext, QueryReadContext, ResultAccessor, StoredResult } from './types'
 
 /** `ArchiveSite` → `Archive site`, `SendHTTPRequest` → `Send http request`, for mutations without a `describe`. */
 export function humanize(name: string) {
@@ -64,7 +65,52 @@ export function splitVariables(
 }
 
 // The query key is the request's too, so it lives with it, free of IndexedDB.
-export { queryKey } from './request'
+export { queryKey }
+
+// ---------------------------------------------------------------------------
+// Results kept whole
+//
+// A result with no `id` has nothing to split it into rows by. A query
+// handler with `store: 'result'` keeps it whole in the `results` table, under
+// the query key, and reads it back from there when it has no `read` of its
+// own. The engine and the client both go through `queryStore` and
+// `queryRead`, so the built-in hooks run exactly where a handler's own would.
+// ---------------------------------------------------------------------------
+
+/** The stored result of query `name` with `variables`, in the `results` table. */
+function storedResult(db: AirplaneDexie, name: string, variables: unknown): StoredResult<unknown> {
+  const key = queryKey(name, variables)
+  return {
+    get: async () => (await db.results.get(key))?.data,
+    set: async (data) => {
+      await db.results.put({ key, document: name, variables, data })
+    },
+    update: async change => (await db.results.update(key, (row) => {
+      change(row.data)
+    })) > 0,
+    delete: () => db.results.delete(key),
+  }
+}
+
+/** What the handler contexts carry as `result`. */
+export function resultAccessor(db: AirplaneDexie): ResultAccessor {
+  return ((name: string, variables?: unknown) => storedResult(db, name, variables)) as ResultAccessor
+}
+
+type StoreHook = (ctx: QueryHandlerContext, data: unknown) => unknown
+type ReadHook = (ctx: QueryReadContext) => unknown
+
+/** The `store` a query's handler stands for: its own function, the built-in one for `'result'`, or none. */
+export function queryStore(name: string, h: QueryHandler | undefined): StoreHook | undefined {
+  if (h?.store === 'result') return ({ db, variables }, data) => storedResult(db, name, variables).set(data)
+  return h?.store as StoreHook | undefined
+}
+
+/** The `read` a query's handler stands for: its own, the stored result for `store: 'result'`, or none. */
+export function queryRead(name: string, h: QueryHandler | undefined): ReadHook | undefined {
+  if (h?.read) return h.read as ReadHook
+  if (h?.store === 'result') return async ({ db, variables }) => (await storedResult(db, name, variables).get()) ?? null
+}
 
 // ---------------------------------------------------------------------------
 // Temp ids
