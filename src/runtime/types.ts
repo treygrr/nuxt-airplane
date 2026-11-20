@@ -286,9 +286,9 @@ export interface ReconcileContext<V = unknown, L = Locals> extends HandlerContex
    * Records that the placeholder `tempId` stands for the server-assigned `id`.
    * Every queued mutation whose variables mention `tempId` is sent with `id`
    * instead, also one queued after the outbox drained with an id a component
-   * still held. The last 1000 mappings are kept. The row keyed `tempId` in an
-   * inferred table is re-keyed to `id`; rows in your own tables are yours to
-   * update here.
+   * still held. The last 1000 mappings are kept. The row keyed `tempId` is
+   * re-keyed to `id` in whichever table holds it, inferred or your own; a
+   * copy of it nested in another row is left to the refetch that follows.
    */
   resolve: (tempId: string, id: string) => Promise<void>
 }
@@ -336,7 +336,11 @@ export interface MutationHandler<N extends MutationName = MutationName, L extend
    * same local variables.
    */
   merge?: (earlier: MutationVariables<N>, later: MutationVariables<N>) => MutationVariables<N> | null | undefined | false
-  /** Queries to refetch after the mutation has been sent. Defaults to every active query. */
+  /**
+   * Queries to refetch after the mutation has been sent. Defaults to the
+   * mounted queries that fill a table it changed, or all of them when it
+   * changed none.
+   */
   refetch?: QueryName[]
 }
 
@@ -423,7 +427,7 @@ export interface AirplaneRequestContext {
   document: string
   kind: OperationDocument['kind']
   variables: unknown
-  /** For a queued mutation: the key that is the same on every attempt to send it. */
+  /** For a mutation: the key that is the same on every attempt to send it. */
   idempotencyKey?: string
 }
 

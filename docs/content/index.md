@@ -131,7 +131,7 @@ Everything from your GraphQL documents
   Live data from local tables
 
   #description
-  Every type your documents select with an id gets a typed Dexie table. Query handlers write responses in and read results out, so components read the tables, not the network, and changes show up everywhere instantly.
+  Every type your documents select with an id gets a typed Dexie table, created once your code uses it. Query handlers write responses in and read results out, so components read the tables, not the network, and changes show up everywhere instantly.
   :::
 
   :::u-page-feature

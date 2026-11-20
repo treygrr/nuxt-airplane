@@ -65,7 +65,7 @@ export function openDatabase(options: Pick<AirplaneEngineOptions, 'dbName' | 'en
   // leave the app without storage.
   const opened = db.open().catch(async (error: Error) => {
     if (!['VersionError', 'UpgradeError', 'SchemaError'].includes(error.name)) throw error
-    console.warn(`[nuxt-airplane] Could not open "${options.dbName}" (${error.name}), recreating it. Bump the store version to migrate instead.`)
+    console.warn(`[nuxt-airplane] Could not open "${options.dbName}" (${error.name}), recreating it: cached data and queued changes are lost.`)
     await db.delete()
     await db.open()
   })
