@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.7.1 (2026-11-20)
+## 0.7.1 (2026-11-19)
 
 A small release: nothing changes in how the module behaves.
 
