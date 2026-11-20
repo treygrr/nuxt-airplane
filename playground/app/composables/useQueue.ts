@@ -26,7 +26,7 @@ export function useQueue() {
     const pending = sync.pending.value
     const byId = new Map(pending.map(m => [m.id, m]))
     // Held back: below a failed change, directly or through others.
-    const held = new Set(pending.filter(m => m.status === 'failed').map(m => m.id))
+    const held = new Set(sync.failed.value.map(m => m.id))
     for (const m of pending) if (links(m).some(id => held.has(id))) held.add(m.id)
     const depths = new Map<number, number>()
     const depth = (m: MutationRow): number => {
