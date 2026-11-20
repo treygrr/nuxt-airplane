@@ -1,5 +1,8 @@
 <p align="center">
-  <img src="./docs/public/logo.png" width="140" height="140" alt="nuxt-airplane logo">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="./docs/public/logo.png">
+    <img src="./docs/public/logo-light.png" width="140" height="140" alt="nuxt-airplane logo">
+  </picture>
 </p>
 
 # nuxt-airplane
