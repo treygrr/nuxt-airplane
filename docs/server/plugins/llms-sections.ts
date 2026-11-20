@@ -3,13 +3,12 @@
 // without fetching them all.
 //
 // The sections are read from the page, so the list cannot fall behind it.
-// What each explains is written in the page's frontmatter, by heading:
-//
-//   sections:
-//     Rolling back: How `rollback(id)` undoes a queued mutation, and what goes with it.
+// What each explains is written in `nuxt.config.ts` (`llmsSections`), by page
+// path and heading, and kept out of the pages themselves, which are for
+// people to read.
 //
 // A section without a line there gets the sentence it opens on. A line for a
-// heading the page does not have fails the build: it was renamed or removed.
+// page or a heading that is not there fails the build: it was renamed or removed.
 
 import type { H3Event } from 'h3'
 
@@ -65,13 +64,16 @@ function sectionsOf(body: Node[]): Section[] {
 export default defineNitroPlugin((nitroApp) => {
   // Registered after Nuxt Content's own hook, which turns each section's pages into links.
   nitroApp.hooks.hook('llms:generate', async (event, options) => {
-    const pages = await queryCollection(event as H3Event, 'docs').select('path', 'body', 'sections').all()
+    const written = useRuntimeConfig(event as H3Event).llmsSections as Record<string, Record<string, string>>
+    const pages = await queryCollection(event as H3Event, 'docs').select('path', 'body').all()
+    const unknown = Object.keys(written).filter(path => !pages.some(page => page.path === path))
+    if (unknown.length) throw new Error(`[llms.txt] \`llmsSections\` in nuxt.config.ts names ${unknown.map(path => `"${path}"`).join(', ')}, and there is no such page.`)
     const byLink = new Map(pages.map((page) => {
       const found = sectionsOf((page.body as unknown as { value?: Node[] } | null)?.value ?? [])
-      const written = page.sections ?? {}
-      const stale = Object.keys(written).filter(title => !found.some(section => section.title === title))
-      if (stale.length) throw new Error(`[llms.txt] ${page.path}: \`sections\` in the frontmatter names ${stale.map(title => `"${title}"`).join(', ')}, which the page has no \`##\` heading for. Its headings: ${found.map(section => `"${section.title}"`).join(', ')}.`)
-      return [`/raw${page.path}.md`, found.map(section => ({ title: section.title, opening: written[section.title] ?? section.opening }))] as const
+      const lines = written[page.path] ?? {}
+      const stale = Object.keys(lines).filter(title => !found.some(section => section.title === title))
+      if (stale.length) throw new Error(`[llms.txt] \`llmsSections\` in nuxt.config.ts names ${stale.map(title => `"${title}"`).join(', ')} for ${page.path}, which has no \`##\` heading by that name. Its headings: ${found.map(section => `"${section.title}"`).join(', ')}.`)
+      return [`/raw${page.path}.md`, found.map(section => ({ title: section.title, opening: lines[section.title] ?? section.opening }))] as const
     }))
     for (const section of options.sections) {
       for (const link of section.links ?? []) {
