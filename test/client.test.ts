@@ -256,7 +256,7 @@ function cutNetworkFor(op: string) {
   return () => (down = false)
 }
 
-/** The live data of a query, as `useQuery` would see it. */
+/** The live data of a query, as `useAirplaneQuery` would see it. */
 function watchData(client: AirplaneClient, name: string, variables?: unknown) {
   const { snapshot } = client.watchQuery(name, variables)
   return <T = unknown>() => snapshot.value.data as T
@@ -2666,5 +2666,63 @@ describe('local variables', () => {
     await client.execute('RenameSite', { id: 's1', name: 'Direct', note: '#' })
     expect(server.mutations().map(c => c.variables)).toEqual([{ id: 's1', name: 'Direct' }])
     expect(seen.reconcile).toEqual([{ note: '#', siteRef: '' }])
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Online queries: asked of the server, never stored
+// ---------------------------------------------------------------------------
+
+describe('ask', () => {
+  it('sends the query and stores nothing, even when the query has a handler', async () => {
+    const store = vi.fn()
+    const client = createClient(server, { queryHandlers: { ...siteQueries, GetSites: { ...(siteQueries as Record<string, object>).GetSites, store } } as unknown as QueryHandlers })
+    const data = await client.ask<{ sites: Site[] }>('GetSites', undefined)
+    expect(data.sites).toHaveLength(2)
+    expect(store).not.toHaveBeenCalled()
+    expect(await client.db.queries.count()).toBe(0)
+    expect(await sites(client.db).count()).toBe(0)
+  })
+
+  it('shares a request on its way, but not one that left before a mutation was accepted', async () => {
+    const client = createClient(server, { mutationHandlers: siteHandlers })
+    await Promise.all([client.ask('GetSites', undefined), client.ask('GetSites', undefined)])
+    expect(server.calls.filter(c => c.op === 'GetSites')).toHaveLength(1)
+
+    const first = client.ask('GetSites', undefined)
+    await client.execute('RenameSite', { id: 's1', name: 'Asked' })
+    const second = client.ask<{ sites: Site[] }>('GetSites', undefined)
+    await first
+    expect((await second).sites[0]!.name).toBe('Asked')
+    expect(server.calls.filter(c => c.op === 'GetSites')).toHaveLength(3)
+  })
+
+  it('refuses a mutation', async () => {
+    const client = createClient(server)
+    await expect(client.ask('RenameSite', { id: 's1', name: 'x' })).rejects.toThrow(/not a query/)
+  })
+
+  it('a mounted online query is refetched after a sync only when a mutation names it', async () => {
+    const client = createClient(server, {
+      mutationHandlers: { ...siteHandlers, ArchiveSite: { ...(siteHandlers as Record<string, object>).ArchiveSite, refetch: ['GetSite'] } } as unknown as MutationHandlers,
+    })
+    const online = vi.fn(async () => {})
+    const named = vi.fn(async () => {})
+    const stored = vi.fn(async () => {})
+    client.mount(queryKey('GetSites', undefined), online, { online: true })
+    client.mount(queryKey('GetSite', { id: 's1' }), named, { online: true })
+    client.mount(queryKey('GetSites', undefined), stored)
+
+    // A rename changes the Site table: the stored GetSites is asked again, the online one is not.
+    await client.enqueue('RenameSite', { id: 's1', name: 'R' })
+    await until(async () => (await client.db.mutations.count()) === 0, 'outbox to drain')
+    await until(() => stored.mock.calls.length > 0, 'the stored query refetched')
+    expect(online).not.toHaveBeenCalled()
+    expect(named).not.toHaveBeenCalled()
+
+    // An archive names GetSite.
+    await client.enqueue('ArchiveSite', { id: 's2' })
+    await until(() => named.mock.calls.length === 1, 'the named online query refetched')
+    expect(online).not.toHaveBeenCalled()
   })
 })

@@ -12,5 +12,7 @@ export default defineNuxtConfig({
     },
     database: { cacheKey: 'fixture-1', schemaFile: 'airplane.schema.ts' },
     persistedQueries: 'automatic',
+    // Renamed, as an app whose own `useSync` would clash might.
+    imports: { useSync: 'useAirplaneSync' },
   },
 })

@@ -1,8 +1,9 @@
 <script setup lang="ts">
-// What the server saw of the client, asked for every second. `LabStats` has
-// no query handler, so it comes from the network only: offline, it has
-// nothing to show, which is the point of having one query like that.
-const { data, error, refresh } = useQuery('LabStats')
+// What the server saw of the client, asked for every second. An online
+// query: it comes from the server only, and the first answer is in the page
+// as it is rendered. Offline it has nothing new to show, which is the point
+// of having one query like that.
+const { data, error, refresh } = useOnlineQuery('LabStats')
 
 let timer: ReturnType<typeof setInterval> | undefined
 onMounted(() => (timer = setInterval(refresh, 1000)))

@@ -24,6 +24,37 @@ describe('module', async () => {
     expect(html).toContain('loading:true')
   })
 
+  it('answers an online query while rendering, with the app\'s request options and the visitor\'s cookies', async () => {
+    const before = (await $fetch<{ count: number }>('/api/requests')).count
+    const html = await $fetch<string>('/', { headers: { cookie: 'token=t1; visitor=v1' } })
+    // `defineAirplaneRequest` ran on the server (`useCookie` read the token) and the visitor's cookie was forwarded.
+    expect(html).toContain('live:auth=t1;cookie=v1')
+    expect(html).toContain('live-fetching:false')
+    // The answer travels in the page, so the browser starts from it.
+    expect(html).toMatch(/airplane:GetSites:/)
+    // Off: rendered as not fetching, and nothing sent for it. One request, the live one.
+    expect(html).toContain('off-fetching:false')
+    expect((await $fetch<{ count: number }>('/api/requests')).count - before).toBe(1)
+  })
+
+  it('auto-imports a composable under the name the `imports` option gives it', async () => {
+    const imports = await built('imports.d.ts')
+    expect(imports).toMatch(/useSync as useAirplaneSync/)
+    // Not under its own name as well (the file path still says `useSync`).
+    expect(imports).not.toMatch(/[{,]\s*useSync\s*[,}]/)
+    // And the page that calls it under that name renders.
+    expect(await $fetch<string>('/')).toContain('synced:true')
+  })
+
+  it('gives the server only the request files, and the browser all of them', async () => {
+    const request = await built('nuxt-airplane/request.mjs')
+    expect(request).toContain('airplane/request.ts')
+    expect(request).not.toContain('airplane/mutations/archive-site.ts')
+    expect(request).not.toContain('airplane/stores.ts')
+    expect(await built('nuxt-airplane/handlers.mjs')).toContain('airplane/request.ts')
+    expect(await built('nuxt-airplane-worker/entry.mjs')).not.toContain('airplane/request.ts')
+  })
+
   it('compiles the documents with their fragments', async () => {
     const source = await built('nuxt-airplane/documents.mjs')
     expect(source).toContain('"GetSites"')

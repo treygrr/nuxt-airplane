@@ -3,8 +3,8 @@
 // one request in flight.
 
 export function useCart() {
-  const cartQuery = useQuery('GetCart')
-  const summaryQuery = useQuery('GetOrderSummary')
+  const cartQuery = useAirplaneQuery('GetCart')
+  const summaryQuery = useAirplaneQuery('GetOrderSummary')
 
   const addLine = useMutation('AddCartLine')
   const setQuantity = useMutation('SetCartLineQuantity')

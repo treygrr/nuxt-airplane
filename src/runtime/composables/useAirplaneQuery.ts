@@ -3,12 +3,18 @@ import { hash } from 'ohash'
 import type { QueryInput, QueryName, QueryResult } from '../types'
 import { useAirplane } from './useAirplane'
 
-export interface UseQueryOptions {
+export interface UseAirplaneQueryOptions {
   /** Set to `false` to only read the cache, never the network. */
   fetch?: boolean
+  /**
+   * While `false` the query does nothing: nothing is read, nothing is
+   * fetched, and `data` is `null`. For variables that are not known yet,
+   * such as a detail view waiting for its id. Default `true`.
+   */
+  enabled?: MaybeRefOrGetter<boolean>
 }
 
-export interface UseQueryReturn<T> {
+export interface UseAirplaneQueryReturn<T> {
   /**
    * The query's result, built live from the tables by its `read` handler, so
    * a mutation that touches them shows at once. A query without `read` gets
@@ -25,7 +31,7 @@ export interface UseQueryReturn<T> {
   refresh: () => Promise<void>
 }
 
-export function useQuery<N extends QueryName>(
+export function useAirplaneQuery<N extends QueryName>(
   name: N,
   /**
    * The query's variables, and any of the local variables its handler
@@ -33,10 +39,12 @@ export function useQuery<N extends QueryName>(
    * change to a local one runs `read` again and fetches nothing.
    */
   variables?: MaybeRefOrGetter<QueryInput<N> | undefined>,
-  options: UseQueryOptions = {},
-): UseQueryReturn<QueryResult<N>> {
+  options: UseAirplaneQueryOptions = {},
+): UseAirplaneQueryReturn<QueryResult<N>> {
+  const enabled = computed(() => toValue(options.enabled ?? true))
   const data = shallowRef(null) as Ref<QueryResult<N> | null>
-  const loading = ref(true)
+  // A query that is off is not loading, on the server as on the client, so both render it the same.
+  const loading = ref(enabled.value)
   const fetching = ref(false)
   const error = shallowRef<Error | null>(null)
   const updatedAt = ref<number | null>(null)
@@ -49,12 +57,14 @@ export function useQuery<N extends QueryName>(
 
   const vars = computed(() => toValue(variables))
   const split = computed(() => client.splitQuery(name, vars.value))
-  const key = computed(() => split.value.key)
+  /** The fetch record this query is about, or `''` while it is off: the one value watched. */
+  const key = computed(() => (enabled.value ? split.value.key : ''))
   /** Changes when a local variable does and nothing else: `read` runs again, nothing is fetched. */
-  const localKey = computed(() => `${key.value}|${hash(split.value.local)}`)
+  const localKey = computed(() => (enabled.value ? `${split.value.key}|${hash(split.value.local)}` : ''))
   const readable = client.readable(name)
 
   async function refresh() {
+    if (!key.value) return
     if (options.fetch === false || !client!.state.online) {
       // Nothing is coming from the network, and without `read` there is nothing else to show.
       if (!readable) {
@@ -98,7 +108,20 @@ export function useQuery<N extends QueryName>(
   }
 
   let unmount: (() => void) | undefined
+  /** Turned off: nothing observed, nothing mounted, nothing shown. */
+  function stop() {
+    unmount?.()
+    unmount = undefined
+    stopWatch?.()
+    stopWatch = undefined
+    data.value = null
+    error.value = null
+    updatedAt.value = null
+    fetching.value = false
+    loading.value = false
+  }
   watch(key, (next) => {
+    if (!next) return stop()
     unmount?.()
     unmount = client.mount(next, refresh)
     loading.value = true
@@ -108,10 +131,11 @@ export function useQuery<N extends QueryName>(
   })
   // Only a local variable changed: the same fetch record, read again.
   watch(localKey, (next, prev) => {
-    if (next.slice(0, next.indexOf('|')) === prev.slice(0, prev.indexOf('|')) && unmount) subscribe()
+    if (next && prev && next.slice(0, next.indexOf('|')) === prev.slice(0, prev.indexOf('|')) && unmount) subscribe()
   })
 
   function start() {
+    if (!key.value) return stop()
     unmount = client!.mount(key.value, refresh)
     subscribe()
     void refresh()

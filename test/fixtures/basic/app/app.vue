@@ -1,6 +1,10 @@
 <script setup lang="ts">
-const { data, loading } = useQuery('GetSites')
-const { online, synced, pending } = useSync()
+const { data, loading } = useAirplaneQuery('GetSites')
+const { online, synced, pending } = useAirplaneSync()
+// Answered by the server while the page renders.
+const live = useOnlineQuery('GetSites')
+// Off: sends nothing, on the server or in the browser.
+const off = useOnlineQuery('GetSites', undefined, { enabled: false })
 </script>
 
 <template>
@@ -11,5 +15,8 @@ const { online, synced, pending } = useSync()
     <p>pending:{{ pending.length }}</p>
     <p>loading:{{ loading }}</p>
     <p>sites:{{ data?.sites.length ?? 0 }}</p>
+    <p>live:{{ live.data.value?.sites[0]?.name ?? 'none' }}</p>
+    <p>live-fetching:{{ live.fetching.value }}</p>
+    <p>off-fetching:{{ off.fetching.value }}</p>
   </div>
 </template>

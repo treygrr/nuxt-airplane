@@ -3,7 +3,7 @@
 // wait for it, and undoing it undoes them.
 
 export function useWishlists() {
-  const query = useQuery('GetWishlists')
+  const query = useAirplaneQuery('GetWishlists')
   return {
     ...query,
     lists: computed(() => query.data.value?.wishlists ?? []),

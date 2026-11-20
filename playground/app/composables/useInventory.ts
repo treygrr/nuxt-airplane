@@ -5,21 +5,21 @@ import type { MaybeRefOrGetter } from 'vue'
 import type { SiteItemSort } from '#shared/siteItemSort'
 
 export function useSites(filters: MaybeRefOrGetter<{ archived?: boolean | null, search?: string | null }>) {
-  return useQuery('GetSites', () => toValue(filters))
+  return useAirplaneQuery('GetSites', () => toValue(filters))
 }
 
 export function useSite(id: MaybeRefOrGetter<string>) {
-  return useQuery('GetSite', () => ({ id: toValue(id) }))
+  return useAirplaneQuery('GetSite', () => ({ id: toValue(id) }))
 }
 
 /** A page of a site's items: `first` of them, after `after`. `lowStock` is local: it filters what is stored and is never sent. */
 export function useSiteItems(vars: MaybeRefOrGetter<{ siteId: string, search?: string | null, first: number, after?: string | null, sort?: SiteItemSort | null, descending?: boolean | null, lowStock?: boolean }>) {
-  return useQuery('GetSiteItems', () => toValue(vars))
+  return useAirplaneQuery('GetSiteItems', () => toValue(vars))
 }
 
 /** What the restock carts hold: one site's, or, without a site, every site's. */
 export function useSiteCartLines(siteId?: MaybeRefOrGetter<string | null>) {
-  const query = useQuery('GetSiteCartLines', () => ({ siteId: toValue(siteId) ?? null }))
+  const query = useAirplaneQuery('GetSiteCartLines', () => ({ siteId: toValue(siteId) ?? null }))
   const lines = computed(() => query.data.value?.siteCartLines ?? [])
   /** Lines by id, which is the item's id too. */
   const byItem = computed(() => new Map(lines.value.map(line => [line.id, line])))

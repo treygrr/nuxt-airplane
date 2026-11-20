@@ -74,7 +74,7 @@ export type QueryLocals<N extends QueryName> = Found<LocalsIn<NuxtAirplaneHandle
 /** The local variables the handler of mutation `N` declares, with the types of their defaults. */
 export type MutationLocals<N extends MutationName> = Found<LocalsIn<NuxtAirplaneHandlerExports[keyof NuxtAirplaneHandlerExports], N, '~mutationLocals'>>
 
-/** What `useQuery` takes: the query's variables, and any of its handler's local variables. */
+/** What `useAirplaneQuery` takes: the query's variables, and any of its handler's local variables. */
 export type QueryInput<N extends QueryName> = QueryVariables<N> & Partial<Omit<QueryLocals<N>, keyof QueryVariables<N>>>
 /** What `mutate` takes: the mutation's variables, and any of its handler's local variables. */
 export type MutationInput<N extends MutationName> = MutationVariables<N> & Partial<Omit<MutationLocals<N>, keyof MutationVariables<N>>>
@@ -318,7 +318,7 @@ export interface QueryPrefetch<N extends QueryName = QueryName> {
 // eslint-disable-next-line @typescript-eslint/no-empty-object-type
 export interface QueryHandler<N extends QueryName = QueryName, L extends Locals = {}> {
   /**
-   * Local variables and their defaults: values `useQuery` takes next to the
+   * Local variables and their defaults: values `useAirplaneQuery` takes next to the
    * query's own, which only `read` gets, as `local`. They are never sent and
    * are not part of the query key, so changing one runs `read` again without
    * a fetch. The object is their type as well, so give a union or an enum
@@ -330,7 +330,7 @@ export interface QueryHandler<N extends QueryName = QueryName, L extends Locals 
   /** Writes a fresh response into the tables. Runs inside a Dexie transaction. */
   store?: (ctx: QueryHandlerContext<QueryVariables<N>>, data: QueryResult<N>) => unknown
   /**
-   * Builds the query's result from the tables; what `useQuery` returns, online
+   * Builds the query's result from the tables; what `useAirplaneQuery` returns, online
    * or offline. Runs inside Dexie's `liveQuery`, so whatever it reads is
    * observed and `data` stays live. Without it the query is served from the
    * network only.
@@ -417,6 +417,18 @@ export class GraphQLRequestError extends Error {
   constructor(public errors: GraphQLError[], public status = 200, public retryAfter?: number) {
     super(errors.map(e => e.message).join('\n'))
     this.name = 'GraphQLRequestError'
+  }
+}
+
+/**
+ * An online query that was not sent because the app is offline, by the
+ * network or by `goOffline()`. It is sent once the app is back online,
+ * unless `refetchOnReconnect` is `false`.
+ */
+export class OfflineError extends Error {
+  constructor(public document: string) {
+    super(`[nuxt-airplane] "${document}" is only answered by the server, and the app is offline`)
+    this.name = 'AirplaneOfflineError'
   }
 }
 

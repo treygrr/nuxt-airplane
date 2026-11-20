@@ -9,13 +9,12 @@ import { reactive, computed, shallowRef, readonly } from 'vue'
 import { isQuotaError } from './db'
 import { cacheKeyOf, createEngine, openDatabase, type AirplaneEngineOptions } from './engine'
 import { UnresolvedTempIdError, heldBack, queryKey, queuedRows, readQueryTableMap, readTempIdMap, requeueStuckRows, sameRow, splitVariables, substituteTempIds, uuid, withDependents } from './helpers'
+import { createRequester } from './request'
 import {
   GraphQLRequestError,
   type AirplaneEngine,
-  type GraphQLResponse,
   type MutationHandler,
   type MutationRow,
-  type AirplaneRequestContext,
   type AirplaneRequestOptions,
   type AirplaneRuntimeConfig,
   type Locals,
@@ -33,8 +32,9 @@ export interface AirplaneClientOptions extends AirplaneRuntimeConfig, AirplaneEn
 
 // The pure pieces live in `helpers`; they are part of what this module offers.
 export * from './helpers'
+export { parseRetryAfter } from './request'
 
-/** What `useQuery` observes: the live result of `read` plus the fetch record. */
+/** What `useAirplaneQuery` observes: the live result of `read` plus the fetch record. */
 export interface QuerySnapshot {
   data: unknown
   updatedAt: number | null
@@ -42,26 +42,10 @@ export interface QuerySnapshot {
   cached: boolean
 }
 
-/** The APQ error a response carries, if any, by message or by extension code. */
-function persistedQueryError(body: GraphQLResponse): 'PersistedQueryNotFound' | 'PersistedQueryNotSupported' | undefined {
-  for (const error of body.errors ?? []) {
-    const code = error.extensions?.code
-    if (error.message === 'PersistedQueryNotFound' || code === 'PERSISTED_QUERY_NOT_FOUND') return 'PersistedQueryNotFound'
-    if (error.message === 'PersistedQueryNotSupported' || code === 'PERSISTED_QUERY_NOT_SUPPORTED') return 'PersistedQueryNotSupported'
-  }
-}
-
 /** An error answer that is about the session or the server, not about the mutation it came back for. */
 export function retryLaterByDefault(error: GraphQLRequestError) {
   return error.status === 401 || error.status === 429 || error.status >= 500
     || error.errors.some(e => ['UNAUTHENTICATED', 'TOO_MANY_REQUESTS', 'RATE_LIMITED'].includes(String(e.extensions?.code)))
-}
-
-/** The milliseconds a `Retry-After` header asks to wait: a number of seconds, or a date. */
-export function parseRetryAfter(value: string | null, now = Date.now()): number | undefined {
-  if (!value) return undefined
-  const ms = /^\s*\d+(?:\.\d+)?\s*$/.test(value) ? Number(value) * 1000 : Date.parse(value) - now
-  return Number.isFinite(ms) ? Math.max(0, ms) : undefined
 }
 
 /** First wait after a sync that could not get through, doubled each time up to the cap. */
@@ -226,66 +210,8 @@ export function createAirplaneClient(options: AirplaneClientOptions) {
     return doc
   }
 
-  /** Static headers from config, then the per-request ones from `defineAirplaneRequest`. */
-  async function requestHeaders(ctx: AirplaneRequestContext) {
-    const headers = new Headers({ 'content-type': 'application/json', ...options.headers })
-    const { headers: dynamic } = options.request
-    const extra = typeof dynamic === 'function'
-      ? await (options.runWithContext ? options.runWithContext(() => dynamic(ctx)) : dynamic(ctx))
-      : dynamic
-    new Headers(extra ?? undefined).forEach((value, key) => headers.set(key, value))
-    return headers
-  }
-
-  async function post<T>(ctx: AirplaneRequestContext, payload: Record<string, unknown>) {
-    const doFetch = options.request.fetch ?? globalThis.fetch
-    const res = await doFetch(options.endpoint, {
-      method: 'POST',
-      headers: await requestHeaders(ctx),
-      credentials: options.request.credentials,
-      body: JSON.stringify(payload),
-      signal: AbortSignal.timeout(options.request.timeout ?? 30_000),
-    })
-    await options.request.onResponse?.(res, ctx)
-    const body = await res.json().catch(() => ({})) as GraphQLResponse<T>
-    return { res, body }
-  }
-
-  /**
-   * With `persistedQueries: 'automatic'`, a server that answers
-   * `PersistedQueryNotSupported` gets full documents for the rest of the
-   * session instead of a wasted round trip per request.
-   */
-  let persistedUnsupported = false
-
-  async function request<T>(name: string, variables: unknown, idempotencyKey?: string): Promise<T> {
-    const doc = document(name)
-    const ctx: AirplaneRequestContext = { document: name, kind: doc.kind, variables, ...(idempotencyKey && { idempotencyKey }) }
-    const mode = options.persistedQueries
-    const persisted = mode && doc.hash && !persistedUnsupported
-      ? { persistedQuery: { version: 1, sha256Hash: doc.hash } }
-      : undefined
-    // The same key on every attempt lets the server answer a retry without applying it twice.
-    const extensions = (withPersisted: boolean) => {
-      const out = { ...(withPersisted && persisted), ...(idempotencyKey && { idempotencyKey }) }
-      return Object.keys(out).length ? out : undefined
-    }
-
-    let { res, body } = await post<T>(ctx, { variables: variables ?? undefined, extensions: extensions(true), query: persisted ? undefined : doc.source })
-    if (persisted && mode === 'automatic') {
-      const miss = persistedQueryError(body)
-      if (miss === 'PersistedQueryNotSupported') persistedUnsupported = true
-      // Not found: send the text along with the hash so the server registers
-      // it. Not supported: send the text alone, and keep doing so.
-      if (miss) ({ res, body } = await post<T>(ctx, { variables: variables ?? undefined, query: doc.source, extensions: extensions(miss === 'PersistedQueryNotFound') }))
-    }
-    const retryAfter = parseRetryAfter(res.headers.get('retry-after'))
-    if (body.errors?.length) throw new GraphQLRequestError(body.errors, res.status, retryAfter)
-    if (!res.ok) throw Object.assign(new Error(`[nuxt-airplane] ${res.status} ${res.statusText}`), { retryAfter })
-    // A 200 without `data` (proxy page, empty body) must not end up in the cache.
-    if (body.data == null) throw new Error('[nuxt-airplane] Response has no data')
-    return body.data as T
-  }
+  /** Sends one operation and resolves with its data; see `request.ts`. */
+  const request = createRequester(options)
 
   // --------------------------------------------------------------------------
   // Queries
@@ -305,8 +231,6 @@ export function createAirplaneClient(options: AirplaneClientOptions) {
   }
 
   if (import.meta.dev) {
-    const unhandled = Object.values(documents).filter(d => d.kind === 'query' && !readable(d.name)).map(d => `"${d.name}"`)
-    if (unhandled.length) console.warn(`[nuxt-airplane] No query handler with \`read\` for ${unhandled.join(', ')}: served from the network only, nothing to show offline.`)
     const idle = Object.entries(queryHandlers).filter(([name, h]) => h?.local && Object.keys(h.local).length && !readable(name)).map(([name]) => `"${name}"`)
     if (idle.length) console.warn(`[nuxt-airplane] ${idle.join(', ')} declare local variables but no \`read\`: only \`read\` gets them, so they do nothing.`)
     for (const [name, h] of [...Object.entries(queryHandlers), ...Object.entries(mutationHandlers)]) {
@@ -332,14 +256,22 @@ export function createAirplaneClient(options: AirplaneClientOptions) {
    */
   const active = new Map<string, Set<() => Promise<void>>>()
 
+  /**
+   * The mounted online queries (`useOnlineQuery`), apart: they show nothing
+   * from the tables, so what a mutation changed says nothing about them.
+   * They are refetched after a sync only when a mutation names them.
+   */
+  const activeOnline = new Map<string, Set<() => Promise<void>>>()
+
   /** Adds a mounted query's refresh under `key`; the returned function takes it away again. */
-  function mount(key: string, refresh: () => Promise<void>) {
-    const set = active.get(key) ?? new Set()
+  function mount(key: string, refresh: () => Promise<void>, { online = false } = {}) {
+    const map = online ? activeOnline : active
+    const set = map.get(key) ?? new Set()
     set.add(refresh)
-    active.set(key, set)
+    map.set(key, set)
     return () => {
       set.delete(refresh)
-      if (!set.size && active.get(key) === set) active.delete(key)
+      if (!set.size && map.get(key) === set) map.delete(key)
     }
   }
 
@@ -408,6 +340,32 @@ export function createAirplaneClient(options: AirplaneClientOptions) {
     return entry.promise
   }
 
+  /** Online requests under way, by query key, and how many mutations had been accepted when each started. */
+  const asking = new Map<string, { accepted: number, promise: Promise<unknown> }>()
+
+  /**
+   * Sends a query and resolves with the server's data, and that is all:
+   * nothing is stored, no fetch record is written, even when the query has
+   * a handler. What `useOnlineQuery` runs on. Callers asking for the same
+   * variables while it is on its way share the one request, unless a
+   * mutation has been accepted since it left.
+   */
+  function ask<T>(name: string, variables: unknown): Promise<T> {
+    const doc = documents[name]
+    if (doc && doc.kind !== 'query') return Promise.reject(new Error(`[nuxt-airplane] "${name}" is not a query`))
+    const key = queryKey(name, variables)
+    const current = asking.get(key)
+    if (current?.accepted === accepted) return current.promise as Promise<T>
+    const entry = {
+      accepted,
+      promise: request<T>(name, variables).finally(() => {
+        if (asking.get(key) === entry) asking.delete(key)
+      }),
+    }
+    asking.set(key, entry)
+    return entry.promise
+  }
+
   /** Documents whose remaining pages are being fetched right now. */
   const prefetching = new Set<string>()
 
@@ -442,15 +400,24 @@ export function createAirplaneClient(options: AirplaneClientOptions) {
     }
   }
 
+  /** Queries already warned about for having no `read`. */
+  const unreadable = new Set<string>()
+
   /**
    * Observes a query's result: `read` re-run whenever a table it touched
    * changes. A query without `read` has nothing to observe and the snapshot
-   * stays empty; `useQuery` shows it what the network returns.
+   * stays empty; `useAirplaneQuery` shows it what the network returns.
    */
   function watchQuery(name: string, input: unknown) {
     const snapshot = shallowRef<QuerySnapshot>({ data: null, updatedAt: null, cached: false })
     const read = queryHandler(name)?.read
-    if (!read) return { snapshot: readonly(snapshot), unsubscribe: () => {} }
+    if (!read) {
+      if (import.meta.dev && !unreadable.has(name)) {
+        unreadable.add(name)
+        console.warn(`[nuxt-airplane] "${name}" has no query handler with \`read\`: useAirplaneQuery serves it from the network only, with nothing to show offline. For a query that is only ever online, use useOnlineQuery.`)
+      }
+      return { snapshot: readonly(snapshot), unsubscribe: () => {} }
+    }
     const { server: variables, local, key } = splitQuery(name, input)
     const subscription = liveQuery(async (): Promise<QuerySnapshot> => {
       const row = await db.queries.get(key)
@@ -479,11 +446,12 @@ export function createAirplaneClient(options: AirplaneClientOptions) {
       const known = fills[name]
       return !known || known.some(table => tables.has(table))
     }
-    await Promise.allSettled(
-      [...active.entries()]
-        .filter(([key]) => wanted(key))
-        .flatMap(([, refreshes]) => [...refreshes].map(refresh => refresh())),
-    )
+    // An online query is asked again only when a mutation names it.
+    const named = (key: string) => !!names?.includes(key.slice(0, key.lastIndexOf(':')) as QueryName)
+    await Promise.allSettled([
+      ...[...active.entries()].filter(([key]) => wanted(key)),
+      ...[...activeOnline.entries()].filter(([key]) => named(key)),
+    ].flatMap(([, refreshes]) => [...refreshes].map(refresh => refresh())))
   }
 
   // --------------------------------------------------------------------------
@@ -804,6 +772,7 @@ export function createAirplaneClient(options: AirplaneClientOptions) {
     mount,
     splitQuery,
     fetchQuery,
+    ask,
     prefetch,
     watchQuery,
     readable,

@@ -26,7 +26,7 @@ watch(open, (isOpen) => {
   max.value = 0
 })
 
-const { data, fetching } = useQuery('GetProducts', () => ({ first: 20, search: search.value.trim() || null }))
+const { data, fetching } = useAirplaneQuery('GetProducts', () => ({ first: 20, search: search.value.trim() || null }))
 const products = computed(() => data.value?.products.edges.map(e => e.node) ?? [])
 // The chosen product stays known while the search moves on.
 const chosen = ref<(typeof products.value)[number] | null>(null)
