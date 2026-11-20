@@ -16,6 +16,7 @@ import { hash } from 'ohash'
 import { glob } from 'tinyglobby'
 import { generateTypes, loadDocuments, loadSchema, type LoadedDocuments } from './codegen'
 import { generateHandlerFiles } from './scaffold'
+import { loadStoreFiles, renderSchema } from './schema'
 import { WRAP_HINT, defaultExportHelper, findUntaggedDefaultExport, mentionedTables } from './handlers'
 import type { PersistedQueriesMode } from './runtime/types'
 
@@ -64,6 +65,13 @@ export interface DatabaseOptions {
    * Overridable at runtime with `NUXT_PUBLIC_AIRPLANE_CACHE_KEY`.
    */
   cacheKey?: string
+  /**
+   * Also write the database schema to this file, relative to `srcDir`, for
+   * example `airplane.schema.ts`, so it can be committed and a change to the
+   * tables shows in review. It is always written to
+   * `.nuxt/nuxt-airplane/schema.ts`. Must be outside the handlers directory.
+   */
+  schemaFile?: string
 }
 
 export interface ModuleOptions {
@@ -205,9 +213,13 @@ export default defineNuxtModule<ModuleOptions>({
     // ------------------------------------------------------------------
 
     const handlersRoot = join(srcDir, options.handlers.dir) + sep
+    /** The committed copy of the schema, if asked for. It names every table, so it is no evidence that one is used. */
+    const schemaFile = options.database.schemaFile ? resolve(srcDir, options.database.schemaFile) : undefined
+    if (schemaFile?.startsWith(handlersRoot)) throw new Error(`[nuxt-airplane] database.schemaFile must be outside the handlers directory (${options.handlers.dir}), or it would be loaded as a handler file.`)
     /** Per source file, the inferred tables it mentions. */
     const mentions = new Map<string, string[]>()
     async function scanFile(file: string) {
+      if (file === schemaFile) return
       const source = await readFile(file, 'utf8').catch(() => null)
       if (source === null) mentions.delete(file)
       else mentions.set(file, mentionedTables(source, Object.keys(docs.entities), file.startsWith(handlersRoot)))
@@ -227,15 +239,48 @@ export default defineNuxtModule<ModuleOptions>({
       for (const folder of behindIndex) logger.warn(`${relative(nuxt.options.rootDir, folder)} has an index file, so only what the index exports is picked up: export the new files from it.`)
     }
 
+    // ------------------------------------------------------------------
+    // The database schema, written out
+    //
+    // Every table the app opens, as the runtime merges it. It is written
+    // when the documents or the GraphQL schema change, not on every edit.
+    // ------------------------------------------------------------------
+
+    let schemaText = ''
+    async function currentSchema() {
+      const used = usedTables()
+      const entities = Object.fromEntries(Object.entries(docs.entities).filter(([name]) => used.has(name)))
+      const { loaded, failed } = await loadStoreFiles(await handlerFiles(), {
+        ...nuxt.options.alias,
+        '#nuxt-airplane': resolver.resolve('./runtime/types'),
+      })
+      for (const { file, error } of failed) logger.warn(`Could not load ${relative(nuxt.options.rootDir, file)} to write the database schema: ${error}`)
+      return renderSchema({ entities, unusedEntities: Object.keys(docs.entities).filter(name => !used.has(name)), storeFiles: loaded, failed, root: srcDir })
+    }
+    async function writeSchema() {
+      schemaText = await currentSchema()
+      if (schemaFile && await readFile(schemaFile, 'utf8').catch(() => null) !== schemaText) {
+        await mkdir(dirname(schemaFile), { recursive: true })
+        await writeFile(schemaFile, schemaText)
+      }
+    }
+
     await reloadSchema()
     await reloadDocuments()
     await scaffoldHandlers()
     await scanSources()
+    await writeSchema()
     nuxt.options.watch.push(...docs.files)
 
     // ------------------------------------------------------------------
     // Templates
     // ------------------------------------------------------------------
+
+    addTemplate({
+      filename: 'nuxt-airplane/schema.ts',
+      write: true,
+      getContents: () => schemaText,
+    })
 
     const documentsTemplate = addTemplate({
       filename: 'nuxt-airplane/documents.mjs',
@@ -368,11 +413,27 @@ export default defineNuxtModule<ModuleOptions>({
       },
     })
 
-    async function regenerate() {
+    /** Whether the written schema has been said to be behind. */
+    let staleSaid = false
+
+    /**
+     * Rebuilds what the documents and the handlers make. The database schema
+     * is written again only when the documents or the GraphQL schema changed;
+     * after any other change, dev says when it has fallen behind.
+     */
+    async function regenerate({ documents = false } = {}) {
       await reloadSchema()
       await reloadDocuments()
       await scaffoldHandlers()
       await scanSources()
+      if (documents) {
+        await writeSchema()
+        staleSaid = false
+      }
+      else if (nuxt.options.dev && !staleSaid && await currentSchema() !== schemaText) {
+        staleSaid = true
+        logger.info('The database schema changed: the schema file is written again when a GraphQL document changes, or on the next restart.')
+      }
       await updateTemplates({ filter: t => t.filename.includes('nuxt-airplane') })
     }
 
@@ -391,7 +452,7 @@ export default defineNuxtModule<ModuleOptions>({
       function introspectDevServer() {
         if (introspectionUrl || options.schema.source || !devUrl || !nitroBuilt) return
         introspectionUrl = new URL(options.endpoint, devUrl).href
-        regenerate().catch(error => logger.error('Failed to generate GraphQL types', error))
+        regenerate({ documents: true }).catch(error => logger.error('Failed to generate GraphQL types', error))
       }
       nuxt.hook('listen', (_server, listener) => {
         devUrl = listener.url
@@ -408,7 +469,7 @@ export default defineNuxtModule<ModuleOptions>({
         const abs = join(srcDir, path)
         const isDocument = /\.(?:gql|graphql)$/.test(abs)
         const isHandler = abs.startsWith(join(srcDir, options.handlers.dir))
-        if (isDocument || isHandler) return regenerate()
+        if (isDocument || isHandler) return regenerate({ documents: isDocument })
         // Any other source file may have started, or stopped, using a table.
         if (!/\.(?:[mc]?[tj]sx?|vue)$/.test(abs)) return
         const before = [...usedTables()].sort().join()

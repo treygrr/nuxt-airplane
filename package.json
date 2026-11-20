@@ -64,6 +64,7 @@
     "@graphql-codegen/typescript-operations": "^6.2.0",
     "@nuxt/kit": "^4.6.3",
     "dexie": "^4.4.7",
+    "jiti": "^2.7.0",
     "ohash": "^2.0.12",
     "tinyglobby": "^0.2.17"
   },
