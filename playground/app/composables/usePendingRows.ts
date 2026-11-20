@@ -15,5 +15,5 @@ export function usePendingRows(table: string) {
 /** The failed mutations, newest first, for messages the user should see. */
 export function useFailedMutations() {
   const sync = useSync()
-  return computed(() => sync.pending.value.filter(m => m.status === 'failed').reverse())
+  return computed(() => [...sync.failed.value].reverse())
 }

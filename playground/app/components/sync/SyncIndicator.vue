@@ -7,7 +7,7 @@ const sync = useSync()
 const drawer = useQueueDrawer()
 const menu = ref(false)
 
-const failed = computed(() => sync.pending.value.filter(m => m.status === 'failed').length)
+const failed = computed(() => sync.failed.value.length)
 const waiting = computed(() => sync.pending.value.length)
 
 const state = computed(() => {

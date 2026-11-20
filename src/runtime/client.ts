@@ -123,6 +123,8 @@ export function createAirplaneClient(options: AirplaneClientOptions) {
   })
 
   const synced = computed(() => !state.syncing && state.pending.length === 0)
+  /** The mutations the server refused, oldest first, out of the pending list. */
+  const failed = computed(() => state.pending.filter(row => row.status === 'failed'))
 
   // Keep the pending list live from the outbox table. It is the whole queue,
   // so reading it costs more the longer the queue is, and a read holds up the
@@ -766,6 +768,7 @@ export function createAirplaneClient(options: AirplaneClientOptions) {
     db,
     state,
     synced,
+    failed,
     documents,
     entities,
     active,

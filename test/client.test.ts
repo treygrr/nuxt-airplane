@@ -448,12 +448,15 @@ describe('mutations', () => {
     const row = await client.enqueue('RenameSite', { id: 's1', name: 'bad' })
     await until(async () => (await client.db.mutations.get(row.id))?.status === 'failed', 'failed status')
     expect((await client.db.mutations.get(row.id))?.error).toBe('name rejected')
+    await until(() => client.failed.value.length === 1, 'failed list')
+    expect(client.failed.value[0]).toMatchObject({ id: row.id, error: 'name rejected' })
 
     // Fix the input on the row and retry: the server accepts it now.
     await client.db.mutations.update(row.id, { variables: { id: 's1', name: 'good' } })
     await client.retry(row.id)
     await until(async () => (await client.db.mutations.count()) === 0, 'outbox to drain')
     expect(server.sites[0]!.name).toBe('good')
+    await until(() => client.failed.value.length === 0, 'failed list to empty')
   })
 
   it('leaves the queue intact on network errors and resumes later', async () => {
