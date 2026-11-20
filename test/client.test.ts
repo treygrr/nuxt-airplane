@@ -2748,7 +2748,7 @@ describe('work offline', () => {
     await first.fetchQuery('GetSites', undefined)
     first.goOffline()
     await first.enqueue('RenameSite', { id: 's1', name: 'Held' })
-    first.db.close()
+    // The first client stays open, held offline as it is: closing its database under its own background work would only add noise.
 
     const reloaded = createClient(server, { dbName, storage, mutationHandlers: siteHandlers })
     expect(reloaded.state.forcedOffline).toBe(true)
