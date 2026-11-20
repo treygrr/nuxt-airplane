@@ -35,6 +35,12 @@ export default defineAppConfig({
     credits: `nuxt-airplane • © ${new Date().getFullYear()}`,
     colorMode: false,
     links: [{
+      'icon': 'i-lucide-bot',
+      'label': 'llms.txt',
+      'to': 'https://treygrr.github.io/nuxt-airplane/llms.txt',
+      'target': '_blank',
+      'aria-label': 'The docs as text for AI tools'
+    }, {
       'icon': 'i-simple-icons-github',
       'to': 'https://github.com/treygrr/nuxt-airplane',
       'target': '_blank',
@@ -55,6 +61,11 @@ export default defineAppConfig({
         icon: 'i-lucide-database',
         label: 'Dexie docs',
         to: 'https://dexie.org',
+        target: '_blank'
+      }, {
+        icon: 'i-lucide-bot',
+        label: 'llms.txt',
+        to: 'https://treygrr.github.io/nuxt-airplane/llms.txt',
         target: '_blank'
       }]
     }

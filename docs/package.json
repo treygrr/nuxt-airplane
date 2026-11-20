@@ -21,7 +21,7 @@
     "@takumi-rs/core": "^2.19.0",
     "@vueuse/core": "^15.0.0",
     "nuxt": "^4.6.3",
-    "nuxt-llms": "0.3.1",
+    "nuxt-llms": "0.3.2",
     "nuxt-og-image": "^7.0.7",
     "tailwindcss": "^4.3.5",
     "ufo": "^1.6.4",
