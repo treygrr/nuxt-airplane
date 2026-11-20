@@ -2081,6 +2081,64 @@ describe('temp ids', () => {
     expect(unresolved).toHaveLength(1)
   })
 
+  it('tells a placeholder from a real id, through every way it is exported', async () => {
+    const { isTempId: fromTypes } = await import('../src/runtime/types')
+    const { isTempId: autoImported } = await import('../src/runtime/composables/isTempId')
+    for (const check of [isTempId, fromTypes, autoImported]) {
+      expect(check(newTempId())).toBe(true)
+      for (const value of ['s1', 'tmp-', 'tmp-1700000000000', `x${newTempId()}`, `${newTempId()} `, newTempId().toUpperCase(), '', 42, null, undefined, {}, ['tmp-x']]) {
+        expect(check(value)).toBe(false)
+      }
+    }
+  })
+
+  it('is true for the id tempId() gave a row, and false once the server has named it', async () => {
+    const client = createClient(server, { mutationHandlers: createHandlers })
+    await client.fetchQuery('GetSites', undefined)
+    client.goOffline()
+    await client.enqueue('CreateSite', { name: 'West' })
+    const tmp = (await cachedSites(client)).find(s => s.name === 'West')!.id
+    expect(isTempId(tmp)).toBe(true)
+    client.goOnline()
+    await until(async () => (await client.db.mutations.count()) === 0, 'outbox to drain')
+    const real = (await cachedSites(client)).find(s => s.name === 'West')!.id
+    expect(real).toBe('s3')
+    expect(isTempId(real)).toBe(false)
+  })
+
+  it('puts a queued row back after a store that replaces the whole table', async () => {
+    const replacing = {
+      ...(siteQueries as unknown as Record<string, object>),
+      GetSites: {
+        ...(siteQueries as unknown as Record<string, object>).GetSites,
+        // Nothing kept by hand: the table becomes exactly what the server sent.
+        store: async ({ db }: { db: AirplaneDexie }, data: { sites: Site[] }) => {
+          await sites(db).clear()
+          await sites(db).bulkPut(data.sites)
+        },
+      },
+    } as unknown as QueryHandlers
+    const client = createClient(server, { queryHandlers: replacing, mutationHandlers: createHandlers })
+    await client.fetchQuery('GetSites', undefined)
+    client.goOffline()
+    await client.enqueue('CreateSite', { name: 'West' })
+    await client.enqueue('RenameSite', { id: 's1', name: 'Local' })
+    const tmp = (await cachedSites(client)).find(s => s.name === 'West')!.id
+
+    server.sites[1]!.name = 'South 2'
+    await client.fetchQuery('GetSites', undefined)
+    expect(await cachedSites(client)).toEqual([
+      { id: 's1', name: 'Local', archived: false },
+      { id: 's2', name: 'South 2', archived: false },
+      { id: tmp, name: 'West', archived: false },
+    ])
+
+    client.goOnline()
+    await until(async () => (await client.db.mutations.count()) === 0, 'outbox to drain')
+    await client.fetchQuery('GetSites', undefined)
+    expect((await cachedSites(client)).map(s => s.id)).toEqual(['s1', 's2', 's3'])
+  })
+
   it('sends a queued edit of a row created offline with the server id', async () => {
     const client = createClient(server, { mutationHandlers: createHandlers })
     await client.fetchQuery('GetSites', undefined)

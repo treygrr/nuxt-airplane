@@ -18,5 +18,6 @@ const off = useOnlineQuery('GetSites', undefined, { enabled: false })
     <p>live:{{ live.data.value?.sites[0]?.name ?? 'none' }}</p>
     <p>live-fetching:{{ live.fetching.value }}</p>
     <p>off-fetching:{{ off.fetching.value }}</p>
+    <p>live-temp:{{ isTempId(live.data.value?.sites[0]?.id) }}</p>
   </div>
 </template>

@@ -46,6 +46,13 @@ describe('module', async () => {
     expect(await $fetch<string>('/')).toContain('synced:true')
   })
 
+  it('auto-imports isTempId, free of IndexedDB, so it runs during SSR', async () => {
+    const imports = await built('imports.d.ts')
+    expect(imports).toMatch(/[{,]\s*isTempId\s*[,}][^\n]*runtime\/composables\/isTempId/)
+    // The page calls it on a row the server sent: a real id.
+    expect(await $fetch<string>('/')).toContain('live-temp:false')
+  })
+
   it('gives the server only the request files, and the browser all of them', async () => {
     const request = await built('nuxt-airplane/request.mjs')
     expect(request).toContain('airplane/request.ts')
