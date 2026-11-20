@@ -1,5 +1,5 @@
 import { ref, shallowRef, type Ref } from 'vue'
-import type { MutationName, MutationResult, MutationRow, MutationVariables } from '../types'
+import type { MutationInput, MutationName, MutationResult, MutationRow } from '../types'
 import { useAirplane } from './useAirplane'
 
 export interface UseMutationOptions {
@@ -20,6 +20,10 @@ export interface UseMutationReturn<V, R = MutationRow> {
    *
    * With `queue: false` it sends the request now and resolves with the data
    * the server returned.
+   *
+   * Takes the mutation's variables and any of the local variables its
+   * handler declares. Only the mutation's own are sent; the local ones reach
+   * the handler's hooks and are kept on the outbox row.
    */
   mutate: (variables: V) => Promise<R>
   /** `true` while the local `apply` handler runs, or while the request is in flight with `queue: false`. */
@@ -27,15 +31,15 @@ export interface UseMutationReturn<V, R = MutationRow> {
   error: Ref<Error | null>
 }
 
-export function useMutation<N extends MutationName>(name: N, options?: UseMutationOptions & { queue?: true }): UseMutationReturn<MutationVariables<N>>
-export function useMutation<N extends MutationName>(name: N, options: UseMutationOptions & { queue: false }): UseMutationReturn<MutationVariables<N>, MutationResult<N>>
-export function useMutation<N extends MutationName>(name: N, options: UseMutationOptions = {}): UseMutationReturn<MutationVariables<N>, unknown> {
+export function useMutation<N extends MutationName>(name: N, options?: UseMutationOptions & { queue?: true }): UseMutationReturn<MutationInput<N>>
+export function useMutation<N extends MutationName>(name: N, options: UseMutationOptions & { queue: false }): UseMutationReturn<MutationInput<N>, MutationResult<N>>
+export function useMutation<N extends MutationName>(name: N, options: UseMutationOptions = {}): UseMutationReturn<MutationInput<N>, unknown> {
   const loading = ref(false)
   const error = shallowRef<Error | null>(null)
   const client = useAirplane()
   const queue = options.queue ?? true
 
-  async function mutate(variables: MutationVariables<N>) {
+  async function mutate(variables: MutationInput<N>) {
     if (!client) throw new Error('[nuxt-airplane] Mutations can only run on the client')
     loading.value = true
     error.value = null

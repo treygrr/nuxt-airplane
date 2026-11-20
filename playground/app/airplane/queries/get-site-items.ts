@@ -1,22 +1,27 @@
 // Inventory: what one site holds, a page at a time, in the order asked for. A
 // site's items are walked to the end in the background like the catalog, so
-// the whole of a site can be counted offline.
+// the whole of a site can be counted offline. "Low stock" is a local
+// variable: the server has no such filter, so it is answered from the
+// tables, and toggling it fetches nothing.
 
 import { siteItemOrder } from '#shared/siteItemSort'
 import { connection, decodeCursor, listingKey } from '../../lib/airplane'
 
 export default defineQueryHandler('GetSiteItems', {
+  local: { lowStock: false },
   async store({ db, variables }, data) {
     await db.SiteItem.bulkPut(data.siteItems.edges.map(e => e.node))
     await db.Listing.put({ key: listingKey('siteItems', { siteId: variables.siteId, search: variables.search }), totalCount: data.siteItems.totalCount })
   },
-  async read({ db, variables }) {
+  async read({ db, variables, local }) {
     const { siteId, first = 50, after, search, sort, descending } = variables
     const q = search?.trim().toLowerCase()
     const rows = (await db.SiteItem.where('siteId').equals(siteId).toArray())
       .filter(i => !q || i.productName.toLowerCase().includes(q) || i.sku.toLowerCase().includes(q))
+      .filter(i => !local.lowStock || i.onHand < i.min)
       .sort(siteItemOrder(sort, descending))
-    const known = (await db.Listing.get(listingKey('siteItems', { siteId, search })))?.totalCount ?? 0
+    // The server's count is of every item; filtered locally, the rows are the count.
+    const known = local.lowStock ? 0 : (await db.Listing.get(listingKey('siteItems', { siteId, search })))?.totalCount ?? 0
     return { siteItems: connection(rows, decodeCursor(after), first ?? 50, Math.max(known, rows.length)) }
   },
   prefetch: {

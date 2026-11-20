@@ -8,7 +8,7 @@ import { Dexie, liveQuery } from 'dexie'
 import { reactive, computed, shallowRef, readonly } from 'vue'
 import { isQuotaError } from './db'
 import { cacheKeyOf, createEngine, openDatabase, type AirplaneEngineOptions } from './engine'
-import { UnresolvedTempIdError, heldBack, queryKey, queuedRows, readQueryTableMap, readTempIdMap, requeueStuckRows, sameRow, substituteTempIds, uuid, withDependents } from './helpers'
+import { UnresolvedTempIdError, heldBack, queryKey, queuedRows, readQueryTableMap, readTempIdMap, requeueStuckRows, sameRow, splitVariables, substituteTempIds, uuid, withDependents } from './helpers'
 import {
   GraphQLRequestError,
   type AirplaneEngine,
@@ -18,6 +18,7 @@ import {
   type AirplaneRequestContext,
   type AirplaneRequestOptions,
   type AirplaneRuntimeConfig,
+  type Locals,
   type QueryHandler,
   type QueryName,
 } from './types'
@@ -306,10 +307,41 @@ export function createAirplaneClient(options: AirplaneClientOptions) {
   if (import.meta.dev) {
     const unhandled = Object.values(documents).filter(d => d.kind === 'query' && !readable(d.name)).map(d => `"${d.name}"`)
     if (unhandled.length) console.warn(`[nuxt-airplane] No query handler with \`read\` for ${unhandled.join(', ')}: served from the network only, nothing to show offline.`)
+    const idle = Object.entries(queryHandlers).filter(([name, h]) => h?.local && Object.keys(h.local).length && !readable(name)).map(([name]) => `"${name}"`)
+    if (idle.length) console.warn(`[nuxt-airplane] ${idle.join(', ')} declare local variables but no \`read\`: only \`read\` gets them, so they do nothing.`)
+    for (const [name, h] of [...Object.entries(queryHandlers), ...Object.entries(mutationHandlers)]) {
+      const clash = Object.keys(h?.local ?? {}).filter(key => documents[name]?.variables?.includes(key))
+      if (clash.length) console.error(`[nuxt-airplane] The handler of "${name}" declares ${clash.map(k => `"${k}"`).join(', ')} as local, but the operation declares ${clash.length > 1 ? 'them' : 'it'} too. ${clash.length > 1 ? 'They are' : 'It is'} sent, and never local.`)
+    }
   }
 
-  /** Refresh callbacks of the queries currently mounted somewhere. */
-  const active = new Map<string, () => Promise<void>>()
+  /**
+   * Sorts what a caller passed for a query into what is sent and what only
+   * `read` gets, and says which fetch record it belongs to: the key is of
+   * the sent variables alone, so a local one changes nothing on the network.
+   */
+  function splitQuery(name: string, input: unknown): { server: unknown, local: Locals, key: string } {
+    const { server, local } = splitVariables(name, input, { declared: documents[name]?.variables, local: queryHandler(name)?.local })
+    return { server, local, key: queryKey(name, server) }
+  }
+
+  /**
+   * Refresh callbacks of the queries currently mounted somewhere, by query
+   * key. Two mounted calls with the same key, the same variables or ones
+   * that differ only in local variables, each have their own.
+   */
+  const active = new Map<string, Set<() => Promise<void>>>()
+
+  /** Adds a mounted query's refresh under `key`; the returned function takes it away again. */
+  function mount(key: string, refresh: () => Promise<void>) {
+    const set = active.get(key) ?? new Set()
+    set.add(refresh)
+    active.set(key, set)
+    return () => {
+      set.delete(refresh)
+      if (!set.size && active.get(key) === set) active.delete(key)
+    }
+  }
 
   // --------------------------------------------------------------------------
   // Room
@@ -356,8 +388,8 @@ export function createAirplaneClient(options: AirplaneClientOptions) {
    * query while it is on its way share the one request, unless a mutation
    * has been accepted since it left: then it may not show that change.
    */
-  function fetchQuery<T>(name: string, variables: unknown): Promise<T> {
-    const key = queryKey(name, variables)
+  function fetchQuery<T>(name: string, input: unknown): Promise<T> {
+    const { server: variables, key } = splitQuery(name, input)
     const current = inflight.get(key)
     if (current?.accepted === accepted) return current.promise as Promise<T>
     const entry = {
@@ -415,14 +447,14 @@ export function createAirplaneClient(options: AirplaneClientOptions) {
    * changes. A query without `read` has nothing to observe and the snapshot
    * stays empty; `useQuery` shows it what the network returns.
    */
-  function watchQuery(name: string, variables: unknown) {
+  function watchQuery(name: string, input: unknown) {
     const snapshot = shallowRef<QuerySnapshot>({ data: null, updatedAt: null, cached: false })
     const read = queryHandler(name)?.read
     if (!read) return { snapshot: readonly(snapshot), unsubscribe: () => {} }
-    const key = queryKey(name, variables)
+    const { server: variables, local, key } = splitQuery(name, input)
     const subscription = liveQuery(async (): Promise<QuerySnapshot> => {
       const row = await db.queries.get(key)
-      const data = await read({ db, variables: variables as never })
+      const data = await read({ db, variables: variables as never, local })
       // The tables hold data as soon as any variant of this document has been
       // fetched, so a new filter is not "loading" offline.
       const cached = !!row || (await db.queries.where('document').equals(name).count()) > 0
@@ -450,7 +482,7 @@ export function createAirplaneClient(options: AirplaneClientOptions) {
     await Promise.allSettled(
       [...active.entries()]
         .filter(([key]) => wanted(key))
-        .map(([, refresh]) => refresh()),
+        .flatMap(([, refreshes]) => [...refreshes].map(refresh => refresh())),
     )
   }
 
@@ -637,7 +669,7 @@ export function createAirplaneClient(options: AirplaneClientOptions) {
         const result = await request(row.document, variables, row.idempotencyKey)
         const h = mutationHandler(row.document)
         try {
-          await write.reconcile(row.document, variables, row.tempIds ?? [], result)
+          await write.reconcile(row.document, variables, row.tempIds ?? [], result, row.local)
         }
         catch (error) {
           // A handler bug, not a rejection: sending the mutation again would apply it twice on the server.
@@ -744,15 +776,17 @@ export function createAirplaneClient(options: AirplaneClientOptions) {
    * server sees everything queued before it; `reconcile` and `refetch` then
    * run as they would after a sync. Rejects while offline.
    */
-  async function execute<T = unknown>(name: string, variables: unknown): Promise<T> {
-    if (document(name).kind !== 'mutation') throw new Error(`[nuxt-airplane] "${name}" is not a mutation`)
+  async function execute<T = unknown>(name: string, input: unknown): Promise<T> {
+    const doc = document(name)
+    if (doc.kind !== 'mutation') throw new Error(`[nuxt-airplane] "${name}" is not a mutation`)
     await ready
     if (!state.online) throw new Error(`[nuxt-airplane] Cannot send "${name}" while offline`)
     await sync()
-    const outbound = await outboundVariables(name, variables)
+    const { server, local } = splitVariables(name, input, { declared: doc.variables, local: mutationHandler(name)?.local })
+    const outbound = await outboundVariables(name, server)
     const result = await request<T>(name, outbound, uuid())
     accepted++
-    await write.reconcile(name, outbound, [], result)
+    await write.reconcile(name, outbound, [], result, substituteTempIds(local, await readTempIds()).value)
     await refetchActive(mutationHandler(name)?.refetch)
     return result
   }
@@ -767,6 +801,8 @@ export function createAirplaneClient(options: AirplaneClientOptions) {
     documents,
     entities,
     active,
+    mount,
+    splitQuery,
     fetchQuery,
     prefetch,
     watchQuery,

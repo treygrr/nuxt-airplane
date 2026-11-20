@@ -170,6 +170,31 @@ test('sorts by a column picked from the menu, either way', async ({ page }) => {
   await expect(rows.first().locator('.preview')).toHaveClass(/level-(low|ok|over)/)
 })
 
+test('low stock filters what is stored, through a local variable: no request, and offline too', async ({ page, context, request }) => {
+  await page.goto('/inventory/site-1')
+  await ready(page)
+  const held = [...(await siteItems(request, 'site-1')).values()]
+  const low = held.filter(i => i.onHand < i.min).length
+  expect(low).toBeGreaterThan(0)
+  // The background prefetch stores every item at the site: the filter answers from those.
+  await expect.poll(() => page.evaluate(async () => (await client().db.SiteItem!.toArray()).filter(i => i.siteId === 'site-1').length), { timeout: 15_000 }).toBe(held.length)
+
+  const sent: string[] = []
+  page.on('request', (r) => {
+    if (r.url().includes('/graphql') && r.postData()?.includes('GetSiteItems')) sent.push(r.postData()!)
+  })
+  await context.setOffline(true)
+  const chip = page.getByText('Low stock', { exact: true })
+  await chip.click()
+  await expect(page.locator('.v-data-table tbody tr .preview.level-low').first()).toBeVisible()
+  await expect.poll(async () => page.locator('.v-data-table tbody tr .preview:not(.level-low)').count()).toBe(0)
+  await expect(page.getByText(low.toLocaleString('en-US'), { exact: true }).first()).toBeVisible()
+  await chip.click()
+  await expect.poll(async () => page.locator('.v-data-table tbody tr .preview:not(.level-low)').count()).toBeGreaterThan(0)
+  await context.setOffline(false)
+  expect(sent).toEqual([])
+})
+
 test('each row offers what it needs to fill up, and its menu adjusts the count', async ({ page, request }) => {
   await page.goto('/inventory/site-1')
   await ready(page)

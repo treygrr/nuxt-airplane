@@ -26,6 +26,14 @@ declare global {
    */
   // eslint-disable-next-line @typescript-eslint/no-empty-object-type
   interface NuxtAirplaneStores {}
+
+  /**
+   * The default export of every file in the handlers directory, by file.
+   * Filled by the generated `types/nuxt-airplane-handlers.d.ts`, so the
+   * composables know the local variables each handler declares.
+   */
+  // eslint-disable-next-line @typescript-eslint/no-empty-object-type
+  interface NuxtAirplaneHandlerExports {}
 }
 
 export type QueryName = keyof NuxtAirplaneQueries & string
@@ -35,6 +43,41 @@ export type QueryResult<N extends QueryName> = NuxtAirplaneQueries[N] extends { 
 export type QueryVariables<N extends QueryName> = NuxtAirplaneQueries[N] extends { variables: infer V } ? V : never
 export type MutationResult<N extends MutationName> = NuxtAirplaneMutations[N] extends { result: infer R } ? R : never
 export type MutationVariables<N extends MutationName> = NuxtAirplaneMutations[N] extends { variables: infer V } ? V : never
+
+/**
+ * Local variables: values a caller passes next to an operation's own, which
+ * reach the handler's hooks and never the server. A handler declares them,
+ * with their defaults, in its `local` object.
+ */
+export type Locals = Record<string, unknown>
+
+/** What a `local` object may not hold: a name the operation declares as its own variable. */
+export type NoClash<V> = { [K in keyof V]?: never }
+
+/**
+ * Carried, in its type only, by what the define* helpers return: the local
+ * variables each operation's handler declares. Nothing is there at runtime.
+ */
+export interface LocalsTag<Q = unknown, M = unknown> {
+  readonly '~queryLocals'?: Q
+  readonly '~mutationLocals'?: M
+}
+
+type LocalsIn<E, N extends string, K extends keyof LocalsTag> = E extends { readonly [P in K]?: infer M }
+  // An index that spreads other files' handlers says `any` for theirs: those files say what they are.
+  ? (M extends object ? (N extends keyof M ? (0 extends (1 & M[N]) ? never : M[N]) : never) : never)
+  : never
+type Found<L> = [L] extends [never] ? Record<never, never> : L
+
+/** The local variables the handler of query `N` declares, with the types of their defaults. */
+export type QueryLocals<N extends QueryName> = Found<LocalsIn<NuxtAirplaneHandlerExports[keyof NuxtAirplaneHandlerExports], N, '~queryLocals'>>
+/** The local variables the handler of mutation `N` declares, with the types of their defaults. */
+export type MutationLocals<N extends MutationName> = Found<LocalsIn<NuxtAirplaneHandlerExports[keyof NuxtAirplaneHandlerExports], N, '~mutationLocals'>>
+
+/** What `useQuery` takes: the query's variables, and any of its handler's local variables. */
+export type QueryInput<N extends QueryName> = QueryVariables<N> & Partial<Omit<QueryLocals<N>, keyof QueryVariables<N>>>
+/** What `mutate` takes: the mutation's variables, and any of its handler's local variables. */
+export type MutationInput<N extends MutationName> = MutationVariables<N> & Partial<Omit<MutationLocals<N>, keyof MutationVariables<N>>>
 
 /** What the runtime knows about an inferred table: the field it is keyed on. */
 export interface EntityInfo {
@@ -47,6 +90,11 @@ export interface OperationDocument {
   source: string
   /** SHA-256 of `source`, hex, computed at build time; what persisted queries send instead of the text. */
   hash?: string
+  /**
+   * The names of the variables the operation declares: what is sent. Any
+   * other key a caller passes is a local variable of the handler, or dropped.
+   */
+  variables?: string[]
 }
 
 /**
@@ -87,7 +135,10 @@ export interface BaseRow {
 export interface MutationRow {
   id: number
   document: string
+  /** What is sent: the variables the operation declares. */
   variables: unknown
+  /** The handler's local variables it was queued with, defaults filled in. Never sent. */
+  local?: Locals
   status: MutationStatus
   createdAt: number
   /** Human-readable summary from the handler's `describe`, or the humanized document name. */
@@ -155,13 +206,16 @@ export type AirplaneDexie = Dexie & {
   [K in keyof NuxtAirplaneStores]: Table<NuxtAirplaneStores[K], IndexableType>
 }
 
-export interface HandlerContext<V = unknown> {
+export interface HandlerContext<V = unknown, L = Locals> {
   db: AirplaneDexie
+  /** The variables that are sent: those the operation declares. */
   variables: V
+  /** The handler's local variables, defaults filled in. Never sent. */
+  local: L
 }
 
 /** What `apply` receives: the handler context plus a way to mint placeholder ids. */
-export interface ApplyContext<V = unknown> extends HandlerContext<V> {
+export interface ApplyContext<V = unknown, L = Locals> extends HandlerContext<V, L> {
   /**
    * A placeholder id for a row the server will assign an id to. Mutations
    * queued later that reference it are rewritten with the real id before they
@@ -172,7 +226,7 @@ export interface ApplyContext<V = unknown> extends HandlerContext<V> {
 }
 
 /** What `reconcile` receives: the handler context plus `resolve`. */
-export interface ReconcileContext<V = unknown> extends HandlerContext<V> {
+export interface ReconcileContext<V = unknown, L = Locals> extends HandlerContext<V, L> {
   /** The ids `apply` minted with `tempId()`, in call order; empty for a mutation sent with `execute`. */
   tempIds: string[]
   /**
@@ -186,29 +240,37 @@ export interface ReconcileContext<V = unknown> extends HandlerContext<V> {
   resolve: (tempId: string, id: string) => Promise<void>
 }
 
-export interface MutationHandler<N extends MutationName = MutationName> {
+// eslint-disable-next-line @typescript-eslint/no-empty-object-type
+export interface MutationHandler<N extends MutationName = MutationName, L extends Locals = {}> {
+  /**
+   * Local variables and their defaults: values `mutate` takes next to the
+   * mutation's own, which reach every hook as `local` and are kept on the
+   * outbox row, but are never sent. The object is their type as well, so
+   * give a union or an enum its type with `as`.
+   */
+  local?: L & NoClash<MutationVariables<N>>
   /**
    * A human-readable summary for the pending list, e.g. "Archive North Warehouse".
    * Computed once when the mutation is queued, before `apply`, so it can read
    * the data as it was. Defaults to the humanized document name.
    */
-  describe?: string | ((ctx: HandlerContext<MutationVariables<N>>) => string | Promise<string>)
+  describe?: string | ((ctx: HandlerContext<MutationVariables<N>, L>) => string | Promise<string>)
   /**
    * Runs as soon as the mutation is queued, so the UI reflects it immediately.
    * It runs inside a Dexie transaction and every write is recorded for rollback.
    */
-  apply?: (ctx: ApplyContext<MutationVariables<N>>) => unknown
+  apply?: (ctx: ApplyContext<MutationVariables<N>, L>) => unknown
   /**
    * Runs with the server's response once the mutation has been sent. Merge
    * server-assigned values into the local data here and call `resolve` for
    * every id minted with `tempId()`.
    */
-  reconcile?: (ctx: ReconcileContext<MutationVariables<N>>, result: MutationResult<N>) => unknown
+  reconcile?: (ctx: ReconcileContext<MutationVariables<N>, L>, result: MutationResult<N>) => unknown
   /**
    * Runs when a queued mutation is rolled back, before the rows it changed go
    * back to the server's version: for what `apply` did outside the database.
    */
-  revert?: (ctx: HandlerContext<MutationVariables<N>>) => unknown
+  revert?: (ctx: HandlerContext<MutationVariables<N>, L>) => unknown
   /**
    * Folds a mutation queued later into one of the same document that is still
    * waiting, so ten quantity changes of one cart line reach the server as
@@ -217,18 +279,27 @@ export interface MutationHandler<N extends MutationName = MutationName> {
    * same thing. Must be pure. The earlier one is looked for among the
    * mutations that changed a row this one changed too. Only a mutation that
    * has never been sent is merged into, and only when nothing queued in
-   * between touched the same rows.
+   * between touched the same rows, and only when both were queued with the
+   * same local variables.
    */
   merge?: (earlier: MutationVariables<N>, later: MutationVariables<N>) => MutationVariables<N> | null | undefined | false
   /** Queries to refetch after the mutation has been sent. Defaults to every active query. */
   refetch?: QueryName[]
 }
 
-export type MutationHandlers = { [N in MutationName]?: MutationHandler<N> }
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export type MutationHandlers = { [N in MutationName]?: MutationHandler<N, any> }
 
 export interface QueryHandlerContext<V = unknown> {
   db: AirplaneDexie
+  /** The variables that are sent: those the query declares. */
   variables: V
+}
+
+/** What `read` receives: the query's variables and the handler's local ones. */
+export interface QueryReadContext<V = unknown, L = Locals> extends QueryHandlerContext<V> {
+  /** The handler's local variables, defaults filled in. Never sent, and not part of the query key. */
+  local: L
 }
 
 /**
@@ -244,7 +315,16 @@ export interface QueryPrefetch<N extends QueryName = QueryName> {
   when?: () => boolean
 }
 
-export interface QueryHandler<N extends QueryName = QueryName> {
+// eslint-disable-next-line @typescript-eslint/no-empty-object-type
+export interface QueryHandler<N extends QueryName = QueryName, L extends Locals = {}> {
+  /**
+   * Local variables and their defaults: values `useQuery` takes next to the
+   * query's own, which only `read` gets, as `local`. They are never sent and
+   * are not part of the query key, so changing one runs `read` again without
+   * a fetch. The object is their type as well, so give a union or an enum
+   * its type with `as`.
+   */
+  local?: L & NoClash<QueryVariables<N>>
   /** Fetch every following page in the background once a page of this query is fetched. */
   prefetch?: QueryPrefetch<N>
   /** Writes a fresh response into the tables. Runs inside a Dexie transaction. */
@@ -255,11 +335,12 @@ export interface QueryHandler<N extends QueryName = QueryName> {
    * observed and `data` stays live. Without it the query is served from the
    * network only.
    */
-  read?: (ctx: QueryHandlerContext<QueryVariables<N>>) =>
+  read?: (ctx: QueryReadContext<QueryVariables<N>, L>) =>
     QueryResult<N> | null | undefined | Promise<QueryResult<N> | null | undefined>
 }
 
-export type QueryHandlers = { [N in QueryName]?: QueryHandler<N> }
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export type QueryHandlers = { [N in QueryName]?: QueryHandler<N, any> }
 
 /** Extra Dexie tables, in Dexie's `stores()` syntax. */
 export interface AirplaneStores {
@@ -363,7 +444,7 @@ export interface AirplaneEngine {
   enqueue: (name: string, input: unknown) => Promise<MutationRow>
   acknowledge: (id: number) => Promise<void>
   rollback: (id: number) => Promise<MutationRow[]>
-  reconcile: (name: string, variables: unknown, tempIds: string[], result: unknown) => Promise<void>
+  reconcile: (name: string, variables: unknown, tempIds: string[], result: unknown, local?: Locals) => Promise<void>
   clearCache: () => Promise<void>
   clear: () => Promise<void>
   /** Drops the least recently fetched rows, keeping those of the queries in `keep` and of the queue. Resolves with how many went. */

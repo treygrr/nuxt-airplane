@@ -156,6 +156,25 @@ export default defineQueryHandlers({
 })
 ```
 
+A filter the server has no argument for goes in the handler's `local`, with
+its default. `useQuery` takes it next to the query's own variables; it reaches
+`read`, is never sent and is not part of the query key, so toggling it reads
+the tables again and fetches nothing. Mutation handlers take `local` too, for
+values their hooks need and the server should not see.
+
+```ts
+export default defineQueryHandler('GetSiteItems', {
+  local: { lowStock: false },
+  store: ({ db }, data) => db.SiteItem.bulkPut(data.siteItems.edges.map(e => e.node)),
+  read: async ({ db, variables, local }) => ({
+    siteItems: (await db.SiteItem.where('siteId').equals(variables.siteId).toArray())
+      .filter(i => !local.lowStock || i.onHand < i.min),
+  }),
+})
+
+useQuery('GetSiteItems', () => ({ siteId, lowStock: lowStockOnly.value }))
+```
+
 Rollback works without a `revert` handler: for every row a queued mutation
 changes, in any table, the server's version is kept and put back.
 

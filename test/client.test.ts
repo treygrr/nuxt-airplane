@@ -1680,7 +1680,7 @@ describe('refetching after a sync', () => {
 
   function mount(client: AirplaneClient, name: string, variables?: unknown) {
     const refresh = vi.fn(async () => void await client.fetchQuery(name, variables))
-    client.active.set(queryKey(name, variables), refresh)
+    client.mount(queryKey(name, variables), refresh)
     return refresh
   }
 
@@ -1772,7 +1772,7 @@ describe('room', () => {
     await client.enqueue('RenameSite', { id: 's1', name: 'Mine' })
 
     // Mounted: its record is not a candidate at all.
-    client.active.set(queryKey('GetSite', { id: 's1' }), async () => {})
+    client.mount(queryKey('GetSite', { id: 's1' }), async () => {})
     expect(await client.evict()).toBe(0)
     // The oldest record that is left goes, but GetSites still lists its row.
     expect((await client.db.queries.toArray()).map(q => q.document).sort()).toEqual(['GetSite', 'GetSites'])
@@ -1897,6 +1897,27 @@ describe('engine in a worker', () => {
     expect((await cachedSites(client)).map(s => s.id)).toEqual(['s1', 's2', 's3'])
     expect(await client.db.base.count()).toBe(0)
     expect(calls).toEqual(expect.arrayContaining(['ready', 'storeResponse', 'enqueue', 'rollback', 'reconcile', 'acknowledge']))
+  })
+
+  it('carries local variables to the hooks in the worker, and not to the server', async () => {
+    const declared = Object.fromEntries(Object.entries(documents).map(([name, doc]) => [name, { ...doc, variables: [...doc.source.matchAll(/\$(\w+):/g)].map(m => m[1]!) }]))
+    const reconciled: unknown[] = []
+    const { client } = createWorkerClient({
+      RenameSite: {
+        local: { suffix: '' },
+        apply: ({ db, variables, local }: Ctx<{ id: string, name: string }> & { local: { suffix: string } }) => sites(db).update(variables.id, { name: variables.name + local.suffix }),
+        reconcile: ({ local }: { local: unknown }) => void reconciled.push(local),
+      },
+    } as unknown as MutationHandlers, { documents: declared })
+    await client.fetchQuery('GetSites', undefined)
+    client.goOffline()
+    const row = await client.enqueue('RenameSite', { id: 's1', name: 'Renamed', suffix: '*' })
+    expect(row).toMatchObject({ variables: { id: 's1', name: 'Renamed' }, local: { suffix: '*' } })
+    expect((await sites(client.db).get('s1'))?.name).toBe('Renamed*')
+    client.goOnline()
+    await until(async () => (await client.db.mutations.count()) === 0, 'outbox to drain')
+    expect(server.mutations().map(c => c.variables)).toEqual([{ id: 's1', name: 'Renamed' }])
+    expect(reconciled).toEqual([{ suffix: '*' }])
   })
 
   it('takes variables a component hands over as a reactive object', async () => {
@@ -2222,7 +2243,7 @@ describe('execute', () => {
     })
     await client.fetchQuery('GetSites', undefined)
     const refresh = vi.fn(async () => {})
-    client.active.set('GetSites:x', refresh)
+    client.mount('GetSites:x', refresh)
 
     const result = await client.execute<{ renameSite: Site }>('RenameSite', { id: 's1', name: 'Direct' })
     expect(result.renameSite).toMatchObject({ id: 's1', name: 'Direct' })
@@ -2452,5 +2473,198 @@ describe('what a mutation did', () => {
     expect(did(site, undefined).wrote).toEqual(new Set(['Site/s1']))
     // A list that only changed its order is one piece.
     expect(did(site, { ...site, items: [...site.items].reverse() }).wrote).toEqual(new Set(['Site/s1#items']))
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Local variables: passed with an operation's own, read by its handler, never sent
+// ---------------------------------------------------------------------------
+
+describe('local variables', () => {
+  /** The documents as the build compiles them: each knows the variables it declares. */
+  const declared = Object.fromEntries(Object.entries(documents).map(([name, doc]) => [name, {
+    ...doc,
+    variables: [...doc.source.matchAll(/\$(\w+):/g)].map(m => m[1]!),
+  }]))
+
+  /** `GetSites` with a local filter on the name, read from the tables. */
+  const store = vi.fn(({ db }: { db: AirplaneDexie }, data: { sites: Site[] }) => sites(db).bulkPut(data.sites))
+  const read = vi.fn(async ({ db, local }: { db: AirplaneDexie, local: { startsWith: string, archived: boolean } }) => ({
+    sites: (await sites(db).toArray()).filter(s => s.name.startsWith(local.startsWith) && (local.archived || !s.archived)),
+  }))
+  const localQueries = {
+    ...siteQueries,
+    GetSites: { local: { startsWith: '', archived: false }, store, read },
+  } as unknown as QueryHandlers
+
+  function createLocalClient(extra: Partial<AirplaneClientOptions> = {}) {
+    return createClient(server, { documents: declared, queryHandlers: localQueries, ...extra })
+  }
+
+  beforeEach(() => {
+    store.mockClear()
+    read.mockClear()
+  })
+
+  it('sends only what the operation declares, and hands `read` the rest with the defaults filled in', async () => {
+    const client = createLocalClient()
+    await client.fetchQuery('GetSites', { startsWith: 'N' })
+    expect(server.calls.map(c => c.variables)).toEqual([undefined])
+    expect(store).toHaveBeenCalledWith(expect.objectContaining({ variables: undefined }), expect.anything())
+    expect(store.mock.calls[0]![0]).not.toHaveProperty('local')
+
+    const data = watchData(client, 'GetSites', { startsWith: 'N' })
+    await until(() => !!data(), 'read')
+    expect(data()).toEqual({ sites: [expect.objectContaining({ name: 'North' })] })
+    expect(read).toHaveBeenLastCalledWith(expect.objectContaining({ variables: undefined, local: { startsWith: 'N', archived: false } }))
+  })
+
+  it('keeps local variables out of the query key: one fetch record, one request in flight', async () => {
+    const client = createLocalClient()
+    await Promise.all([
+      client.fetchQuery('GetSites', { startsWith: 'N' }),
+      client.fetchQuery('GetSites', { startsWith: 'S', archived: true }),
+      client.fetchQuery('GetSites', undefined),
+    ])
+    expect(server.calls).toHaveLength(1)
+    expect((await client.db.queries.toArray()).map(r => r.key)).toEqual([queryKey('GetSites', undefined)])
+    expect(client.splitQuery('GetSites', { startsWith: 'N' }).key).toBe(queryKey('GetSites', undefined))
+  })
+
+  it('keeps the operation\'s own variables in the key, and sends them as they were passed', async () => {
+    const client = createClient(server, {
+      documents: declared,
+      queryHandlers: { ...siteQueries, GetSite: { ...(siteQueries as Record<string, object>).GetSite, local: { highlight: false } } } as unknown as QueryHandlers,
+    })
+    await client.fetchQuery('GetSite', { id: 's1', highlight: true })
+    expect(server.calls[0]!.variables).toEqual({ id: 's1' })
+    expect(client.splitQuery('GetSite', { id: 's1', highlight: true })).toEqual({ server: { id: 's1' }, local: { highlight: true }, key: queryKey('GetSite', { id: 's1' }) })
+    // Nothing local passed: the same object goes out.
+    const input = { id: 's2' }
+    expect(client.splitQuery('GetSite', input).server).toBe(input)
+  })
+
+  it('drops a key that is neither the operation\'s nor a local one, rather than send what the server rejects', async () => {
+    const client = createLocalClient()
+    await client.fetchQuery('GetSite', { id: 's1', typo: 1 })
+    expect(server.calls[0]!.variables).toEqual({ id: 's1' })
+  })
+
+  it('a local variable left undefined takes its default', () => {
+    const client = createLocalClient()
+    expect(client.splitQuery('GetSites', { startsWith: undefined }).local).toEqual({ startsWith: '', archived: false })
+  })
+
+  it('never hands a local variable to `prefetch.next`, and sends what it returns', async () => {
+    const next = vi.fn((data: { searchItems: { pageInfo: { hasNextPage: boolean, endCursor: string } } }, variables: Record<string, unknown> | undefined) =>
+      data.searchItems.pageInfo.hasNextPage ? { ...variables, after: data.searchItems.pageInfo.endCursor } : null)
+    const client = createClient(server, {
+      documents: declared,
+      queryHandlers: { SearchItems: { local: { only: 'x' }, prefetch: { next }, store: () => {}, read: () => null } } as unknown as QueryHandlers,
+    })
+    await client.fetchQuery('SearchItems', { only: 'y' })
+    await until(() => client.state.prefetching === 0 && server.calls.length === 3, 'prefetch')
+    expect(next.mock.calls.map(([, variables]) => variables)).toEqual([undefined, { after: '2' }, { after: '4' }])
+    expect(server.calls.map(c => c.variables)).toEqual([undefined, { after: '2' }, { after: '4' }])
+  })
+
+  it('keeps a refresh for each mounted query, also two that share a key', async () => {
+    const client = createLocalClient()
+    const a = vi.fn(async () => {})
+    const b = vi.fn(async () => {})
+    const key = client.splitQuery('GetSites', { startsWith: 'N' }).key
+    const unmountA = client.mount(key, a)
+    client.mount(client.splitQuery('GetSites', { startsWith: 'S' }).key, b)
+    unmountA()
+    await client.refetchActive()
+    expect(a).not.toHaveBeenCalled()
+    expect(b).toHaveBeenCalledTimes(1)
+  })
+
+  /** `RenameSite` with a local `note` the hooks see and the server never does. */
+  let seen: Record<string, unknown[]> = {}
+  const saw = (hook: string) => (ctx: { local: unknown }) => void (seen[hook] ??= []).push(ctx.local)
+  const localMutations = {
+    ...createHandlers,
+    RenameSite: {
+      local: { note: '', siteRef: '' },
+      describe: (ctx: Ctx<{ id: string, name: string }> & { local: { note: string } }) => (saw('describe')(ctx), `Rename (${ctx.local.note})`),
+      apply: (ctx: Ctx<{ id: string, name: string }> & { local: { note: string } }) => {
+        saw('apply')(ctx)
+        return sites(ctx.db).update(ctx.variables.id, { name: `${ctx.variables.name}${ctx.local.note}` })
+      },
+      reconcile: saw('reconcile'),
+      revert: saw('revert'),
+    },
+  } as unknown as MutationHandlers
+
+  beforeEach(() => {
+    seen = {}
+  })
+
+  it('queues local variables on the outbox row, hands them to every hook and never sends them', async () => {
+    const client = createClient(server, { documents: declared, mutationHandlers: localMutations })
+    await client.fetchQuery('GetSites', undefined)
+    client.goOffline()
+    const row = await client.enqueue('RenameSite', { id: 's1', name: 'A', note: '!' })
+    expect(row).toMatchObject({ variables: { id: 's1', name: 'A' }, local: { note: '!', siteRef: '' }, description: 'Rename (!)' })
+    expect((await sites(client.db).get('s1'))?.name).toBe('A!')
+
+    client.goOnline()
+    await until(async () => (await client.db.mutations.count()) === 0, 'outbox to drain')
+    expect(server.mutations().map(c => c.variables)).toEqual([{ id: 's1', name: 'A' }])
+    expect(seen.describe).toEqual([{ note: '!', siteRef: '' }])
+    expect(seen.reconcile).toEqual([{ note: '!', siteRef: '' }])
+    expect(seen.apply!.every(local => (local as { note: string }).note === '!')).toBe(true)
+  })
+
+  it('hands them to `apply` again on a rebase, and to `revert` on a rollback', async () => {
+    const client = createClient(server, { documents: declared, mutationHandlers: localMutations })
+    await client.fetchQuery('GetSites', undefined)
+    client.goOffline()
+    const row = await client.enqueue('RenameSite', { id: 's1', name: 'A', note: '?' })
+    // A response carrying the row the queue changed puts the queue on again.
+    await client.engine.storeResponse('GetSites', undefined, { sites: [{ id: 's1', name: 'Fresh', archived: false }] })
+    expect(seen.apply).toEqual([{ note: '?', siteRef: '' }, { note: '?', siteRef: '' }])
+    expect((await sites(client.db).get('s1'))?.name).toBe('A?')
+    await client.rollback(row.id)
+    expect(seen.revert).toEqual([{ note: '?', siteRef: '' }])
+    expect((await sites(client.db).get('s1'))?.name).toBe('Fresh')
+  })
+
+  it('links and rewrites a placeholder carried in a local variable, as in the variables', async () => {
+    const client = createClient(server, { documents: declared, mutationHandlers: localMutations })
+    await client.fetchQuery('GetSites', undefined)
+    client.goOffline()
+    const create = await client.enqueue('CreateSite', { name: 'West' })
+    const tmp = (await cachedSites(client)).find(s => s.name === 'West')!.id
+    const rename = await client.enqueue('RenameSite', { id: 's1', name: 'B', siteRef: tmp })
+    expect(rename.dependsOn).toEqual([create.id])
+
+    client.goOnline()
+    await until(async () => (await client.db.mutations.count()) === 0, 'outbox to drain')
+    expect(seen.reconcile).toEqual([{ note: '', siteRef: 's3' }])
+  })
+
+  it('merges two queued edits only when their local variables are the same', async () => {
+    const merging = {
+      ...localMutations,
+      RenameSite: { ...(localMutations as Record<string, object>).RenameSite, merge: (a: { id: string }, b: { id: string }) => (a.id === b.id ? b : null) },
+    } as unknown as MutationHandlers
+    const client = createClient(server, { documents: declared, mutationHandlers: merging })
+    await client.fetchQuery('GetSites', undefined)
+    client.goOffline()
+    const first = await client.enqueue('RenameSite', { id: 's1', name: 'A', note: '1' })
+    const same = await client.enqueue('RenameSite', { id: 's1', name: 'B', note: '1' })
+    const other = await client.enqueue('RenameSite', { id: 's1', name: 'C', note: '2' })
+    expect(same.id).toBe(first.id)
+    expect(other.id).not.toBe(first.id)
+  })
+
+  it('splits them for `execute` too, and hands them to `reconcile`', async () => {
+    const client = createClient(server, { documents: declared, mutationHandlers: localMutations })
+    await client.execute('RenameSite', { id: 's1', name: 'Direct', note: '#' })
+    expect(server.mutations().map(c => c.variables)).toEqual([{ id: 's1', name: 'Direct' }])
+    expect(seen.reconcile).toEqual([{ note: '#', siteRef: '' }])
   })
 })
