@@ -103,7 +103,7 @@ export interface ModuleOptions {
   handlers: HandlersOptions
   /** The local database. */
   database: DatabaseOptions
-  /** Extra options passed to the `typescript-operations` codegen plugin. `scalars` is merged with the module's `ID` mapping. */
+  /** Extra options passed to the `typescript-operations` codegen plugin. `scalars` is merged with the module's `ID` mapping; `nonOptionalTypename: true` also has `__typename` asked for in every selection set sent. */
   codegen: Record<string, unknown>
   /**
    * The names the composables are auto-imported under, for an app where one
@@ -243,7 +243,7 @@ export default defineNuxtModule<ModuleOptions>({
 
     let docs: LoadedDocuments = { operations: {}, documentNodes: [], files: [], entities: {}, rows: {} }
     async function reloadDocuments() {
-      docs = await loadDocuments(options.documents, srcDir, logger, schema)
+      docs = await loadDocuments(options.documents, srcDir, logger, schema, { nonOptionalTypename: options.codegen.nonOptionalTypename === true })
       return docs
     }
 

@@ -104,6 +104,12 @@ export interface OperationDocument {
    * other key a caller passes is a local variable of the handler, or dropped.
    */
   variables?: string[]
+  /**
+   * The root type's name (`Query`), set when codegen's `nonOptionalTypename`
+   * has `__typename` asked for everywhere: the client adds it to what `read`
+   * returns when the handler left it out.
+   */
+  root?: string
 }
 
 /**
@@ -364,6 +370,13 @@ export interface QueryPrefetch<N extends QueryName = QueryName> {
   when?: () => boolean
 }
 
+/**
+ * What `read` returns: the query's result, with the root's `__typename`
+ * (`'Query'`, typed under codegen's `nonOptionalTypename`) left to the
+ * client, which adds it. Nested objects keep theirs: rows carry it.
+ */
+export type ReadResult<T> = T extends { __typename: infer R } ? Omit<T, '__typename'> & { __typename?: R } : T
+
 // eslint-disable-next-line @typescript-eslint/no-empty-object-type
 export interface QueryHandler<N extends QueryName = QueryName, L extends Locals = {}> {
   /**
@@ -392,7 +405,7 @@ export interface QueryHandler<N extends QueryName = QueryName, L extends Locals 
    * what it returns.
    */
   read?: (ctx: QueryReadContext<QueryVariables<N>, L>) =>
-    QueryResult<N> | null | undefined | Promise<QueryResult<N> | null | undefined>
+    ReadResult<QueryResult<N>> | null | undefined | Promise<ReadResult<QueryResult<N>> | null | undefined>
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
