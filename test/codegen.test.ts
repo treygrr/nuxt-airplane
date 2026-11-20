@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto'
 import { mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { buildSchema, graphqlSync, getIntrospectionQuery } from 'graphql'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { generateTypes, loadDocuments, loadSchema } from '../src/codegen'
@@ -118,15 +119,15 @@ describe('entities', () => {
     // Selected in every node selection of Site (GetSites, GetSite): required.
     // Only in some: optional. GetSiteItems and RenameSite only navigate to
     // children or select the id, so they do not loosen the row; `items` is
-    // on it all the same. A nested entity selected with its id: its row
-    // type. Any other object: the fields selected on it, merged the same
-    // way, never the schema type (User has a required email the documents
-    // do not always select). A union: one object per member selected.
+    // on it all the same. A nested object, another entity included: the
+    // fields selected on it there, merged the same way, never the schema
+    // type (User has a required email the documents do not always select)
+    // and never the other entity's row. A union: one object per member selected.
     expect(docs.rows.Site).toEqual({
       id: { ts: 'string', required: true },
       name: { ts: 'string', required: true },
       archived: { ts: 'boolean', required: false },
-      items: { ts: 'Array<SiteItemRow>', required: false },
+      items: { ts: 'Array<{ id: string, name: string, onHand: number }>', required: false, entity: true },
       owner: { ts: '{ name: string, email?: string } | null', required: true },
       contact: { ts: '{ name: string } | { size: number }', required: false },
       tags: { ts: 'Array<string> | null', required: false },
@@ -164,11 +165,79 @@ describe('entities', () => {
       id: { ts: 'string', required: true },
       name: { ts: 'string', required: true },
       status: { ts: 'Status', required: true },
-      items: { ts: '{ totalCount: number, nodes: Array<ItemRow> | null }', required: false },
+      items: { ts: '{ totalCount: number, nodes: Array<{ id: string, label: string }> | null }', required: false, entity: true },
       settings: { ts: '{ theme: string }', required: false },
     })
     expect(docs.rows.Item).toEqual({ id: { ts: 'string', required: true }, label: { ts: 'string', required: true } })
   })
+
+  it('does not let a mutation\'s result decide what a row holds, unless no query selects the type', async () => {
+    const schema = buildSchema(`
+      type Site { id: ID!, name: String!, archived: Boolean! }
+      type Receipt { id: ID!, total: Int!, note: String }
+      type Query { sites: [Site!]! }
+      type Mutation { renameSite(id: ID!, name: String!): Site!, pay: Receipt!, refund: Receipt! }
+    `)
+    const dir = await tempDir()
+    await writeFile(join(dir, 'ops.gql'), `
+      query GetSites { sites { id name archived } }
+      mutation RenameSite($id: ID!, $name: String!) { renameSite(id: $id, name: $name) { id name } }
+      mutation Pay { pay { id total note } }
+      mutation Refund { refund { id total } }
+    `)
+    const docs = await loadDocuments(['*.gql'], dir, log(), schema)
+    // The rename returns two fields of a row the query stores in full: `archived` stays required.
+    expect(docs.rows.Site).toEqual({
+      id: { ts: 'string', required: true },
+      name: { ts: 'string', required: true },
+      archived: { ts: 'boolean', required: true },
+    })
+    // Only mutations return a receipt, so they decide between themselves.
+    expect(docs.rows.Receipt).toEqual({
+      id: { ts: 'string', required: true },
+      total: { ts: 'number', required: true },
+      note: { ts: 'string | null', required: false },
+    })
+  })
+
+  it('lets a write leave off the fields that hold other entities, which may live in their own table', async () => {
+    const schema = buildSchema(`
+      type Item { id: ID!, name: String! }
+      type Address { city: String! }
+      type List { id: ID!, name: String!, address: Address!, items: [Item!]! }
+      type Query { lists: [List!]! }
+    `)
+    const dir = await tempDir()
+    await writeFile(join(dir, 'ops.gql'), 'query GetLists { lists { id name address { city } items { id name } } }')
+    const docs = await loadDocuments(['*.gql'], dir, log(), schema)
+    const out = await generateTypes(schema, docs)
+    // Read as it was stored by the query: everything there.
+    expect(out).toContain('export type ListRow = { id: string, name: string, address: { city: string }, items: Array<{ id: string, name: string }> }')
+    // Written with or without `items`; the address has no table to go to, so it stays required.
+    expect(out).toContain(`export type ListRowWrite = Omit<ListRow, "items"> & Partial<Pick<ListRow, "items">>`)
+    expect(out).toMatch(/interface NuxtAirplaneWrites \{\s+"List": ListRowWrite\s+\}/)
+    // A row with nothing to leave off is written as it is read.
+    expect(out).not.toContain('ItemRowWrite')
+  })
+
+  it('types handlers written without a cast, also where two types point at each other', async () => {
+    const ts = await import('typescript')
+    const fixture = fileURLToPath(new URL('./fixtures/rows', import.meta.url))
+    const schema = buildSchema(await readFile(join(fixture, 'schema.graphql'), 'utf8'))
+    const docs = await loadDocuments(['ops.gql'], fixture, log(), schema)
+    // Site holds items and each item its site: neither row is typed by the other's.
+    expect(docs.rows.Site!.items!.ts).not.toContain('Row')
+    expect(docs.rows.Item!.site!.ts).toBe('{ id: string, name: string }')
+    const dir = await tempDir()
+    const types = join(dir, 'nuxt-airplane.d.ts')
+    await writeFile(types, await generateTypes(schema, docs))
+    const program = ts.createProgram([types, join(fixture, 'handlers.ts')], {
+      noEmit: true, strict: true, skipLibCheck: true, types: [],
+      target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext, moduleResolution: ts.ModuleResolutionKind.Bundler,
+    })
+    const problems = ts.getPreEmitDiagnostics(program).map(d => ts.flattenDiagnosticMessageText(d.messageText, '\n'))
+    expect(problems).toEqual([])
+  }, 30_000)
 
   it('types a partly covered union or interface as the result does, so rows go in and come back out', async () => {
     const schema = buildSchema(`
@@ -198,7 +267,7 @@ describe('entities', () => {
 
   it('emits a row type per entity and maps them onto NuxtAirplaneStores', async () => {
     const out = await generateTypes(NESTED, await nestedDocs())
-    expect(out).toContain('export type SiteRow = { id: string, name: string, archived?: boolean, items?: Array<SiteItemRow>, owner: { name: string, email?: string } | null, contact?: { name: string } | { size: number }, tags?: Array<string> | null }')
+    expect(out).toContain('export type SiteRow = { id: string, name: string, archived?: boolean, items?: Array<{ id: string, name: string, onHand: number }>, owner: { name: string, email?: string } | null, contact?: { name: string } | { size: number }, tags?: Array<string> | null }')
     expect(out).toContain('export type SiteItemRow = { id: string, name: string, onHand: number }')
     expect(out).toContain('"Site": SiteRow')
     expect(out).toContain('"SiteItem": SiteItemRow')

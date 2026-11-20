@@ -1,0 +1,12 @@
+scalar DateTime
+enum Status { OPEN CLOSED }
+type User { id: ID!, name: String!, email: String }
+type Item { id: ID!, name: String!, sku: String!, onHand: Int!, site: Site!, status: Status! }
+type Site { id: ID!, name: String!, archived: Boolean!, createdAt: DateTime!, owner: User, items: [Item!]!, address: Address }
+type Address { street: String!, city: String }
+type ItemEdge { cursor: String!, node: Item! }
+type PageInfo { hasNextPage: Boolean!, endCursor: String }
+type ItemConnection { edges: [ItemEdge!]!, pageInfo: PageInfo!, totalCount: Int! }
+union SearchHit = Site | Item
+type Query { sites: [Site!]!, site(id: ID!): Site, items(siteId: ID!, first: Int, after: String): ItemConnection!, search(q: String!): [SearchHit!]!, me: User }
+type Mutation { renameSite(id: ID!, name: String!): Site!, createSite(name: String!): Site!, setOnHand(id: ID!, onHand: Int!): Item! }

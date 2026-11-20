@@ -33,3 +33,18 @@ describe('humanize', () => {
     expect(humanize('UpdateSKU')).toBe('Update sku')
   })
 })
+
+describe('hasFields', () => {
+  it('says whether a row holds every field asked for, null counting as held', async () => {
+    const { hasFields } = await import('../src/runtime/hasFields')
+    const row: { id: string, name?: string, owner?: { id: string } | null } = { id: 's1', owner: null }
+    expect(hasFields(row, 'id')).toBe(true)
+    expect(hasFields(row, 'owner')).toBe(true)
+    expect(hasFields(row, 'owner', 'name')).toBe(false)
+    expect(hasFields({ ...row, name: undefined }, 'name')).toBe(false)
+    expect(hasFields(undefined as typeof row | undefined, 'id')).toBe(false)
+    expect(hasFields(null as typeof row | null, 'id')).toBe(false)
+    // Narrowed: the fields are there to use.
+    if (hasFields(row, 'name')) expect(row.name.length).toBeGreaterThan(0)
+  })
+})

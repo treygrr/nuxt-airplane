@@ -28,6 +28,15 @@ declare global {
   interface NuxtAirplaneStores {}
 
   /**
+   * What may be written to a table, where that is less than its row: the
+   * generated types fill it for each row with fields that hold other
+   * entities. Those are optional when writing, since a handler may keep
+   * them in the other entity's own table and leave them off this row.
+   */
+  // eslint-disable-next-line @typescript-eslint/no-empty-object-type
+  interface NuxtAirplaneWrites {}
+
+  /**
    * The default export of every file in the handlers directory, by file.
    * Filled by the generated `types/nuxt-airplane-handlers.d.ts`, so the
    * composables know the local variables each handler declares.
@@ -203,7 +212,7 @@ export type AirplaneDexie = Dexie & {
   meta: EntityTable<MetaRow, 'key'>
   base: Table<BaseRow, [string, IndexableType]>
 } & {
-  [K in keyof NuxtAirplaneStores]: Table<NuxtAirplaneStores[K], IndexableType>
+  [K in keyof NuxtAirplaneStores]: Table<NuxtAirplaneStores[K], IndexableType, K extends keyof NuxtAirplaneWrites ? NuxtAirplaneWrites[K] : NuxtAirplaneStores[K]>
 }
 
 export interface HandlerContext<V = unknown, L = Locals> {
@@ -434,6 +443,9 @@ export class OfflineError extends Error {
 
 /** Whether a value is a placeholder id minted by `tempId()`, the id of a row the server has not named yet. */
 export { isTempId } from './tempIds'
+
+/** Whether a row holds every one of the given fields, typed as holding them: for a `read` that needs fields a row may lack. */
+export { hasFields } from './hasFields'
 
 export interface AirplaneRuntimeConfig {
   endpoint: string

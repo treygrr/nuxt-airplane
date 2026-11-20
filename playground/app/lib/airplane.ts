@@ -2,12 +2,10 @@
 
 import type { AirplaneDexie } from '#nuxt-airplane'
 
-type Products = { id: string, variants: { id: string }[] }[]
-
 /** Stores products as the response has them, and their variants on their own for lookup by id. */
-export async function putProducts(db: AirplaneDexie, products: Products) {
-  await db.Product.bulkPut(products as never)
-  await db.Variant.bulkPut(products.flatMap(p => p.variants) as never)
+export async function putProducts(db: AirplaneDexie, products: NuxtAirplaneStores['Product'][]) {
+  await db.Product.bulkPut(products)
+  await db.Variant.bulkPut(products.flatMap(p => p.variants))
 }
 
 /**
