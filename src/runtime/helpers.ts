@@ -1,7 +1,7 @@
 import { hash } from 'ohash'
 import type { IndexableType } from 'dexie'
 import { rowKey } from './db'
-import type { AirplaneDexie, EntityInfo, MutationRow } from './types'
+import type { AirplaneDexie, MutationRow } from './types'
 
 /** `ArchiveSite` → `Archive site`, `SendHTTPRequest` → `Send http request`, for mutations without a `describe`. */
 export function humanize(name: string) {
@@ -168,24 +168,7 @@ export function heldBack(rows: MutationRow[]): Set<number> {
   return withDependents(rows, rows.filter(row => row.status === 'failed').map(row => row.id), true)
 }
 
-/**
- * The tables to open: one per entity keyed on its id, plus the user's. A
- * user entry for an entity table lists extra indexes; the key is implied.
- */
-export function mergeStores(entities: Record<string, EntityInfo>, user: Record<string, string>) {
-  const stores: Record<string, string> = {}
-  for (const [name, { key }] of Object.entries(entities)) stores[name] = `&${key}`
-  for (const [name, spec] of Object.entries(user)) {
-    const entity = entities[name]
-    if (!entity) {
-      stores[name] = spec
-      continue
-    }
-    const extra = spec.split(',').map(s => s.trim()).filter(s => s && s.replace(/^[&+*]+/, '') !== entity.key)
-    stores[name] = [`&${entity.key}`, ...extra].join(', ')
-  }
-  return stores
-}
+export { mergeStores } from './stores'
 
 // ---------------------------------------------------------------------------
 // What the client and the engine both read

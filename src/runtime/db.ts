@@ -1,16 +1,9 @@
 import { Dexie } from 'dexie'
 import type { DBCoreIndex, DBCoreMutateRequest, DBCoreMutateResponse, DBCoreTable, DBCoreTransaction, IndexableType } from 'dexie'
+import { MODULE_STORES } from './stores'
 import type { AirplaneDexie } from './types'
 
-export const MODULE_STORES = {
-  queries: '&key, document, updatedAt',
-  // Past the queue's order, the indexes answer what queuing and sending ask of
-  // it without reading it all: the rows a mutation changed, what it created
-  // and wrote, the placeholders it minted, and whether it changed nothing.
-  mutations: '++id, status, createdAt, document, unkeyed, *rows, *creates, *writes, *tempIds',
-  meta: '&key',
-  base: '[table+key]',
-}
+export { MODULE_STORES }
 
 /** Tables that hold module bookkeeping rather than cached data. */
 export const BOOKKEEPING_TABLES = new Set(['mutations', 'meta', 'base'])

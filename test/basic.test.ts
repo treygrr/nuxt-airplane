@@ -56,6 +56,16 @@ describe('module', async () => {
     expect(source).toContain('export const unusedEntities = ["Site"]')
   })
 
+  it('writes the database schema to the build directory and to the schema file', async () => {
+    const schema = await built('nuxt-airplane/schema.ts')
+    // The fixture's own table, from its defineAirplaneStores file, and the module's.
+    expect(schema).toContain('sites: \'&id, archived\', // airplane/stores.ts')
+    expect(schema).toContain('mutations: \'++id, status, createdAt, document, unkeyed, *rows, *creates, *writes, *tempIds\',')
+    expect(schema).toContain('export const unused = [\'Site\'] as const')
+    expect(schema).toContain('export const version = 1')
+    expect(await readFile(join(fixture, 'app/airplane.schema.ts'), 'utf8')).toBe(schema)
+  })
+
   it('builds a worker with the handler files that write, by default', async () => {
     expect(await built('nuxt-airplane/worker.mjs')).toContain('nuxt-airplane-worker/entry.mjs?worker')
     const entry = await built('nuxt-airplane-worker/entry.mjs')
