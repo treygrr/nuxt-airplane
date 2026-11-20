@@ -485,7 +485,10 @@ export function createAirplaneClient(options: AirplaneClientOptions) {
     const { server: variables, local, key } = splitQuery(name, input)
     const subscription = liveQuery(async (): Promise<QuerySnapshot> => {
       const row = await db.queries.get(key)
-      const data = await read({ db, result, variables, local })
+      const returned = await read({ db, result, variables, local })
+      // Under `nonOptionalTypename` the result types have the root's `__typename`; `read` need not write it.
+      const root = documents[name]?.root
+      const data = root && returned && typeof returned === 'object' && !('__typename' in returned) ? { ...returned, __typename: root } : returned
       // The tables hold data as soon as any variant of this document has been
       // fetched, so a new filter is not "loading" offline.
       const cached = !!row || (await db.queries.where('document').equals(name).count()) > 0

@@ -146,11 +146,17 @@ interface MergedSelection {
   /** The same, in mutations and subscriptions. They only decide where no query selects the type. */
   weakSelections: number
   fields: Map<string, { count: number, weakCount: number, type: GraphQLOutputType, sub: MergedSelection | null }>
+  /**
+   * `__typename` by response key (an alias included), counted like a field.
+   * It is a meta field, not in the type's fields: its type is the name of
+   * whatever concrete type the object is, so it is rendered where that is known.
+   */
+  typenames: Map<string, { count: number, weakCount: number }>
   /** Fields selected under a type condition that narrows a union or interface, per condition. */
   arms: Map<string, { type: GraphQLNamedType, selection: MergedSelection }>
 }
 
-const emptySelection = (): MergedSelection => ({ selections: 0, weakSelections: 0, fields: new Map(), arms: new Map() })
+const emptySelection = (): MergedSelection => ({ selections: 0, weakSelections: 0, fields: new Map(), typenames: new Map(), arms: new Map() })
 
 /**
  * Whether a field is in every occurrence that decides: those in queries, or,
@@ -158,7 +164,7 @@ const emptySelection = (): MergedSelection => ({ selections: 0, weakSelections: 
  * often a few fields of a row that a query stored in full, written with
  * `update`; counting it would make every other field of the row optional.
  */
-function inEvery(m: MergedSelection, f: { count: number, weakCount: number }) {
+function inEvery(m: Pick<MergedSelection, 'selections' | 'weakSelections'>, f: { count: number, weakCount: number }) {
   if (m.selections > 0) return f.count === m.selections
   return m.weakSelections > 0 && f.weakCount === m.weakSelections
 }
@@ -184,28 +190,64 @@ function fieldType(schema: GraphQLSchema, type: GraphQLOutputType, sub: MergedSe
   return `${inner} | null`
 }
 
-/** Object members from a merged selection; a field is optional unless every counted occurrence selected it. */
-function members(schema: GraphQLSchema, m: MergedSelection, optional = false): string[] {
-  const own = [...m.fields].map(([key, f]) =>
-    `${key}${!optional && inEvery(m, f) ? '' : '?'}: ${fieldType(schema, f.type, f.sub)}`)
+type Member = { key: string, optional: boolean, ts: string }
+
+/** The `__typename` literal for an object that is one of `names`. */
+const typenameType = (names: string[]) => names.length ? names.map(n => `'${n}'`).join(' | ') : 'never'
+
+/**
+ * Object members from a merged selection; a field is optional unless every
+ * counted occurrence selected it. `names` are the concrete types the object
+ * can be there, which `__typename` is one of. `of` is what the occurrences
+ * are counted against: for a type condition, those of the object it is in,
+ * since an occurrence without the condition stores none of its fields.
+ */
+function members(schema: GraphQLSchema, m: MergedSelection, names: string[], optional = false, of: Pick<MergedSelection, 'selections' | 'weakSelections'> = m): Member[] {
+  const typename = [...m.typenames].map(([key, t]) => ({ key, optional: optional || !inEvery(of, t), ts: typenameType(names) }))
+  const own = [...m.fields].map(([key, f]) => ({ key, optional: optional || !inEvery(of, f), ts: fieldType(schema, f.type, f.sub) }))
   // A condition nested inside a condition is rare; its fields are folded in as optional.
-  const nested = [...m.arms.values()].flatMap(a => members(schema, a.selection, true))
-  return [...own, ...nested]
+  const nested = [...m.arms.values()].flatMap(a => members(schema, a.selection, concreteNames(schema, a.type, names), true))
+  return [...typename, ...own, ...nested]
+}
+
+/**
+ * Members as an object type literal. A key selected both outside a type
+ * condition and inside it (`__typename` most often) is one member: present
+ * when either has it, and of both types when they differ.
+ */
+function literal(list: Member[]) {
+  const byKey = new Map<string, Member>()
+  for (const m of list) {
+    const seen = byKey.get(m.key)
+    byKey.set(m.key, !seen ? m : { key: m.key, optional: seen.optional && m.optional, ts: seen.ts === m.ts ? seen.ts : `(${seen.ts}) & (${m.ts})` })
+  }
+  const all = [...byKey.values()].map(m => `${m.key}${m.optional ? '?' : ''}: ${m.ts}`)
+  return all.length ? `{ ${all.join(', ')} }` : 'Record<PropertyKey, never>'
+}
+
+/** The concrete types an object of `type` can be, within `within` when given (the types the enclosing position allows). */
+function concreteNames(schema: GraphQLSchema, type: GraphQLNamedType, within?: string[]) {
+  const names = isAbstractType(type) ? schema.getPossibleTypes(type).map(t => t.name) : [type.name]
+  return within ? names.filter(n => within.includes(n)) : names
 }
 
 /**
  * An inline object type from a merged selection. On a union or interface,
  * one object per type condition, each with the common fields, plus the
  * common fields alone when the conditions do not cover every member, as the
- * generated result types do.
+ * generated result types do. `__typename` is the condition's type in an
+ * arm, and the types no condition covers in the rest.
  */
 function objectType(schema: GraphQLSchema, type: GraphQLNamedType, m: MergedSelection): string {
-  const common = members(schema, { ...m, arms: new Map() })
-  if (!m.arms.size) return `{ ${common.join(', ')} }`
-  const variants = [...m.arms.values()].map(a => `{ ${[...common, ...members(schema, a.selection)].join(', ')} }`)
-  const possible = isAbstractType(type) ? schema.getPossibleTypes(type) : []
-  const covered = possible.every(p => [...m.arms.values()].some(a => a.type === p || (isAbstractType(a.type) && schema.isSubType(a.type, p))))
-  if (!covered) variants.push(common.length ? `{ ${common.join(', ')} }` : 'Record<PropertyKey, never>')
+  const all = concreteNames(schema, type)
+  const common = (names: string[]) => members(schema, { ...m, arms: new Map() }, names)
+  if (!m.arms.size) return literal(common(all))
+  const variants = [...m.arms.values()].map((a) => {
+    const names = concreteNames(schema, a.type, all)
+    return literal([...common(names), ...members(schema, a.selection, names, false, m)])
+  })
+  const rest = all.filter(n => ![...m.arms.values()].some(a => concreteNames(schema, a.type).includes(n)))
+  if (isAbstractType(type) && rest.length) variants.push(literal(common(rest)))
   return variants.join(' | ')
 }
 
@@ -275,17 +317,34 @@ function analyzeEntities(schema: GraphQLSchema, documentNodes: DocumentNode[], f
    * `counts` is false for a navigation occurrence: its fields are registered
    * but do not take part in deciding which fields are required. `weak` is
    * true inside a mutation or subscription: it is counted apart, and only
-   * decides for what no query selects.
+   * decides for what no query selects. `typenames` are the `__typename` keys
+   * the enclosing selection asked for beside the type condition this one is.
    */
-  function merge(into: MergedSelection, sets: SelectionSetNode[], parent: GraphQLNamedType | undefined, weak: boolean, counts = true) {
+  function merge(into: MergedSelection, sets: SelectionSetNode[], parent: GraphQLNamedType | undefined, weak: boolean, counts = true, typenames: string[] = []) {
     if (counts) into[weak ? 'weakSelections' : 'selections']++
     const counted = new Set<string>()
     const below = new Map<string, { sets: SelectionSetNode[], type: GraphQLNamedType }>()
     const arms = new Map<string, { sets: SelectionSetNode[], type: GraphQLNamedType }>()
+    const entityArms: { condition: GraphQLNamedType, set: SelectionSetNode }[] = []
+    const here = new Set<string>()
+    const typename = (key: string) => {
+      here.add(key)
+      const entry = into.typenames.get(key) ?? { count: 0, weakCount: 0 }
+      into.typenames.set(key, entry)
+      if (counts && !counted.has(key)) {
+        counted.add(key)
+        entry[weak ? 'weakCount' : 'count']++
+      }
+    }
+    // What the enclosing selection asked for outside a type condition is in this object too.
+    for (const key of typenames) typename(key)
     const walk = (set: SelectionSetNode, on: GraphQLNamedType | undefined) => {
       for (const s of set.selections) {
         if (s.kind === Kind.FIELD) {
-          if (s.name.value === '__typename') continue
+          if (s.name.value === '__typename') {
+            typename((s.alias ?? s.name).value)
+            continue
+          }
           const def = isObjectType(on) || isInterfaceType(on) ? on.getFields()[s.name.value] : undefined
           if (!def) continue
           const key = (s.alias ?? s.name).value
@@ -309,13 +368,17 @@ function analyzeEntities(schema: GraphQLSchema, documentNodes: DocumentNode[], f
           continue
         }
         // Narrowing a union or interface to an entity is a selection of that entity too.
-        if (hasIdField(condition) && hasId(selectionSet)) merge(entitySelection(condition.name), [selectionSet], condition, weak, !navigation([selectionSet], condition))
+        if (hasIdField(condition) && hasId(selectionSet)) entityArms.push({ condition, set: selectionSet })
         const arm = arms.get(condition.name) ?? { sets: [], type: condition }
         arm.sets.push(selectionSet)
         arms.set(condition.name, arm)
       }
     }
     for (const set of sets) walk(set, parent)
+    // `__typename` selected beside the condition (`search { __typename ... on Site { id } }`) is on the row too.
+    for (const { condition, set } of entityArms) {
+      merge(entitySelection(condition.name), [set], condition, weak, !navigation([set], condition), [...here])
+    }
     for (const [key, { sets: subsets, type }] of below) {
       const entry = into.fields.get(key)!
       entry.sub ??= emptySelection()
@@ -349,11 +412,42 @@ function analyzeEntities(schema: GraphQLSchema, documentNodes: DocumentNode[], f
   for (const [name, entry] of seen) {
     entities[name] = { key: 'id' }
     rows[name] = {}
+    for (const [key, t] of entry.typenames) rows[name][key] = { ts: `'${name}'`, required: inEvery(entry, t) }
     for (const [key, f] of entry.fields) {
       rows[name][key] = { ts: fieldType(schema, f.type, f.sub), required: key === 'id' || inEvery(entry, f), ...(holdsEntity(f.type, f.sub) && { entity: true as const }) }
     }
   }
   return { entities, rows }
+}
+
+/**
+ * Asks for `__typename` in every selection set that does not already, as
+ * `nonOptionalTypename` types it: on every object, the root included, except
+ * the root of a subscription, where GraphQL does not allow it.
+ */
+function withTypename<T extends OperationDefinitionNode | FragmentDefinitionNode>(def: T, subscriptionType: string): T {
+  const field: FieldNode = { kind: Kind.FIELD, name: { kind: Kind.NAME, value: '__typename' } }
+  const add = (set: SelectionSetNode, root: boolean): SelectionSetNode => {
+    const selections = set.selections.map((s): SelectionNode =>
+      s.kind === Kind.FIELD
+        ? s.selectionSet ? { ...s, selectionSet: add(s.selectionSet, false) } : s
+        : s.kind === Kind.INLINE_FRAGMENT ? { ...s, selectionSet: add(s.selectionSet, root) } : s)
+    const has = set.selections.some(s => s.kind === Kind.FIELD && s.name.value === '__typename' && !s.alias)
+    return { ...set, selections: has || root ? selections : [field, ...selections] }
+  }
+  const root = def.kind === Kind.OPERATION_DEFINITION
+    ? def.operation === 'subscription'
+    : def.typeCondition.name.value === subscriptionType
+  return { ...def, selectionSet: add(def.selectionSet, root) }
+}
+
+export interface LoadDocumentsOptions {
+  /**
+   * Ask for `__typename` everywhere, as codegen's `nonOptionalTypename`
+   * types it, so what is sent, its hash, the result types and the row types
+   * agree. Otherwise the documents are sent as written.
+   */
+  nonOptionalTypename?: boolean
 }
 
 function fragmentSpreads(node: OperationDefinitionNode | FragmentDefinitionNode) {
@@ -367,7 +461,10 @@ export async function loadDocuments(
   cwd: string,
   log: { warn: (msg: string) => void },
   schema: GraphQLSchema | null = null,
+  options: LoadDocumentsOptions = {},
 ): Promise<LoadedDocuments> {
+  const subscriptionType = schema?.getSubscriptionType()?.name ?? 'Subscription'
+  const prepare = <T extends OperationDefinitionNode | FragmentDefinitionNode>(def: T) => options.nonOptionalTypename ? withTypename(def, subscriptionType) : def
   const files = (await glob(patterns, { cwd, absolute: true, ignore: ['**/node_modules/**'] })).sort()
   const fragments = new Map<string, FragmentDefinitionNode>()
   const ops: { node: OperationDefinitionNode, file: string }[] = []
@@ -382,10 +479,10 @@ export async function loadDocuments(
       continue
     }
     for (const def of doc.definitions) {
-      if (def.kind === Kind.FRAGMENT_DEFINITION) fragments.set(def.name.value, def)
+      if (def.kind === Kind.FRAGMENT_DEFINITION) fragments.set(def.name.value, prepare(def))
       else if (def.kind === Kind.OPERATION_DEFINITION) {
         if (!def.name) log.warn(`Skipping anonymous ${def.operation} in ${file}: operations must be named`)
-        else ops.push({ node: def, file })
+        else ops.push({ node: prepare(def), file })
       }
     }
   }
@@ -415,11 +512,14 @@ export async function loadDocuments(
     }
     const documentNode: DocumentNode = { kind: Kind.DOCUMENT, definitions: [node, ...needed.values()] }
     documentNodes.push(documentNode)
-    // What is sent asks for `__typename` everywhere, so responses can be split into tables.
+    // Sent as written, or with `__typename` everywhere under `nonOptionalTypename`.
     const source = print(documentNode)
     // The variables it declares are what is sent; any other key passed with it is a handler's local variable.
     const variables = (node.variableDefinitions ?? []).map(def => def.variable.name.value)
     operations[name] = { name, kind: node.operation, source, hash: createHash('sha256').update(source).digest('hex'), variables }
+    // The root's `__typename`, which the client adds to what `read` returns when it is left out.
+    const root = node.operation === 'query' ? schema?.getQueryType()?.name ?? 'Query' : node.operation === 'mutation' ? schema?.getMutationType()?.name ?? 'Mutation' : undefined
+    if (options.nonOptionalTypename && root) operations[name].root = root
   }
 
   const { entities, rows } = schema ? analyzeEntities(schema, documentNodes, fragments) : { entities: {}, rows: {} }
@@ -443,7 +543,7 @@ function operationMap(ops: OperationDocument[], kind: OperationDocument['kind'],
  */
 const virtualModules = `
 declare module '#nuxt-airplane/documents' {
-  export const documents: Record<string, { name: string, kind: 'query' | 'mutation' | 'subscription', source: string, hash: string, variables: string[] }>
+  export const documents: Record<string, { name: string, kind: 'query' | 'mutation' | 'subscription', source: string, hash: string, variables: string[], root?: string }>
   export const documentsHash: string
   export const entities: Record<string, { key: string }>
   export const unusedEntities: string[]

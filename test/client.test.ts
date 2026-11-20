@@ -376,6 +376,24 @@ describe('queries', () => {
     // The client is not wedged: the next request goes through.
     await expect(client.fetchQuery('GetSites', undefined)).resolves.toBeTruthy()
   })
+  it('adds the root\'s __typename to what read returns, when the documents ask for it everywhere', async () => {
+    const rooted = { ...documents, GetSites: { ...documents.GetSites!, root: 'Query' } }
+    const client = createClient(server, { documents: rooted })
+    await client.fetchQuery('GetSites', undefined)
+    const data = watchData(client, 'GetSites')
+    await until(() => !!data(), 'read')
+    expect(data<{ __typename: string, sites: Site[] }>()).toMatchObject({ __typename: 'Query', sites: [{ id: 's1' }, { id: 's2' }] })
+  })
+
+  it('leaves a root __typename that read wrote, and adds none without one in the documents', async () => {
+    const rooted = { ...documents, GetSites: { ...documents.GetSites!, root: 'Query' } }
+    const own = { GetSites: { read: () => ({ __typename: 'Mine', sites: [] }) } } as unknown as QueryHandlers
+    const written = watchData(createClient(server, { documents: rooted, queryHandlers: own }), 'GetSites')
+    const plain = watchData(createClient(server), 'GetSites')
+    await until(() => !!written() && !!plain(), 'read')
+    expect(written()).toEqual({ __typename: 'Mine', sites: [] })
+    expect(plain()).toEqual({ sites: [] })
+  })
 })
 
 // ---------------------------------------------------------------------------

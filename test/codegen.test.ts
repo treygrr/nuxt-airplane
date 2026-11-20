@@ -5,7 +5,7 @@ import { mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { buildSchema, graphqlSync, getIntrospectionQuery } from 'graphql'
+import { Kind, buildSchema, graphqlSync, getIntrospectionQuery, parse, visit, type SelectionSetNode } from 'graphql'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { generateTypes, loadDocuments, loadSchema } from '../src/codegen'
 
@@ -220,22 +220,36 @@ describe('entities', () => {
     expect(out).not.toContain('ItemRowWrite')
   })
 
-  it('types handlers written without a cast, also where two types point at each other', async () => {
+  /** Type-checks a fixture's handlers against the types generated for its documents. */
+  async function typeCheck(handlers: string, nonOptionalTypename = false) {
     const ts = await import('typescript')
     const fixture = fileURLToPath(new URL('./fixtures/rows', import.meta.url))
     const schema = buildSchema(await readFile(join(fixture, 'schema.graphql'), 'utf8'))
-    const docs = await loadDocuments(['ops.gql'], fixture, log(), schema)
+    const docs = await loadDocuments(['ops.gql'], fixture, log(), schema, { nonOptionalTypename })
+    const dir = await tempDir()
+    const types = join(dir, 'nuxt-airplane.d.ts')
+    await writeFile(types, await generateTypes(schema, docs, nonOptionalTypename ? { nonOptionalTypename } : {}))
+    const program = ts.createProgram([types, join(fixture, handlers)], {
+      noEmit: true, strict: true, skipLibCheck: true, types: [],
+      target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext, moduleResolution: ts.ModuleResolutionKind.Bundler,
+      paths: { '#types': [types] },
+    })
+    const problems = ts.getPreEmitDiagnostics(program).map(d => ts.flattenDiagnosticMessageText(d.messageText, '\n'))
+    return { docs, problems }
+  }
+
+  it('types handlers written without a cast, also where two types point at each other', async () => {
+    const { docs, problems } = await typeCheck('handlers.ts')
     // Site holds items and each item its site: neither row is typed by the other's.
     expect(docs.rows.Site!.items!.ts).not.toContain('Row')
     expect(docs.rows.Item!.site!.ts).toBe('{ id: string, name: string }')
-    const dir = await tempDir()
-    const types = join(dir, 'nuxt-airplane.d.ts')
-    await writeFile(types, await generateTypes(schema, docs))
-    const program = ts.createProgram([types, join(fixture, 'handlers.ts')], {
-      noEmit: true, strict: true, skipLibCheck: true, types: [],
-      target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext, moduleResolution: ts.ModuleResolutionKind.Bundler,
-    })
-    const problems = ts.getPreEmitDiagnostics(program).map(d => ts.flattenDiagnosticMessageText(d.messageText, '\n'))
+    expect(problems).toEqual([])
+  }, 30_000)
+
+  it('types handlers written without a cast under nonOptionalTypename, where rows carry __typename', async () => {
+    const { docs, problems } = await typeCheck('handlers.typename.ts', true)
+    expect(docs.rows.Site!.__typename).toEqual({ ts: `'Site'`, required: true })
+    expect(docs.rows.Item!.site!.ts).toBe(`{ __typename: 'Site', id: string, name: string }`)
     expect(problems).toEqual([])
   }, 30_000)
 
@@ -263,6 +277,110 @@ describe('entities', () => {
     })
     // An arm that does not select the id on its own (`... on Other { size }`) makes no table.
     expect(Object.keys(docs.entities).sort()).toEqual(['Item'])
+  })
+
+  describe('__typename', () => {
+    const schema = buildSchema(`
+      type User { id: ID!, name: String! }
+      type Team { id: ID!, size: Int! }
+      union Contact = User | Team
+      interface Node { id: ID! }
+      type Item implements Node { id: ID!, label: String!, owner: User, contact: Contact!, node: Node, nodes: [Node!]! }
+      type Other implements Node { id: ID!, size: Int! }
+      union Hit = Item | Other
+      type Query { item(id: ID!): Item, items: [Item!]!, search: [Hit!]! }
+      type Mutation { touch(id: ID!): Item! }
+      type Subscription { itemChanged: Item! }
+    `)
+    const OPS = `
+      fragment Owner on User { name }
+      query GetItem($id: ID!) { item(id: $id) { __typename id label owner { __typename ...Owner } contact { __typename ... on User { name } } node { __typename id } nodes { ... on Other { __typename size } } } }
+      query GetItems { items { id label owner { name } contact { ... on Team { size } } } }
+      query Search { search { __typename ... on Item { id label } } }
+      mutation Touch($id: ID!) { touch(id: $id) { id label } }
+      subscription ItemChanged { itemChanged { id label } }
+    `
+
+    async function load(nonOptionalTypename = false) {
+      const dir = await tempDir()
+      await writeFile(join(dir, 'ops.gql'), OPS)
+      return loadDocuments(['*.gql'], dir, log(), schema, { nonOptionalTypename })
+    }
+
+    /** That every query's result goes into the rows it came from, under the given config. */
+    async function assignable(docs: Awaited<ReturnType<typeof load>>, config: Record<string, unknown>) {
+      const ts = await import('typescript')
+      const dir = await tempDir()
+      await writeFile(join(dir, 'types.d.ts'), await generateTypes(schema, docs, config))
+      await writeFile(join(dir, 'use.ts'), [
+        `import type { GetItemQuery, GetItemsQuery, SearchQuery, ItemRow } from './types'`,
+        `declare const one: GetItemQuery, all: GetItemsQuery, found: SearchQuery`,
+        `export const rows: ItemRow[] = [one.item!, ...all.items, ...found.search.filter(h => h.__typename === 'Item')]`,
+      ].join('\n'))
+      const program = ts.createProgram([join(dir, 'use.ts')], { noEmit: true, strict: true, skipLibCheck: true, types: [], moduleResolution: ts.ModuleResolutionKind.Bundler, module: ts.ModuleKind.ESNext })
+      return ts.getPreEmitDiagnostics(program).map(d => ts.flattenDiagnosticMessageText(d.messageText, '\n'))
+    }
+
+    it('is on a row and the objects in it where it is selected, typed as what the object is', async () => {
+      const docs = await load()
+      // Nothing is injected by default.
+      for (const op of Object.values(docs.operations)) {
+        expect(op.source).not.toMatch(/__typename(?![\s\S]*\{)/) // only what the documents select
+        expect(op.root).toBeUndefined()
+      }
+      expect(docs.operations.GetItems!.source).not.toContain('__typename')
+      // GetItem selects it, GetItems does not: optional, as any field. Search
+      // asks beside the condition, so the Item it narrows to carries it too.
+      expect(docs.rows.Item).toEqual({
+        __typename: { ts: `'Item'`, required: false },
+        id: { ts: 'string', required: true },
+        label: { ts: 'string', required: true },
+        owner: { ts: `{ __typename?: 'User', name: string } | null`, required: false },
+        // In an arm it is the arm's type. Each arm is in one of the two
+        // queries that select a contact, so its fields are optional too.
+        contact: { ts: `{ __typename?: 'User', name?: string } | { __typename?: 'Team', size?: number }`, required: false },
+        // An interface with no arm: any type that implements it.
+        node: { ts: `{ __typename: 'Item' | 'Other', id: string } | null`, required: false },
+        // What no arm covers: the rest.
+        nodes: { ts: `Array<{ __typename: 'Other', size: number } | Record<PropertyKey, never>>`, required: false },
+      })
+      expect(await assignable(docs, {})).toEqual([])
+    }, 30_000)
+
+    it('counts the condition\'s own __typename and the one beside it once', async () => {
+      const dir = await tempDir()
+      await writeFile(join(dir, 'ops.gql'), 'query Search { search { __typename ... on Item { __typename id label } } }')
+      const docs = await loadDocuments(['*.gql'], dir, log(), schema)
+      expect(docs.rows.Item!.__typename).toEqual({ ts: `'Item'`, required: true })
+      const out = await generateTypes(schema, docs)
+      expect(out).toContain(`export type ItemRow = { __typename: 'Item', id: string, label: string }`)
+    })
+
+    it('is asked for everywhere under nonOptionalTypename, so the types say what comes back', async () => {
+      const docs = await load(true)
+      for (const op of Object.values(docs.operations)) {
+        expect(op.hash).toBe(createHash('sha256').update(op.source).digest('hex'))
+        // Every selection set asks for it once, except a subscription's root, where it is not allowed.
+        const sent = parse(op.source)
+        const subscriptionRoot = op.kind === 'subscription' ? (sent.definitions[0] as { selectionSet: SelectionSetNode }).selectionSet : null
+        visit(sent, {
+          SelectionSet: (set) => {
+            const typenames = set.selections.filter(s => s.kind === Kind.FIELD && s.name.value === '__typename').length
+            expect(typenames).toBe(set === subscriptionRoot ? 0 : 1)
+          },
+        })
+      }
+      expect(docs.operations.GetItem!.source).toMatch(/fragment Owner on User \{\s+__typename\s+name/)
+      expect(docs.operations.GetItem!.root).toBe('Query')
+      expect(docs.operations.Touch!.root).toBe('Mutation')
+      expect(docs.operations.ItemChanged!.root).toBeUndefined()
+      // Every row and object in it has it, required.
+      expect(docs.rows.Item!.__typename).toEqual({ ts: `'Item'`, required: true })
+      expect(docs.rows.Item!.owner!.ts).toBe(`{ __typename: 'User', name: string } | null`)
+      expect(docs.rows.Item!.contact!.ts).toBe(`{ __typename: 'User', name?: string } | { __typename: 'Team', size?: number }`)
+      expect(docs.rows.Item!.nodes!.ts).toBe(`Array<{ __typename: 'Other', size: number } | { __typename: 'Item' }>`)
+      expect(await assignable(docs, { nonOptionalTypename: true })).toEqual([])
+    }, 30_000)
   })
 
   it('emits a row type per entity and maps them onto NuxtAirplaneStores', async () => {
