@@ -1008,6 +1008,8 @@ describe('queue consistency', () => {
     cutNetworkFor('RenameSite')
     client.goOnline()
     await until(() => client.state.lastError !== null, 'network error')
+    // A sync asked for during that run follows it at once, and a mutation being sent cannot be rolled back: wait it out.
+    await client.sync()
     expect(await client.db.table('notes').toArray()).toEqual([{ id: 's3', body: 'edited' }])
 
     // A rebase must not put a row back under the placeholder.
