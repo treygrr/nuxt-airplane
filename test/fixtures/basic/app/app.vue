@@ -1,5 +1,7 @@
 <script setup lang="ts">
-const { data, loading } = useAirplaneQuery('GetSites')
+// A type auto-imported with no import: erased in the client and server bundles.
+const sitesQuery = 'GetSites' satisfies QueryName
+const { data, loading } = useAirplaneQuery(sitesQuery)
 const { online, synced, pending } = useAirplaneSync()
 // Answered by the server while the page renders.
 const live = useOnlineQuery('GetSites')

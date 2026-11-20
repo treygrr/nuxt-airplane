@@ -54,6 +54,20 @@ describe('module', async () => {
     expect(await $fetch<string>('/')).toContain('live-temp:false')
   })
 
+  it('auto-imports the helper types as types, from the file `#nuxt-airplane` points at', async () => {
+    // The global declarations: `export type { … }` inside `declare global`.
+    const imports = await built('types/imports.d.ts')
+    const line = imports.split('\n').find(l => /export type \{[^}]*\bQueryResult\b/.test(l))
+    expect(line).toMatch(/runtime\/types'$/)
+    for (const name of ['QueryName', 'QueryResult', 'QueryVariables', 'MutationName', 'MutationResult', 'MutationVariables', 'MutationRow', 'AirplaneDexie']) {
+      expect(line).toMatch(new RegExp(`[{,]\\s*${name}\\s*[,}]`))
+    }
+    // Not as values, so nothing is imported for them at runtime.
+    expect(imports).not.toMatch(/const QueryResult\b/)
+    // The page and the handler that use two of them with no import built, and the page renders.
+    expect(await $fetch<string>('/')).toContain('<div>basic</div>')
+  })
+
   it('gives the server only the request files, and the browser all of them', async () => {
     const request = await built('nuxt-airplane/request.mjs')
     expect(request).toContain('airplane/request.ts')

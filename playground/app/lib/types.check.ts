@@ -1,7 +1,7 @@
 // Type checks, run by `npm run test:types` and never imported: what the
 // handler contexts' `result(name, variables)` takes and hands back.
 
-import type { QueryResult, ResultAccessor } from '#nuxt-airplane'
+import type { ResultAccessor } from '#nuxt-airplane'
 
 type Equal<A, B> = (<T>() => T extends A ? 1 : 2) extends (<T>() => T extends B ? 1 : 2) ? true : false
 const expectType = <T extends true>(_: T) => {}
@@ -43,3 +43,20 @@ export const viewerHandlers = [
     reconcile: ({ result }, answer) => result('GetMe').set({ me: answer.updateProfile }),
   }),
 ]
+
+// The module's helper types need no import, and keep their type parameters.
+type IsAny<T> = 0 extends (1 & T) ? true : false
+export function globalTypes(db: AirplaneDexie, row: MutationRow) {
+  expectType<Equal<IsAny<QueryResult<'GetMe'>>, false>>(true)
+  expectType<Equal<QueryResult<'GetMe'>['me']['name'], string>>(true)
+  expectType<Equal<QueryVariables<'GetSite'>['id'], string>>(true)
+  expectType<Equal<IsAny<MutationResult<'UpdateProfile'>>, false>>(true)
+  expectType<Equal<MutationVariables<'UpdateProfile'>['name'], string | null | undefined>>(true)
+  const _query: QueryName = 'GetMe'
+  // @ts-expect-error not a query
+  const _notQuery: QueryName = 'UpdateProfile'
+  const _mutation: MutationName = 'UpdateProfile'
+  expectType<Equal<typeof row.status, 'pending' | 'syncing' | 'failed'>>(true)
+  expectType<Equal<IsAny<typeof db.Product>, false>>(true)
+  return db.mutations.get(row.id)
+}

@@ -1,7 +1,5 @@
 // Pieces the handlers in app/airplane share.
 
-import type { AirplaneDexie } from '#nuxt-airplane'
-
 /** Stores products as the response has them, and their variants on their own for lookup by id. */
 export async function putProducts(db: AirplaneDexie, products: NuxtAirplaneStores['Product'][]) {
   await db.Product.bulkPut(products)

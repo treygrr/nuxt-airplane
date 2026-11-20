@@ -118,6 +118,17 @@ export interface ModuleOptions {
 export const COMPOSABLES = ['useAirplaneQuery', 'useOnlineQuery', 'useMutation', 'useSync', 'useAirplane'] as const
 export type ComposableName = typeof COMPOSABLES[number]
 
+/**
+ * The helper types a handler or component needs, auto-imported as types under
+ * these names from the file `#nuxt-airplane` points at. A type of the same
+ * name declared or imported in a file wins there.
+ */
+export const TYPES = [
+  'QueryName', 'QueryResult', 'QueryVariables',
+  'MutationName', 'MutationResult', 'MutationVariables',
+  'MutationRow', 'AirplaneDexie',
+] as const
+
 /** What is wrong with an `imports` option, if anything: unknown composables, invalid or clashing names. */
 export function importsProblems(imports: Record<string, unknown>): string[] {
   const problems: string[] = []
@@ -561,6 +572,8 @@ export default defineNuxtModule<ModuleOptions>({
       // Under its own name only, like the define* helpers. Free of IndexedDB, so it renders on the server.
       { name: 'isTempId', from: resolver.resolve('./runtime/composables/isTempId') },
       { name: 'hasFields', from: resolver.resolve('./runtime/composables/hasFields') },
+      // Types only: erased from every bundle, so nothing is imported at runtime.
+      ...TYPES.map(name => ({ name, from: resolver.resolve('./runtime/types'), type: true })),
     ])
     addPlugin({ src: resolver.resolve('./runtime/plugin.client'), mode: 'client' })
     addPlugin({ src: resolver.resolve('./runtime/plugin.server'), mode: 'server' })
