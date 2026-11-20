@@ -1,4 +1,5 @@
-import { computed, toRef, type ComputedRef, type Ref } from 'vue'
+import { computed, type ComputedRef, type Ref } from 'vue'
+import { useNuxtApp } from '#app'
 import type { MutationRow } from '../types'
 import { useAirplane } from './useAirplane'
 
@@ -70,20 +71,26 @@ export function useSync(): UseSyncReturn {
     }
   }
   const { state } = client
+  // A page rendered on the server was rendered online, not held offline,
+  // with nothing queued: until the first page has hydrated, say the same,
+  // so it matches. The client knows better (a kept "work offline", what is
+  // in the outbox) from the start, and says so right after.
+  const asRendered = !!useNuxtApp().payload.serverRendered
+  const live = <T>(value: () => T, rendered: T) => computed(() => (asRendered && !state.started ? rendered : value()))
   return {
-    online: toRef(state, 'online'),
-    networkOnline: toRef(state, 'networkOnline'),
-    forcedOffline: toRef(state, 'forcedOffline'),
-    syncing: toRef(state, 'syncing'),
-    synced: client.synced,
-    pending: toRef(state, 'pending'),
-    failed: client.failed,
-    blocked: toRef(state, 'blocked'),
-    syncTotal: toRef(state, 'syncTotal'),
-    syncCount: toRef(state, 'syncCount'),
-    lastError: toRef(state, 'lastError'),
-    retryAt: toRef(state, 'retryAt'),
-    prefetching: toRef(state, 'prefetching'),
+    online: live(() => state.online, true),
+    networkOnline: live(() => state.networkOnline, true),
+    forcedOffline: live(() => state.forcedOffline, false),
+    syncing: live(() => state.syncing, false),
+    synced: live(() => client.synced.value, true),
+    pending: live(() => state.pending, [] as MutationRow[]),
+    failed: live(() => client.failed.value, [] as MutationRow[]),
+    blocked: live(() => state.blocked, 0),
+    syncTotal: live(() => state.syncTotal, 0),
+    syncCount: live(() => state.syncCount, 0),
+    lastError: live(() => state.lastError, null),
+    retryAt: live(() => state.retryAt, null),
+    prefetching: live(() => state.prefetching, 0),
     sync: client.sync,
     rollback: client.rollback,
     dependents: client.dependents,

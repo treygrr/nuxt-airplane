@@ -22,7 +22,7 @@ options and leaves the choice open.
 
 **Seen again, across tabs:** with "Work offline" on in one tab and ten changes queued there, a second tab opened on the shop sent all ten at once. A tab drains whatever queue it finds when it starts, and the queue is shared while the switch is not. So in practice "Work offline" holds only until the shopper opens the shop in another tab, or reloads. That makes the first option (keep it in the database, shared by the tabs) look like the right one.
 
-Status: not changed. The switch in the app bar is left as it is.
+Status: fixed in the module (issue #82). The choice is kept in `localStorage` per database, read before anything is sent, and carried to the other tabs by the `storage` event; `startOffline` sets where a device starts. `e2e/tabs.e2e.ts` covers the reload and the second tab.
 
 ## 2. `codegen.scalars` replaced the module's `ID` mapping
 

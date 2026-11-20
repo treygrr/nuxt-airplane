@@ -218,7 +218,7 @@ const { online, syncing, synced, pending, syncTotal, syncCount, lastError, sync,
 - Every queued mutation carries an idempotency key, the same on each attempt, in the request's `extensions`, so a server can tell a retry from a new mutation.
 - A handler's `merge` folds repeated edits of the same thing, such as a cart quantity, into one queued mutation.
 - Tabs share the database; a Web Lock makes sure only one of them sends the queue at a time.
-- `goOffline()` holds the client offline whatever the network says: queries are read from the tables only and mutations stay queued. `goOnline()` releases it and syncs. `online` reflects the effective state; `networkOnline` and `forcedOffline` expose the two inputs. Handy for a "work offline" switch or for testing.
+- `goOffline()` holds the client offline whatever the network says: queries are read from the tables only and mutations stay queued. `goOnline()` releases it and syncs. The choice is kept across reloads and in every tab, and `startOffline: true` in the module options starts there until the user chooses. `online` reflects the effective state; `networkOnline` and `forcedOffline` expose the two inputs. Handy for a "work offline" switch or for testing.
 
 ## Security
 
