@@ -1,0 +1,9 @@
+fragment SiteCard on Site { id name archived owner { id name } }
+query GetSites { sites { ...SiteCard } }
+query GetSite($id: ID!) { site(id: $id) { ...SiteCard createdAt address { street city } items { id name onHand status } } }
+query GetItems($siteId: ID!, $first: Int, $after: String) { items(siteId: $siteId, first: $first, after: $after) { edges { cursor node { id name sku onHand status site { id name } } } pageInfo { hasNextPage endCursor } totalCount } }
+query Search($q: String!) { search(q: $q) { __typename ... on Site { id name } ... on Item { id name sku } } }
+query Me { me { id name email } }
+mutation RenameSite($id: ID!, $name: String!) { renameSite(id: $id, name: $name) { id name } }
+mutation CreateSite($name: String!) { createSite(name: $name) { ...SiteCard } }
+mutation SetOnHand($id: ID!, $onHand: Int!) { setOnHand(id: $id, onHand: $onHand) { id onHand } }

@@ -1,0 +1,1 @@
+export { hasFields } from '../hasFields'

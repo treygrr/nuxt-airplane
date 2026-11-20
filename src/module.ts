@@ -560,6 +560,7 @@ export default defineNuxtModule<ModuleOptions>({
       ...DEFINE_HELPERS.map(name => ({ name, from: resolver.resolve(`./runtime/composables/${name}`) })),
       // Under its own name only, like the define* helpers. Free of IndexedDB, so it renders on the server.
       { name: 'isTempId', from: resolver.resolve('./runtime/composables/isTempId') },
+      { name: 'hasFields', from: resolver.resolve('./runtime/composables/hasFields') },
     ])
     addPlugin({ src: resolver.resolve('./runtime/plugin.client'), mode: 'client' })
     addPlugin({ src: resolver.resolve('./runtime/plugin.server'), mode: 'server' })

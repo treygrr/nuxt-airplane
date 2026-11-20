@@ -176,6 +176,11 @@ export default defineQueryHandler('GetSiteItems', {
 useAirplaneQuery('GetSiteItems', () => ({ siteId, lowStock: lowStockOnly.value }))
 ```
 
+Handlers need no casts: a response goes into its tables as it is, a nested
+entity may be kept in its own table and left off the row it came on, and a
+`read` that needs fields a row may lack checks for them with `hasFields(row,
+'archived', 'owner')`, which types the row as having them.
+
 Rollback works without a `revert` handler: for every row a queued mutation
 changes, in any table, the server's version is kept and put back.
 

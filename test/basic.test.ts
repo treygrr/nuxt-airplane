@@ -49,6 +49,7 @@ describe('module', async () => {
   it('auto-imports isTempId, free of IndexedDB, so it runs during SSR', async () => {
     const imports = await built('imports.d.ts')
     expect(imports).toMatch(/[{,]\s*isTempId\s*[,}][^\n]*runtime\/composables\/isTempId/)
+    expect(imports).toMatch(/[{,]\s*hasFields\s*[,}][^\n]*runtime\/composables\/hasFields/)
     // The page calls it on a row the server sent: a real id.
     expect(await $fetch<string>('/')).toContain('live-temp:false')
   })
