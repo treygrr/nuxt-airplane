@@ -1,7 +1,7 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { basename, dirname, join, relative, resolve, sep } from 'node:path'
 import {
-  addImportsDir,
+  addImports,
   addPlugin,
   addTemplate,
   addTypeTemplate,
@@ -17,7 +17,7 @@ import { glob } from 'tinyglobby'
 import { generateTypes, loadDocuments, loadSchema, type LoadedDocuments } from './codegen'
 import { generateHandlerFiles } from './scaffold'
 import { loadStoreFiles, renderSchema } from './schema'
-import { WRAP_HINT, defaultExportHelper, findUntaggedDefaultExport, mentionedTables } from './handlers'
+import { DEFINE_HELPERS, WRAP_HINT, defaultExportHelper, findUntaggedDefaultExport, mentionedTables } from './handlers'
 import type { PersistedQueriesMode } from './runtime/types'
 
 /** Where the GraphQL schema comes from; types are generated from it at build time. */
@@ -98,6 +98,41 @@ export interface ModuleOptions {
   database: DatabaseOptions
   /** Extra options passed to the `typescript-operations` codegen plugin. `scalars` is merged with the module's `ID` mapping. */
   codegen: Record<string, unknown>
+  /**
+   * The names the composables are auto-imported under, for an app where one
+   * would clash or that prefers its own: `{ useAirplaneQuery: 'useQuery' }`.
+   * Composables left out keep their names. The `define*` helpers keep
+   * theirs: the build finds the handler files by them.
+   */
+  imports: Partial<Record<ComposableName, string>>
+}
+
+/** The composables an app calls, auto-imported under these names unless `imports` renames them. */
+export const COMPOSABLES = ['useAirplaneQuery', 'useOnlineQuery', 'useMutation', 'useSync', 'useAirplane'] as const
+export type ComposableName = typeof COMPOSABLES[number]
+
+/** What is wrong with an `imports` option, if anything: unknown composables, invalid or clashing names. */
+export function importsProblems(imports: Record<string, unknown>): string[] {
+  const problems: string[] = []
+  const names = new Map<string, string>()
+  for (const composable of COMPOSABLES) names.set(composable, composable)
+  for (const [composable, as] of Object.entries(imports)) {
+    if (!(COMPOSABLES as readonly string[]).includes(composable)) {
+      problems.push(`  ${composable}: not a composable of the module (${COMPOSABLES.join(', ')})`)
+      continue
+    }
+    if (typeof as !== 'string' || !/^[A-Z_$][\w$]*$/i.test(as)) {
+      problems.push(`  ${composable}: ${JSON.stringify(as)} is not a name a function can be imported under`)
+      continue
+    }
+    names.set(composable, as)
+  }
+  const taken = new Map<string, string>()
+  for (const [composable, as] of names) {
+    if (taken.has(as)) problems.push(`  ${composable} and ${taken.get(as)} would both be imported as ${as}`)
+    taken.set(as, composable)
+  }
+  return problems
 }
 
 /** Options from before they were grouped, and where each one went. */
@@ -140,6 +175,7 @@ export default defineNuxtModule<ModuleOptions>({
     handlers: { dir: 'airplane', generate: false, worker: true },
     database: { name: 'nuxt-airplane' },
     codegen: {},
+    imports: {},
   },
   async setup(options, nuxt) {
     const resolver = createResolver(import.meta.url)
@@ -150,6 +186,8 @@ export default defineNuxtModule<ModuleOptions>({
     // An option under its old name would be ignored without a word. Stop instead.
     const moved = movedOptions(options as unknown as Record<string, unknown>)
     if (moved.length) throw new Error(`[nuxt-airplane] These options have moved into groups:\n${moved.join('\n')}`)
+    const badImports = importsProblems(options.imports ?? {})
+    if (badImports.length) throw new Error(`[nuxt-airplane] The \`imports\` option is not right:\n${badImports.join('\n')}`)
 
     nuxt.options.runtimeConfig.public.airplane = {
       endpoint: options.endpoint,
@@ -328,6 +366,31 @@ export default defineNuxtModule<ModuleOptions>({
     })
 
     // ------------------------------------------------------------------
+    // Server
+    //
+    // Server-side rendering sends online queries with the app's request
+    // options, so it needs the `defineAirplaneRequest` files, and only
+    // those: the other handler files may reach for the browser (Dexie,
+    // `window`) as they load. The exact complement of the worker's files.
+    // ------------------------------------------------------------------
+
+    const requestTemplate = addTemplate({
+      filename: 'nuxt-airplane/request.mjs',
+      write: true,
+      getContents: async () => {
+        const files: string[] = []
+        for (const file of await handlerFiles()) {
+          const source = await readFile(file, 'utf8')
+          if (defaultExportHelper(source) === 'defineAirplaneRequest') files.push(file)
+          // Found by its text: a file that exports it some other way works in the browser and not on the server.
+          else if (/\bdefineAirplaneRequest\b/.test(source)) logger.warn(`${relative(nuxt.options.rootDir, file)} uses defineAirplaneRequest but does not start its default export with it, so server-side rendering does not see it. Write \`export default defineAirplaneRequest({ … })\`.`)
+        }
+        return `${handlerImports(files)}\nexport const requestFiles = [${handlerList(files)}]\n`
+      },
+    })
+    nuxt.options.alias['#nuxt-airplane/request'] = requestTemplate.dst
+
+    // ------------------------------------------------------------------
     // Worker
     // ------------------------------------------------------------------
 
@@ -482,7 +545,12 @@ export default defineNuxtModule<ModuleOptions>({
     // Runtime
     // ------------------------------------------------------------------
 
-    addImportsDir(resolver.resolve('./runtime/composables'))
+    // Each composable under its own name, or the one `imports` gives it.
+    addImports([
+      ...COMPOSABLES.map(name => ({ name, as: options.imports?.[name] ?? name, from: resolver.resolve(`./runtime/composables/${name}`) })),
+      ...DEFINE_HELPERS.map(name => ({ name, from: resolver.resolve(`./runtime/composables/${name}`) })),
+    ])
     addPlugin({ src: resolver.resolve('./runtime/plugin.client'), mode: 'client' })
+    addPlugin({ src: resolver.resolve('./runtime/plugin.server'), mode: 'server' })
   },
 })

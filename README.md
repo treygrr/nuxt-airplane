@@ -13,7 +13,7 @@ Airplane mode for your GraphQL app.
 📖 **[Documentation](https://treygrr.github.io/nuxt-airplane/)**
 
 Give it an endpoint and your `.gql` files. Every operation becomes a typed
-`useQuery` or `useMutation`, results live in IndexedDB (via Dexie), and anything
+`useAirplaneQuery` or `useMutation`, results live in IndexedDB (via Dexie), and anything
 you change mid-flight queues up and lands on the server once you're back on the
 ground.
 
@@ -55,7 +55,7 @@ mutation RenameSite($id: ID!, $name: String!) { renameSite(id: $id, name: $name)
 
 ```vue
 <script setup lang="ts">
-const { data, loading, fetching, error, refresh } = useQuery('GetSites')
+const { data, loading, fetching, error, refresh } = useAirplaneQuery('GetSites')
 const rename = useMutation('RenameSite')
 
 await rename.mutate({ id: 'site-1', name: 'New name' })
@@ -65,7 +65,7 @@ await rename.mutate({ id: 'site-1', name: 'New name' })
 Both are fully typed from the schema: the document name is checked, variables
 and `data` get the generated operation types.
 
-`useQuery` returns **live data from local tables**, not the network response.
+`useAirplaneQuery` returns **live data from local tables**, not the network response.
 Stored data renders immediately and a refetch runs in the background when
 online; any mutation handler that touches a row updates `data` right away.
 
@@ -77,7 +77,7 @@ queued. Sending it to the server happens in the sync loop.
 The tables are the only store. Every type your documents select with an `id`
 gets a Dexie table keyed on it, typed from the schema (`db.Site` here). A
 query handler writes a response into the tables and reads the query back out;
-`read` is what `useQuery` returns, online or offline. Put files under
+`read` is what `useAirplaneQuery` returns, online or offline. Put files under
 `app/airplane/` and they are picked up automatically.
 
 ```ts
@@ -157,7 +157,7 @@ export default defineQueryHandlers({
 ```
 
 A filter the server has no argument for goes in the handler's `local`, with
-its default. `useQuery` takes it next to the query's own variables; it reaches
+its default. `useAirplaneQuery` takes it next to the query's own variables; it reaches
 `read`, is never sent and is not part of the query key, so toggling it reads
 the tables again and fetches nothing. Mutation handlers take `local` too, for
 values their hooks need and the server should not see.
@@ -172,7 +172,7 @@ export default defineQueryHandler('GetSiteItems', {
   }),
 })
 
-useQuery('GetSiteItems', () => ({ siteId, lowStock: lowStockOnly.value }))
+useAirplaneQuery('GetSiteItems', () => ({ siteId, lowStock: lowStockOnly.value }))
 ```
 
 Rollback works without a `revert` handler: for every row a queued mutation
@@ -183,6 +183,25 @@ One file per operation also works: `defineMutationHandler('RenameSite', { … })
 When storage runs low, the least recently fetched rows are dropped, never one a queued mutation has changed. The handlers that write (`store`, `apply`, …) run in a web worker, so a large catalog does not hold up the page; they get `db` and `variables` but no Nuxt composables. `handlers: { worker: false }` in the module options keeps them on the page.
 
 Paginated queries can opt into fetching every page in the background so the whole set is available offline: `prefetch: { next: (data, vars) => data.pageInfo.hasNextPage ? { ...vars, after: data.pageInfo.endCursor } : null, when: () => settings.cacheCatalog }`. `useSync().prefetching` counts the runs in progress.
+
+## Online queries
+
+Some queries have nothing worth keeping offline: search suggestions, a report,
+live prices. `useOnlineQuery` asks the server and shows the answer, and keeps
+nothing. It needs no handler, asks only while `enabled`, compares variables by
+value, lets the latest request win, and asks again on reconnect when it missed
+one. While Nuxt renders a page on the server it asks there, with your
+`defineAirplaneRequest` options, and hands the answer to the browser in the
+page, so the first render has it and the browser does not ask again.
+
+```ts
+const { data, error, fetching } = useOnlineQuery('Search', () => ({ term: term.value }), {
+  enabled: () => term.value.length >= 2,
+})
+```
+
+The composables can be auto-imported under other names with the `imports`
+module option, e.g. `imports: { useAirplaneQuery: 'useQuery' }`.
 
 ## Sync state
 

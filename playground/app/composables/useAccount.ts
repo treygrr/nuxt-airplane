@@ -2,7 +2,7 @@
 // mutation about them goes through here.
 
 export function useMe() {
-  const query = useQuery('GetMe')
+  const query = useAirplaneQuery('GetMe')
   return {
     ...query,
     me: computed(() => query.data.value?.me ?? null),
@@ -15,7 +15,7 @@ export type Address = NuxtAirplaneStores['Address']
 export type AddressFields = Omit<Address, 'id' | 'isDefault'>
 
 export function useAddresses() {
-  const query = useQuery('GetAddresses')
+  const query = useAirplaneQuery('GetAddresses')
   const addresses = computed(() => query.data.value?.addresses ?? [])
   return {
     ...query,

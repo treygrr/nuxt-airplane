@@ -7,12 +7,12 @@ import type { MaybeRefOrGetter } from 'vue'
 export type OrderStatus = NuxtAirplaneStores['Order']['status']
 
 export function useOrders() {
-  const query = useQuery('GetOrders')
+  const query = useAirplaneQuery('GetOrders')
   return { ...query, orders: computed(() => query.data.value?.orders ?? []) }
 }
 
 export function useOrder(id: MaybeRefOrGetter<string>) {
-  const query = useQuery('GetOrder', () => ({ id: toValue(id) }))
+  const query = useAirplaneQuery('GetOrder', () => ({ id: toValue(id) }))
   return { ...query, order: computed(() => query.data.value?.order ?? null) }
 }
 

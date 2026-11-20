@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promis
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { movedOptions } from '../src/module'
+import { importsProblems, movedOptions } from '../src/module'
 import { declaresHandler, generateHandlerFiles, kebabCase } from '../src/scaffold'
 import { DEFINE_HELPERS, defaultExportHelper, findUntaggedDefaultExport, mentionedTables } from '../src/handlers'
 
@@ -66,6 +66,16 @@ describe('what a source file uses', () => {
 })
 
 describe('module options', () => {
+  it('takes new names for the composables, and refuses unknown ones, invalid names and clashes', () => {
+    expect(importsProblems({})).toEqual([])
+    expect(importsProblems({ useAirplaneQuery: 'useQuery', useOnlineQuery: 'useRemoteQuery' })).toEqual([])
+    expect(importsProblems({ defineQueryHandler: 'defineQuery' })).toEqual([expect.stringMatching(/defineQueryHandler: not a composable of the module/)])
+    expect(importsProblems({ useSync: 'use-sync' })).toEqual([expect.stringMatching(/useSync: "use-sync" is not a name/)])
+    expect(importsProblems({ useAirplaneQuery: 'useMutation' })).toEqual([expect.stringMatching(/useMutation and useAirplaneQuery would both be imported as useMutation/)])
+    // Swapping two names is fine.
+    expect(importsProblems({ useAirplaneQuery: 'useOnlineQuery', useOnlineQuery: 'useAirplaneQuery' })).toEqual([])
+  })
+
   it('names every option still under its old name, with where it went', () => {
     expect(movedOptions({ endpoint: '/api/graphql', schema: { source: './schema.graphql' }, handlers: { dir: 'airplane' }, database: {} })).toEqual([])
     expect(movedOptions({ schema: './schema.graphql', schemaHeaders: {}, handlersDir: 'x', generateHandlers: true, worker: false, dbName: 'app', cacheKey: 'v1' })).toEqual([

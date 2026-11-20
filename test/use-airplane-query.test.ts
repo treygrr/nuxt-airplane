@@ -1,4 +1,4 @@
-// useQuery against a real client: a local variable runs `read` again and
+// useAirplaneQuery against a real client: a local variable runs `read` again and
 // fetches nothing; a variable of the query fetches.
 import 'fake-indexeddb/auto'
 import { describe, expect, it, vi } from 'vitest'
@@ -9,7 +9,7 @@ import type { AirplaneDexie, OperationDocument, QueryHandlers } from '../src/run
 let client: AirplaneClient | undefined
 vi.mock('#app', () => ({ useNuxtApp: () => ({ $airplane: client }) }))
 
-const { useQuery } = await import('../src/runtime/composables/useQuery')
+const { useAirplaneQuery } = await import('../src/runtime/composables/useAirplaneQuery')
 
 const documents: Record<string, OperationDocument> = {
   GetItems: { name: 'GetItems', kind: 'query', source: 'query GetItems($siteId: ID!) { items(siteId: $siteId) { id siteId qty } }', variables: ['siteId'] },
@@ -24,7 +24,7 @@ async function until(check: () => boolean, what: string) {
   }
 }
 
-describe('useQuery with local variables', () => {
+describe('useAirplaneQuery with local variables', () => {
   it('reads again on a local change, and fetches only when a variable of the query changes', async () => {
     const items: Item[] = [{ id: 'a', siteId: 's1', qty: 0 }, { id: 'b', siteId: 's1', qty: 5 }, { id: 'c', siteId: 's2', qty: 0 }]
     const fetch = vi.fn(async (_url: unknown, init?: RequestInit) => {
@@ -55,7 +55,7 @@ describe('useQuery with local variables', () => {
     const siteId = ref('s1')
     const empty = ref(false)
     const scope = effectScope()
-    const q = scope.run(() => useQuery('GetItems' as never, (() => ({ siteId: siteId.value, empty: empty.value })) as never))!
+    const q = scope.run(() => useAirplaneQuery('GetItems' as never, (() => ({ siteId: siteId.value, empty: empty.value })) as never))!
     const ids = () => (q.data.value as { items: Item[] } | null)?.items.map(i => i.id)
 
     await until(() => ids()?.length === 2 && !q.loading.value, 'the first fetch')
@@ -75,5 +75,41 @@ describe('useQuery with local variables', () => {
 
     scope.stop()
     expect(client.active.size).toBe(0)
+  })
+
+  it('while not enabled, reads nothing and fetches nothing; enabled, it starts; off again, it clears', async () => {
+    const fetch = vi.fn(async () => Response.json({ data: { items: [{ id: 'a', siteId: 's1', qty: 0 }] } }))
+    const read = vi.fn(async ({ db }: { db: AirplaneDexie }) => ({ items: await db.table<Item, string>('Item').toArray() }))
+    client = createAirplaneClient({
+      endpoint: 'http://api.test/graphql',
+      dbName: 'use-query-enabled',
+      documentsHash: 'h',
+      documents,
+      entities: { Item: { key: 'id' } },
+      mutationHandlers: {},
+      queryHandlers: { GetItems: { store: ({ db }: { db: AirplaneDexie }, data: { items: Item[] }) => db.table('Item').bulkPut(data.items), read } } as unknown as QueryHandlers,
+      stores: { stores: {} },
+      request: { fetch: fetch as unknown as typeof globalThis.fetch },
+    })
+    const siteId = ref<string | null>(null)
+    const scope = effectScope()
+    const q = scope.run(() => useAirplaneQuery('GetItems' as never, (() => ({ siteId: siteId.value })) as never, { enabled: () => !!siteId.value }))!
+    expect(q.loading.value).toBe(false)
+    await new Promise(r => setTimeout(r, 30))
+    expect(fetch).not.toHaveBeenCalled()
+    expect(read).not.toHaveBeenCalled()
+    await q.refresh()
+    expect(fetch).not.toHaveBeenCalled()
+
+    siteId.value = 's1'
+    await until(() => !!q.data.value && !q.loading.value, 'the query once enabled')
+    expect(fetch).toHaveBeenCalledTimes(1)
+
+    siteId.value = null
+    await nextTick()
+    expect(q.data.value).toBeNull()
+    expect(q.loading.value).toBe(false)
+    expect(client.active.size).toBe(0)
+    scope.stop()
   })
 })

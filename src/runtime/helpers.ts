@@ -1,4 +1,3 @@
-import { hash } from 'ohash'
 import type { IndexableType } from 'dexie'
 import { rowKey } from './db'
 import type { AirplaneDexie, MutationRow } from './types'
@@ -63,11 +62,8 @@ export function splitVariables(
   return { server: dropped ? server : input, local }
 }
 
-/** `undefined`, `null` and `{}` all mean "no variables" and share a key. */
-export function queryKey(name: string, variables: unknown) {
-  const normalized = variables && typeof variables === 'object' && Object.keys(variables).length ? variables : null
-  return `${name}:${hash(normalized)}`
-}
+// The query key is the request's too, so it lives with it, free of IndexedDB.
+export { queryKey } from './request'
 
 // ---------------------------------------------------------------------------
 // Temp ids

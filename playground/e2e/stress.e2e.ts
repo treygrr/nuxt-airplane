@@ -25,7 +25,7 @@ function measured(name: string, ms: number, budget: number) {
   expect(ms, `${name} took ${Math.round(ms)} ms, over its budget of ${budget} ms`).toBeLessThan(budget)
 }
 
-/** Times a query answered from the tables, as a mounted `useQuery` reads it, and says what came back. */
+/** Times a query answered from the tables, as a mounted `useAirplaneQuery` reads it, and says what came back. */
 function timedRead(page: Page, name: string, variables: Record<string, unknown>) {
   return page.evaluate(async ({ name, variables }) => {
     const started = performance.now()

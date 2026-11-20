@@ -71,7 +71,7 @@ export default defineQueryHandler('${op.name}', {
 
   },
 
-  // Builds the query's result from the tables: what \`useQuery('${op.name}')\` returns, online or not.
+  // Builds the query's result from the tables: what \`useAirplaneQuery('${op.name}')\` returns, online or not.
   // Receives { db, variables, local }. Until it returns something, the query has nothing to show.
   read() {
     return null

@@ -17,7 +17,7 @@ orientation: horizontal
 [Airplane mode]{.text-primary} for your GraphQL app.
 
 #description
-Give it an endpoint and your `.gql` files. Every operation becomes a typed `useQuery` or `useMutation`, results live in IndexedDB, and anything you change mid-flight queues up and lands on the server once you're back on the ground.
+Give it an endpoint and your `.gql` files. Every operation becomes a typed `useAirplaneQuery` or `useMutation`, results live in IndexedDB, and anything you change mid-flight queues up and lands on the server once you're back on the ground.
 
 #links
   :::u-button
@@ -45,7 +45,7 @@ Give it an endpoint and your `.gql` files. Every operation becomes a typed `useQ
   :::prose-pre
   ---
   code: |
-    const { data, loading } = useQuery('GetSites')
+    const { data, loading } = useAirplaneQuery('GetSites')
     const rename = useMutation('RenameSite')
 
     // Applied to the local tables right away,
@@ -55,7 +55,7 @@ Give it an endpoint and your `.gql` files. Every operation becomes a typed `useQ
   ---
 
   ```ts [pages/sites.vue]
-  const { data, loading } = useQuery('GetSites')
+  const { data, loading } = useAirplaneQuery('GetSites')
   const rename = useMutation('RenameSite')
 
   // Applied to the local tables right away,
@@ -78,7 +78,7 @@ Everything from your GraphQL documents
   Typed by name
 
   #description
-  Every named query and mutation becomes `useQuery('Name')` / `useMutation('Name')`, with `data` and variables typed from the schema.
+  Every named query and mutation becomes `useAirplaneQuery('Name')` / `useMutation('Name')`, with `data` and variables typed from the schema.
   :::
 
   :::u-page-feature
@@ -145,7 +145,7 @@ Everything from your GraphQL documents
       to: '/getting-started'
       trailingIcon: i-lucide-arrow-right
     - label: API reference
-      to: '/api/use-query'
+      to: '/api/use-airplane-query'
       variant: subtle
       icon: i-lucide-book-open
   title: Ready to switch on airplane mode?

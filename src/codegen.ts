@@ -427,6 +427,9 @@ declare module '#nuxt-airplane/documents' {
 declare module '#nuxt-airplane/handlers' {
   export const handlers: unknown[]
 }
+declare module '#nuxt-airplane/request' {
+  export const requestFiles: unknown[]
+}
 declare module '#nuxt-airplane/worker' {
   export const createWorker: (() => Worker) | undefined
 }
