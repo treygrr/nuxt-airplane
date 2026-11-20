@@ -58,6 +58,8 @@ export default defineNuxtConfig({
 
 Then follow the [getting started guide](https://treygrr.github.io/nuxt-airplane/getting-started). Handlers, the queue, auth, security and every option live in the [docs](https://treygrr.github.io/nuxt-airplane/). 📚
 
+🤖 Working with an AI assistant? Point it at [`llms.txt`](https://treygrr.github.io/nuxt-airplane/llms.txt), the docs as plain text. More in [Using with AI](https://treygrr.github.io/nuxt-airplane/getting-started/ai).
+
 ## 🛠️ Hacking on it
 
 ```sh

@@ -6,9 +6,11 @@ const route = useRoute()
 const toast = useToast()
 const { copy, copied } = useClipboard()
 const site = useSiteConfig()
+const { app } = useRuntimeConfig()
 
 const routePath = computed(() => withoutTrailingSlash(route.path))
-const mdPath = computed(() => `${site.url}/raw${routePath.value}.md`)
+// The site is served under a base path (`/nuxt-airplane/`), which the route does not carry.
+const mdPath = computed(() => `${site.url}${withoutTrailingSlash(app.baseURL)}/raw${routePath.value}.md`)
 
 const items = [
   {
